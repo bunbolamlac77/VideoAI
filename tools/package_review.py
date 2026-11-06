@@ -62,7 +62,8 @@ EXCLUDED_EXTENSIONS = {
 
 EXCLUDED_FILE_NAMES = {
     ".DS_Store",
-    "AIVideo-review.zip"
+    "AIVideo-review.zip",
+    "REVIEW_SUMMARY.md"
 }
 
 def is_mach_o_binary(filepath: str) -> bool:
