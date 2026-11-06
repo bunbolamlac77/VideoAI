@@ -194,14 +194,21 @@ def get_git_info() -> dict:
     # Check remote sync state explicitly
     try:
         local_hash = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-        remote_hash = subprocess.check_output(["git", "rev-parse", "origin/main"], text=True).strip()
+        try:
+            upstream = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "@{u}"], text=True).strip()
+            remote_hash = subprocess.check_output(["git", "rev-parse", "@{u}"], text=True).strip()
+            remote_name = upstream
+        except Exception:
+            remote_hash = subprocess.check_output(["git", "rev-parse", "origin/main"], text=True).strip()
+            remote_name = "origin/main"
+
         if local_hash == remote_hash:
             if not info["modified_files"]:
-                info["remote_sync_status"] = "Đồng bộ (In-Sync với origin/main)"
+                info["remote_sync_status"] = f"Đồng bộ (In-Sync với {remote_name})"
             else:
                 info["remote_sync_status"] = "Có thay đổi local chưa commit (Uncommitted changes)"
         else:
-            info["remote_sync_status"] = f"Khác remote (Local: {local_hash[:8]} vs Remote: {remote_hash[:8]})"
+            info["remote_sync_status"] = f"Khác remote (Local: {local_hash[:8]} vs {remote_name}: {remote_hash[:8]})"
     except Exception:
         info["remote_sync_status"] = "UNKNOWN (Không thể đối chiếu remote)"
 
