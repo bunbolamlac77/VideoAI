@@ -1,0 +1,42 @@
+name: AIVideo Core CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-and-lint:
+    runs-on: macos-14
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python Dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          if [ -f workers/pyproject.toml ]; then
+            python3 -m pip install huggingface-hub
+          fi
+
+      - name: Verify Contract Schema & JSON Integrity
+        run: |
+          python3 -c "import json, glob; [json.load(open(f)) for f in glob.glob('contracts/**/*.json', recursive=True)]; print('All contracts are valid JSON.')"
+
+      - name: Run Python Framing & Resilience Tests
+        run: |
+          python3 -m unittest tests/test_framing_resilience.py
+
+      - name: Verify Preflight Integrity Tool
+        run: |
+          python3 -m unittest tests/test_model_setup.py
+
+      - name: Verify No Large Binaries in Git
+        run: |
+          find . -name "*.safetensors" -o -name "*.bin" -o -name "*.gguf" | grep -v ".git" | wc -l | grep "^ *0$"

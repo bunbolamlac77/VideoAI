@@ -31,6 +31,10 @@ public struct JSONRPCErrorPayload: Codable, Sendable {
         self.message = message
         self.data = data
     }
+
+    public var kind: String? {
+        return data?["kind"] ?? data?["type"]
+    }
 }
 
 public struct JSONRPCResponseEnvelope: Decodable, Sendable {
@@ -184,70 +188,156 @@ public struct MediaProbeResult: Codable, Sendable {
     }
 }
 
-// MARK: - Local AI Inference / Smoke Test DTOs
+// MARK: - Local AI Model Status & Real Inference DTOs (G0 Spec)
 
-public struct LocalSmokeTestParams: Codable, Sendable {
-    public let text: String
+public enum ModelStatusCode: String, Codable, Sendable {
+    case notConfigured = "not_configured"
+    case notInstalled = "not_installed"
+    case invalidAssets = "invalid_assets"
+    case runtimeUnavailable = "runtime_unavailable"
+    case availableUnloaded = "available_unloaded"
+}
 
-    public init(text: String) {
-        self.text = text
+public struct ModelStatusParams: Codable, Sendable {
+    public let profileId: String?
+
+    public enum CodingKeys: String, CodingKey {
+        case profileId = "profile_id"
+    }
+
+    public init(profileId: String? = nil) {
+        self.profileId = profileId
     }
 }
 
-public struct LocalSmokeTestResult: Codable, Sendable {
-    public let status: String
-    public let executionType: String
-    public let inputLength: Int
-    public let tokenCount: Int
-    public let contentSha256: String
-    public let detectedLanguage: String
-    public let offlineVerified: Bool
+public struct ModelStatusResult: Codable, Sendable {
+    public let status: ModelStatusCode
+    public let profileId: String
+    public let modelId: String?
+    public let modelRevision: String?
+    public let modelPath: String?
+    public let pythonPath: String?
+    public let backendName: String?
+    public let details: String?
+    public let missingFiles: [String]?
 
     public enum CodingKeys: String, CodingKey {
         case status
-        case executionType = "execution_type"
-        case inputLength = "input_length"
-        case tokenCount = "token_count"
-        case contentSha256 = "content_sha256"
-        case detectedLanguage = "detected_language"
-        case offlineVerified = "offline_verified"
+        case profileId = "profile_id"
+        case modelId = "model_id"
+        case modelRevision = "model_revision"
+        case modelPath = "model_path"
+        case pythonPath = "python_path"
+        case backendName = "backend_name"
+        case details
+        case missingFiles = "missing_files"
+    }
+
+    public init(
+        status: ModelStatusCode,
+        profileId: String,
+        modelId: String? = nil,
+        modelRevision: String? = nil,
+        modelPath: String? = nil,
+        pythonPath: String? = nil,
+        backendName: String? = nil,
+        details: String? = nil,
+        missingFiles: [String]? = nil
+    ) {
+        self.status = status
+        self.profileId = profileId
+        self.modelId = modelId
+        self.modelRevision = modelRevision
+        self.modelPath = modelPath
+        self.pythonPath = pythonPath
+        self.backendName = backendName
+        self.details = details
+        self.missingFiles = missingFiles
     }
 }
 
-public struct LocalModelInferParams: Codable, Sendable {
+public struct LocalInferParams: Codable, Sendable {
     public let prompt: String
-    public let modelPath: String?
+    public let profileId: String?
 
     public enum CodingKeys: String, CodingKey {
         case prompt
-        case modelPath = "model_path"
+        case profileId = "profile_id"
     }
 
-    public init(prompt: String, modelPath: String? = nil) {
+    public init(prompt: String, profileId: String? = nil) {
         self.prompt = prompt
-        self.modelPath = modelPath
+        self.profileId = profileId
     }
 }
 
-public struct LocalModelInferResult: Codable, Sendable {
-    public let status: String
+public struct LocalInferResult: Codable, Sendable {
+    public let schemaVersion: String
+    public let runId: String
+    public let profileId: String
     public let modelId: String
-    public let runtime: String
-    public let weightsSha256: String
-    public let tokensGenerated: Int
+    public let modelRevision: String
+    public let modelLockSha256: String
+    public let backendName: String
+    public let backendVersion: String
+    public let inputSha256: String
     public let outputText: String
-    public let inferenceLatencyMs: Double
-    public let offlineVerified: Bool
+    public let inputTokenCount: Int
+    public let outputTokenCount: Int
+    public let finishReason: String
+    public let loadTimeMs: Double?
+    public let generationTimeMs: Double?
 
     public enum CodingKeys: String, CodingKey {
-        case status
+        case schemaVersion = "schema_version"
+        case runId = "run_id"
+        case profileId = "profile_id"
         case modelId = "model_id"
-        case runtime
-        case weightsSha256 = "weights_sha256"
-        case tokensGenerated = "tokens_generated"
+        case modelRevision = "model_revision"
+        case modelLockSha256 = "model_lock_sha256"
+        case backendName = "backend_name"
+        case backendVersion = "backend_version"
+        case inputSha256 = "input_sha256"
         case outputText = "output_text"
-        case inferenceLatencyMs = "inference_latency_ms"
-        case offlineVerified = "offline_verified"
+        case inputTokenCount = "input_token_count"
+        case outputTokenCount = "output_token_count"
+        case finishReason = "finish_reason"
+        case loadTimeMs = "load_time_ms"
+        case generationTimeMs = "generation_time_ms"
+    }
+
+    public init(
+        schemaVersion: String,
+        runId: String,
+        profileId: String,
+        modelId: String,
+        modelRevision: String,
+        modelLockSha256: String,
+        backendName: String,
+        backendVersion: String,
+        inputSha256: String,
+        outputText: String,
+        inputTokenCount: Int,
+        outputTokenCount: Int,
+        finishReason: String,
+        loadTimeMs: Double? = nil,
+        generationTimeMs: Double? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.runId = runId
+        self.profileId = profileId
+        self.modelId = modelId
+        self.modelRevision = modelRevision
+        self.modelLockSha256 = modelLockSha256
+        self.backendName = backendName
+        self.backendVersion = backendVersion
+        self.inputSha256 = inputSha256
+        self.outputText = outputText
+        self.inputTokenCount = inputTokenCount
+        self.outputTokenCount = outputTokenCount
+        self.finishReason = finishReason
+        self.loadTimeMs = loadTimeMs
+        self.generationTimeMs = generationTimeMs
     }
 }
 
@@ -285,7 +375,8 @@ public struct ResolveSpikeParams: Codable, Sendable {
 }
 
 public struct ResolveSpikeResult: Codable, Sendable {
-    public let status: String
+    public let success: Bool?
+    public let status: String?
     public let resolveProduct: String?
     public let resolveVersion: String?
     public let projectName: String
@@ -299,18 +390,22 @@ public struct ResolveSpikeResult: Codable, Sendable {
     public let audioTrackCount: Int
     public let videoItemsCount: Int
     public let audioItemsCount: Int
+    public let videoItemDuration: Int?
+    public let audioItemDuration: Int?
     public let titleInserted: Bool
-    public let previewRendered: Bool
+    public let renderSettingsConfigured: Bool?
+    public let projectSaved: Bool?
     public let previewPath: String?
-    public let finalRendered: Bool
-    public let finalPath: String?
     public let drpExported: Bool
     public let drpPath: String
+    public let drpSizeBytes: Int?
     public let supportedMp4Codecs: [String]
-    public let offlineVerified: Bool
-    public let reconciliationStatus: String
+    public let verifiedSteps: [String]?
+    public let offlineVerified: Bool?
+    public let reconciliationStatus: String?
 
     public enum CodingKeys: String, CodingKey {
+        case success
         case status
         case resolveProduct = "resolve_product"
         case resolveVersion = "resolve_version"
@@ -325,14 +420,17 @@ public struct ResolveSpikeResult: Codable, Sendable {
         case audioTrackCount = "audio_track_count"
         case videoItemsCount = "video_items_count"
         case audioItemsCount = "audio_items_count"
+        case videoItemDuration = "video_item_duration"
+        case audioItemDuration = "audio_item_duration"
         case titleInserted = "title_inserted"
-        case previewRendered = "preview_rendered"
+        case renderSettingsConfigured = "render_settings_configured"
+        case projectSaved = "project_saved"
         case previewPath = "preview_path"
-        case finalRendered = "final_rendered"
-        case finalPath = "final_path"
         case drpExported = "drp_exported"
         case drpPath = "drp_path"
+        case drpSizeBytes = "drp_size_bytes"
         case supportedMp4Codecs = "supported_mp4_codecs"
+        case verifiedSteps = "verified_steps"
         case offlineVerified = "offline_verified"
         case reconciliationStatus = "reconciliation_status"
     }

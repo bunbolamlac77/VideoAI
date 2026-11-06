@@ -56,15 +56,18 @@ if [ -f "apps/macos/Resources/Info.plist" ]; then
     cp "apps/macos/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 fi
 
-# 2. Bundle Python Worker runtime into Contents/Resources/workers
+# 2. Bundle Python Worker runtime into Contents/Resources/Workers/aivideo_workers
 echo "Bundling Python Worker into Resources..."
+mkdir -p "$RESOURCES_DIR/Workers/aivideo_workers"
+cp -R workers/src/aivideo_workers/* "$RESOURCES_DIR/Workers/aivideo_workers/"
+# Also provide legacy path for compatibility
 mkdir -p "$RESOURCES_DIR/workers"
 cp -R workers/src "$RESOURCES_DIR/workers/"
 
-# 3. Bundle Model Weights into Contents/Resources/models
-if [ -d "fixtures/models" ]; then
-    mkdir -p "$RESOURCES_DIR/models"
-    cp -R fixtures/models/* "$RESOURCES_DIR/models/"
+# 3. Bundle Model profile lock into Contents/Resources/contracts
+mkdir -p "$RESOURCES_DIR/contracts"
+if [ -f "contracts/g0_model.lock.json" ]; then
+    cp "contracts/g0_model.lock.json" "$RESOURCES_DIR/contracts/g0_model.lock.json"
 fi
 
 # 4. Generate build manifest

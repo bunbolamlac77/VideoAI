@@ -61,6 +61,9 @@ wheels/
 /models/
 /model_cache/
 
+# Whitelist Source Models Directory in Swift Package
+!packages/AIVideoCore/Sources/Models/**
+
 # User Private Media & Snapshots (Protect user privacy)
 # Fixtures should only contain synthetic metadata/manifests unless explicitly whitelisted
 /media/

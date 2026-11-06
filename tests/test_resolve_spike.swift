@@ -64,10 +64,13 @@ struct TestResolveSpike {
         if let st = status, st.connected {
             do {
                 let spike = try await client.runResolveSpike(forceFreshRun: true)
-                assertEqual(spike.status, "PASS", "Spike status should be PASS")
+                assertTrue(spike.success == true, "Spike execution must succeed")
                 assertEqual(spike.timelineResolution, "2160x3840", "Timeline resolution must be 2160x3840")
                 assertEqual(spike.timelineFps, 24.0, "Timeline FPS must be 24.0")
                 assertEqual(spike.timelineTotalFrames, 240, "Timeline duration must be EXACTLY 240 frames for 10s @ 24fps (not 480!)")
+                assertEqual(spike.videoItemDuration ?? 0, 240, "Video track item must be 240 frames")
+                assertEqual(spike.audioItemDuration ?? 0, 240, "Audio track item must be 240 frames")
+                assertTrue(spike.titleInserted, "Title item must be verified in timeline")
                 assertTrue(spike.drpExported, "DRP must be exported successfully")
                 print("   ✅ PASS: Real Resolve Spike executed successfully: \(spike.timelineResolution) @ \(spike.timelineFps)fps, Total Frames: \(spike.timelineTotalFrames)")
             } catch {

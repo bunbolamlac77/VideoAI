@@ -1,0 +1,13 @@
+[project]
+name = "aivideo-workers"
+version = "0.2.0"
+description = "AIVideo Python Worker runtime for local media analysis and neural inference"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "mlx-lm",
+    "huggingface-hub",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

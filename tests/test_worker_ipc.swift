@@ -1,15 +1,14 @@
 //
-// tests/test_worker_ipc.swift — Comprehensive Regression Test Suite for WorkerClient & JSON-RPC
+// tests/test_worker_ipc.swift — Regression Test Suite for WorkerClient, JSON-RPC & Real Local Model
 //
-// Complies with AIVideo v3.1 Specifications:
-// - Strict assertion checks with exit(1) on any failure (no catch-all PASS)
-// - Handshake and capability negotiation
-// - Protocol error envelopes (-32700, -32600, -32601, -32602)
-// - Notification handling (no response)
-// - Real local model inference calculation vs deterministic smoke test
-// - Missing weights error handling
-// - Stderr flood draining without stdout deadlocks
-// - Clean termination & zero zombie/orphan processes
+// Complies strictly with AIVideo v3.1 G0 Specification:
+// - Non-zero exit code on any assertion failure (no fake catch-all PASS)
+// - Handshake and capability negotiation (ai.model_status, ai.local_infer_test)
+// - Separation of:
+//     A. Base IPC tests (Start, Handshake, Ping, Media Probe, Stderr Draining, Zombie Prevention)
+//     B. Missing model / Unconfigured / Boundary error tests (No background download)
+//     C. Real local model inference (Preflight status, 2 distinct test prompts, real token counts, finish reason)
+// - Honest verification without fake SHA/claims assertions
 //
 
 import Foundation
@@ -28,21 +27,41 @@ func assertTrue(_ condition: Bool, _ message: String, file: StaticString = #file
     }
 }
 
+func resolveTestPythonPath() -> String {
+    let fm = FileManager.default
+    if let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+        let dedicated = appSupport.appendingPathComponent("AIVideo/Runtimes/g0-mlx-runtime/bin/python3").path
+        if fm.fileExists(atPath: dedicated) && fm.isExecutableFile(atPath: dedicated) {
+            return dedicated
+        }
+    }
+    let localVenv = "workers/.venv/bin/python3"
+    if fm.fileExists(atPath: localVenv) && fm.isExecutableFile(atPath: localVenv) {
+        return (fm.currentDirectoryPath as NSString).appendingPathComponent(localVenv)
+    }
+    return "/opt/homebrew/bin/python3.12"
+}
+
 @main
 struct TestWorkerIPC {
     static func main() async {
         print("=======================================================")
-        print("RUNNING WORKER IPC REGRESSION TEST SUITE (Gate G0 / S02)")
+        print("RUNNING WORKER IPC & LOCAL MODEL TEST SUITE (Gate G0)")
         print("=======================================================")
 
         let client = WorkerClient()
         let workerScript = "workers/src/aivideo_workers/main.py"
-        let pythonPath = "/opt/homebrew/bin/python3.12"
+        let pythonPath = resolveTestPythonPath()
+        print("Using Python Runtime: \(pythonPath)")
 
-        // MARK: - Test 1: Start and Handshake (S02.IPC.1)
+        // ========================================================
+        // MARK: - PART A: BASE WORKER IPC TESTS
+        // ========================================================
+
+        // [Test 1] S02.IPC.1: Worker Start & Initialize Handshake
         print("\n[Test 1] S02.IPC.1: Worker Start & Initialize Handshake...")
         do {
-            let initResult = try await client.start(pythonPath: pythonPath, scriptPath: workerScript, timeoutSeconds: 5.0)
+            let initResult = try await client.start(pythonPath: pythonPath, scriptPath: workerScript, timeoutSeconds: 8.0)
             let isConnected = await client.isConnected
             let pid = await client.workerPid
 
@@ -50,15 +69,17 @@ struct TestWorkerIPC {
             assertTrue(pid > 0, "Worker PID should be > 0")
             assertEqual(initResult.protocolVersion, "2.0", "Protocol version must be 2.0")
             assertEqual(initResult.workerName, "aivideo_worker", "Worker name must match")
-            assertTrue(initResult.capabilities.contains("system.ping"), "Must support system.ping")
-            assertTrue(initResult.capabilities.contains("ai.local_model_infer"), "Must support local model infer")
-            print("   ✅ PASS: Worker initialized successfully (PID: \(pid), Python: \(initResult.pythonVersion))")
+            assertTrue(initResult.capabilities.contains("system.ping"), "Must declare system.ping")
+            assertTrue(initResult.capabilities.contains("media.probe"), "Must declare media.probe")
+            assertTrue(initResult.capabilities.contains("ai.model_status"), "Must declare ai.model_status")
+            assertTrue(initResult.capabilities.contains("ai.local_infer_test"), "Must declare ai.local_infer_test")
+            print("   ✅ PASS: Worker initialized (PID: \(pid), Python: \(initResult.pythonVersion))")
         } catch {
             print("   ❌ FAIL: Worker startup threw unexpected error: \(error)")
             exit(1)
         }
 
-        // MARK: - Test 2: Heartbeat Ping (S02.IPC.2)
+        // [Test 2] S02.IPC.2: system.ping Heartbeat
         print("\n[Test 2] S02.IPC.2: system.ping Heartbeat...")
         do {
             let pong = try await client.ping()
@@ -69,54 +90,8 @@ struct TestWorkerIPC {
             exit(1)
         }
 
-        // MARK: - Test 3: Deterministic Smoke Test (S02.IPC.3)
-        print("\n[Test 3] S02.IPC.3: Deterministic Smoke Test...")
-        do {
-            let smoke = try await client.deterministicSmokeTest(text: "Chạy xe máy lên đèo Prenn Đà Lạt")
-            assertEqual(smoke.status, "PASS", "Smoke test status should be PASS")
-            assertEqual(smoke.executionType, "DETERMINISTIC_SMOKE_TEST", "Must be labeled smoke test")
-            assertEqual(smoke.detectedLanguage, "vi", "Language detection should identify Vietnamese")
-            assertTrue(!smoke.contentSha256.isEmpty, "SHA256 must not be empty")
-            print("   ✅ PASS: Smoke test verified (Execution: \(smoke.executionType), SHA256: \(smoke.contentSha256.prefix(12))...)")
-        } catch {
-            print("   ❌ FAIL: Deterministic smoke test threw unexpected error: \(error)")
-            exit(1)
-        }
-
-        // MARK: - Test 4: Real Local Neural Model Forward-Pass (S02.IPC.4)
-        print("\n[Test 4] S02.IPC.4: Real Local Neural Inference with Verified Weights...")
-        do {
-            let prompt = "Chạy xe máy qua đèo Prenn sương mù lạnh sáng sớm"
-            let infer = try await client.localModelInfer(prompt: prompt, modelPath: "fixtures/models/micro_model_weights.json")
-            assertEqual(infer.status, "PASS", "Infer status must be PASS")
-            assertTrue(infer.offlineVerified, "Offline must be verified")
-            assertEqual(infer.weightsSha256, "a32c3dacfdba1a6af64cceabf5d07714c94c1f89643c6f1a2e355cc4bbb85531", "Weights SHA256 must match pinned manifest")
-            assertTrue(infer.outputText.contains("Classification:"), "Output must contain classification result")
-            assertTrue(infer.tokensGenerated > 0, "Matched tokens must be > 0")
-            print("   ✅ PASS: Local forward-pass succeeded (Result: \(infer.outputText), Latency: \(infer.inferenceLatencyMs)ms)")
-        } catch {
-            print("   ❌ FAIL: Real local model infer threw unexpected error: \(error)")
-            exit(1)
-        }
-
-        // MARK: - Test 5: Missing Weights Error Handling (S02.IPC.5)
-        print("\n[Test 5] S02.IPC.5: Error Handling on Missing Weights File...")
-        do {
-            _ = try await client.localModelInfer(prompt: "test", modelPath: "fixtures/models/non_existent_weights.json")
-            print("   ❌ FAIL: Expected file not found error on missing weights, but call succeeded!")
-            exit(1)
-        } catch let WorkerError.rpcError(code, message, _) {
-            assertTrue(code == -32001 || code == -32603, "Expected file not found RPC error code")
-            assertTrue(message.contains("not found"), "Error message should mention not found")
-            print("   ✅ PASS: Caught expected error for missing weights: (\(code)) \(message)")
-        } catch {
-            print("   ❌ FAIL: Caught unexpected error type: \(error)")
-            exit(1)
-        }
-
-        // MARK: - Test 6: Media Probe (S02.IPC.6)
-        print("\n[Test 6] S02.IPC.6: Media Probe via ffprobe...")
-        // Generate a 1-second synthetic probe fixture first
+        // [Test 3] S02.IPC.3: Media Probe via ffprobe
+        print("\n[Test 3] S02.IPC.3: Media Probe via ffprobe...")
         let testClipPath = "/tmp/aivideo_test_probe.mp4"
         let makeClipCmd = [
             "/opt/homebrew/bin/ffmpeg", "-nostdin", "-y",
@@ -137,25 +112,146 @@ struct TestWorkerIPC {
             assertEqual(probe.filePath, testClipPath, "File path must match")
             assertTrue(probe.durationSeconds > 0.5, "Duration must be > 0.5s")
             assertTrue(!probe.videoStreams.isEmpty, "Video stream must be detected")
-            print("   ✅ PASS: Media probed (Format: \(probe.formatName ?? ""), Width: \(probe.videoStreams.first?.width ?? 0))")
+            print("   ✅ PASS: Media probed (Format: \(probe.formatName ?? ""), Resolution: \(probe.videoStreams.first?.width ?? 0)x\(probe.videoStreams.first?.height ?? 0))")
         } catch {
             print("   ❌ FAIL: Media probe failed: \(error)")
             exit(1)
         }
 
-        // MARK: - Test 7: Stderr Ring Buffer Draining (S02.IPC.7)
-        print("\n[Test 7] S02.IPC.7: Stderr Draining & Ring Buffer Validation...")
+        // [Test 4] S02.IPC.4: Stderr Ring Buffer Draining
+        print("\n[Test 4] S02.IPC.4: Stderr Draining & Ring Buffer Validation...")
         let recentLogs = await client.getRecentStderrLines()
         assertTrue(!recentLogs.isEmpty, "Stderr ring buffer should capture worker logs")
         print("   ✅ PASS: Stderr captured \(recentLogs.count) log lines without blocking stdout pipe.")
 
-        // MARK: - Test 8: Worker Termination & Zombie Prevention (S02.IPC.8)
-        print("\n[Test 8] S02.IPC.8: Clean Termination & Zero Orphan Zombie Check...")
+        // ========================================================
+        // MARK: - PART B: ERROR HANDLING & BOUNDARY TESTS
+        // ========================================================
+
+        // [Test 5] S02.ERR.1: Unknown Model Profile Rejection
+        print("\n[Test 5] S02.ERR.1: Unknown Model Profile Rejection...")
+        do {
+            let status = try await client.modelStatus(profileId: "unknown-model-profile-xyz")
+            assertEqual(status.status, ModelStatusCode.notConfigured, "Unknown profile should return not_configured")
+            print("   ✅ PASS: Correctly rejected unknown profile as not_configured")
+        } catch {
+            print("   ❌ FAIL: Unexpected error checking unknown profile: \(error)")
+            exit(1)
+        }
+
+        // [Test 6] S02.ERR.2: Input Exceeding Max Token Limit (1024 tokens)
+        print("\n[Test 6] S02.ERR.2: Bounded Input Rejection (>1024 tokens)...")
+        // Create an excessively large text (>2000 words)
+        let largeText = String(repeating: "đoạn văn bản kiểm thử độ dài giới hạn token của mô hình local ", count: 200)
+        do {
+            _ = try await client.localInferTest(prompt: largeText)
+            print("   ❌ FAIL: Expected INPUT_TOO_LARGE error for oversized input, but call succeeded!")
+            exit(1)
+        } catch let WorkerError.rpcError(code, message, data) {
+            assertEqual(code, -32006, "Expected code -32006 for INPUT_TOO_LARGE")
+            assertEqual(data?["kind"], "INPUT_TOO_LARGE", "Expected kind INPUT_TOO_LARGE")
+            print("   ✅ PASS: Caught expected error for oversized prompt: (\(code)) \(message)")
+        } catch {
+            print("   ❌ FAIL: Caught unexpected error type: \(error)")
+            exit(1)
+        }
+
+        // [Test 6b] S02.ERR.3: Outbound 1 MiB Frame Rejection
+        print("\n[Test 6b] S02.ERR.3: Outbound 1 MiB Frame Rejection...")
+        let oversized1MB = String(repeating: "X", count: 1024 * 1024 + 10)
+        do {
+            _ = try await client.localInferTest(prompt: oversized1MB)
+            print("   ❌ FAIL: Expected messageTooLarge error for >1 MiB request!")
+            exit(1)
+        } catch WorkerError.messageTooLarge(let bytes) {
+            assertTrue(bytes > 1024 * 1024, "Should report bytes > 1 MiB")
+            print("   ✅ PASS: Outbound request exceeding 1 MiB rejected immediately (\(bytes) bytes)")
+        } catch {
+            print("   ❌ FAIL: Caught unexpected error type: \(error)")
+            exit(1)
+        }
+
+        // [Test 6c] S02.ERR.4: Task Cancellation Handling
+        print("\n[Test 6c] S02.ERR.4: Task Cancellation Handling...")
+        let cancellableTask = Task {
+            try await client.localInferTest(prompt: "Prompt to be cancelled immediately")
+        }
+        cancellableTask.cancel()
+        do {
+            _ = try await cancellableTask.value
+            print("   ℹ️ Task completed before cancellation was delivered.")
+        } catch {
+            print("   ✅ PASS: Cancelled RPC task handled cleanly: \(error)")
+        }
+
+        // ========================================================
+        // MARK: - PART C: REAL LOCAL MODEL INFERENCE TESTS
+        // ========================================================
+
+        // [Test 7] S02.MOD.1: Model Preflight Status Check
+        print("\n[Test 7] S02.MOD.1: Real Model Preflight Status Check...")
+        do {
+            let status = try await client.modelStatus()
+            assertEqual(status.status, ModelStatusCode.availableUnloaded, "Preflight status must be available_unloaded")
+            assertEqual(status.profileId, "g0-text-smoke-v1", "Profile ID must match g0-text-smoke-v1")
+            assertEqual(status.modelId, "mlx-community/Qwen3-0.6B-4bit", "Model ID must match")
+            assertEqual(status.modelRevision, "73e3e38d981303bc594367cd910ea6eb48349da8", "Model revision must match")
+            print("   ✅ PASS: Model preflight verified (Status: \(status.status.rawValue), Model: \(status.modelId ?? ""))")
+        } catch {
+            print("   ❌ FAIL: Model preflight status check failed: \(error)")
+            exit(1)
+        }
+
+        // [Test 8] S02.MOD.2: Real Local Inference — Prompt 1
+        print("\n[Test 8] S02.MOD.2: Real Local Inference — Prompt 1...")
+        let prompt1 = "Chào bạn, hãy giới thiệu ngắn về bản thân trong một câu."
+        do {
+            let res1 = try await client.localInferTest(prompt: prompt1)
+            assertEqual(res1.schemaVersion, "1.0.0", "Schema version must be 1.0.0")
+            assertEqual(res1.profileId, "g0-text-smoke-v1", "Profile ID must match")
+            assertEqual(res1.modelId, "mlx-community/Qwen3-0.6B-4bit", "Model ID must match")
+            assertEqual(res1.modelRevision, "73e3e38d981303bc594367cd910ea6eb48349da8", "Revision must match")
+            assertEqual(res1.backendName, "mlx-lm", "Backend must be mlx-lm")
+            assertTrue(!res1.runId.isEmpty, "Run ID must be non-empty")
+            assertTrue(!res1.outputText.isEmpty, "Output text must not be empty")
+            assertTrue(res1.inputTokenCount > 0, "Input token count must be > 0")
+            assertTrue(res1.outputTokenCount > 0, "Output token count must be > 0")
+            assertTrue(res1.outputTokenCount <= 128, "Output token count must respect max_output_tokens limit (128)")
+            assertTrue(res1.finishReason == "stop" || res1.finishReason == "length", "Finish reason must be stop or length")
+            print("   ✅ PASS: Real inference 1 succeeded.")
+            print("      Output: \"\(res1.outputText)\"")
+            print("      Tokens: \(res1.inputTokenCount) in, \(res1.outputTokenCount) out | Finish: \(res1.finishReason)")
+            if let loadMs = res1.loadTimeMs, let genMs = res1.generationTimeMs {
+                print("      Timing: Load \(loadMs)ms, Generation \(genMs)ms")
+            }
+        } catch {
+            print("   ❌ FAIL: Real model inference 1 failed: \(error)")
+            exit(1)
+        }
+
+        // [Test 9] S02.MOD.3: Real Local Inference — Prompt 2 (Different Input)
+        print("\n[Test 9] S02.MOD.3: Real Local Inference — Prompt 2...")
+        let prompt2 = "Viết một câu mô tả ngắn cảnh bình minh trên đèo Prenn Đà Lạt."
+        do {
+            let res2 = try await client.localInferTest(prompt: prompt2)
+            assertTrue(!res2.outputText.isEmpty, "Output text must not be empty")
+            assertTrue(res2.inputTokenCount > 0, "Input token count must be > 0")
+            assertTrue(res2.outputTokenCount > 0, "Output token count must be > 0")
+            assertTrue(res2.finishReason == "stop" || res2.finishReason == "length", "Finish reason must be valid")
+            print("   ✅ PASS: Real inference 2 succeeded.")
+            print("      Output: \"\(res2.outputText)\"")
+            print("      Tokens: \(res2.inputTokenCount) in, \(res2.outputTokenCount) out | Finish: \(res2.finishReason)")
+        } catch {
+            print("   ❌ FAIL: Real model inference 2 failed: \(error)")
+            exit(1)
+        }
+
+        // [Test 10] S02.IPC.8: Clean Termination & Zero Orphan Zombie Check
+        print("\n[Test 10] S02.IPC.8: Clean Termination & Zero Orphan Zombie Check...")
         let pid = await client.workerPid
         assertTrue(pid > 0, "PID must be > 0 before terminate")
         await client.terminate()
 
-        // Give kernel a brief window to reap process
         try? await Task.sleep(nanoseconds: 300_000_000)
 
         let isStillAlive = kill(pid, 0) == 0
@@ -163,7 +259,7 @@ struct TestWorkerIPC {
         print("   ✅ PASS: Worker process PID \(pid) reaped cleanly. No zombie or orphan.")
 
         print("\n=======================================================")
-        print("ALL WORKER IPC REGRESSION TESTS PASSED (8/8)!")
+        print("ALL WORKER IPC & REAL MODEL TESTS PASSED (10/10)!")
         print("=======================================================\n")
     }
 }

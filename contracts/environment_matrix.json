@@ -19,33 +19,50 @@
   "toolchain": {
     "swift_compiler_version": "Apple Swift version 6.3.3",
     "active_sdk": "MacOSX26.5.sdk",
-    "python_runtime": "/opt/homebrew/bin/python3.12",
+    "python_runtime": "/Users/phuthanh/Library/Application Support/AIVideo/Runtimes/g0-mlx-runtime/bin/python3",
+    "python_base": "/opt/homebrew/bin/python3.12",
     "python_version": "3.12.9",
     "package_manager": "/Users/phuthanh/.local/bin/uv",
     "uv_version": "0.10.8",
+    "mlx_version": "0.32.4",
+    "mlx_lm_version": "0.32.2",
     "ffmpeg_version": "7.1.1",
     "ffprobe_version": "7.1.1"
   },
   "davinci_resolve": {
     "installed": true,
     "app_path": "/Applications/DaVinci Resolve/DaVinci Resolve.app",
-    "version": "21.2.0",
+    "version": "21.2.0.5",
     "scripting_module_path": "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting/Modules",
-    "status": "installed_callable"
+    "status": "verified_live_spike_passed",
+    "live_spike_status": "VERIFIED_PASS",
+    "spike_evidence": {
+      "timeline_resolution": "2160x3840",
+      "timeline_fps": 24.0,
+      "timeline_frames": 240,
+      "frame_range": "86400..86640",
+      "drp_path": "fixtures/AIVideo_G0_Spike.drp",
+      "drp_size_bytes": 26113
+    }
   },
   "model_candidates_status": {
-    "micro_model_v1": {
-      "status": "VERIFIED_OFFLINE",
-      "model_id": "aivideo-micro-embed-v1",
-      "weights_path": "fixtures/models/micro_model_weights.json",
-      "weights_sha256": "a32c3dacfdba1a6af64cceabf5d07714c94c1f89643c6f1a2e355cc4bbb85531",
-      "runtime": "Local Python 3.12 Forward-Pass",
-      "notes": "Verified offline local tensor computation for Gate G0"
+    "g0_text_smoke_v1": {
+      "profile_id": "g0-text-smoke-v1",
+      "purpose": "g0_inference_smoke_only",
+      "role": "technical_smoke_fixture",
+      "model_id": "mlx-community/Qwen3-0.6B-4bit",
+      "model_revision": "73e3e38d981303bc594367cd910ea6eb48349da8",
+      "backend": "mlx-lm",
+      "installation_status": "INSTALLED_LOCAL_FIXTURE",
+      "inference_test_status": "VERIFIED_PASS_FIXTURE_ONLY",
+      "offline_test_status": "VERIFIED_PASS",
+      "local_path": "~/Library/Application Support/AIVideo/Models/g0-text/73e3e38d981303bc594367cd910ea6eb48349da8",
+      "notes": "Verified local forward-pass text generation on Apple Silicon Metal for Gate G0 smoke testing. Does not certify S11 pipeline candidates. Product LLMs are NOT installed."
     },
-    "qwen3_vl_4b_mlx": { "status": "NOT_INSTALLED", "notes": "Candidate for visual analysis (Gate G2)" },
-    "qwen3_8b_mlx": { "status": "NOT_INSTALLED", "notes": "Candidate for script generation (Gate G3)" },
-    "whisper_large_v3": { "status": "NOT_INSTALLED", "notes": "Candidate for Vietnamese ASR (Gate G2)" },
-    "vieneu_tts_v3_turbo": { "status": "NOT_INSTALLED", "notes": "Candidate for Vietnamese TTS (Gate G3)" },
-    "dinov2_base": { "status": "NOT_INSTALLED", "notes": "Candidate for frame embedding (Gate G2)" }
+    "qwen3_vl_4b_mlx": { "status": "NOT_INSTALLED", "inference_status": "NOT_RUN", "notes": "Candidate for visual analysis (Gate G2 / S11)" },
+    "qwen3_8b_mlx": { "status": "NOT_INSTALLED", "inference_status": "NOT_RUN", "notes": "Candidate for script generation (Gate G3 / S11)" },
+    "whisper_large_v3": { "status": "NOT_INSTALLED", "inference_status": "NOT_RUN", "notes": "Candidate for Vietnamese ASR (Gate G2 / S11)" },
+    "vieneu_tts_v3_turbo": { "status": "NOT_INSTALLED", "inference_status": "NOT_RUN", "notes": "Candidate for Vietnamese TTS (Gate G3 / S11)" },
+    "dinov2_base": { "status": "NOT_INSTALLED", "inference_status": "NOT_RUN", "notes": "Candidate for frame embedding (Gate G2 / S11)" }
   }
 }

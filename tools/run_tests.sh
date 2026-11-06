@@ -40,7 +40,7 @@ swiftc -sdk "$SDK_PATH" \
 
 ./build/tests/test_worker_ipc
 
-echo "=== [2/2] Compiling and Running DaVinci Resolve Tests (S03) ==="
+echo "=== [2/3] Compiling and Running DaVinci Resolve Tests (S03) ==="
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
@@ -51,5 +51,8 @@ swiftc -sdk "$SDK_PATH" \
   -o build/tests/test_resolve_spike
 
 ./build/tests/test_resolve_spike
+
+echo "=== [3/3] Running Python Framing & Model Setup Unit Tests ==="
+python3 -m unittest tests/test_framing_resilience.py tests/test_model_setup.py
 
 echo "=== ALL REGRESSION TEST SUITES EXECUTED SUCCESSFULLY ==="

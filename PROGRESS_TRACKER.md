@@ -11,7 +11,7 @@
 
 | Cổng | Tên cổng | Bước bao hàm | Trạng thái hiện tại | Điều kiện tiên quyết |
 |---|---|---|---|---|
-| **G0** | Nền tảng chạy thật | S00 – S03 | 🔵 **IN_REVIEW (Đang khắc phục sau thẩm định độc lập)** | Build `.app` arm64, worker thật, file sandbox/bookmark, model local, offline, Resolve spike |
+| **G0** | Nền tảng chạy thật | S00 – S03 | 🔵 **IN_REVIEW (Hoàn thiện model local thật và Live Resolve Spike 240 frames)** | Build `.app` arm64, worker thật, file sandbox/bookmark, model local, offline, Resolve spike |
 | **G1** | Dữ liệu và phục hồi | S04 – S09 | ⚪ Chưa bắt đầu (Chờ nghiệm thu G0) | Single-writer `ProjectStore`, snapshot bất biến, publication state machine, crash recovery |
 | **G2** | Phân tích và bằng chứng | S10 – S15 | ⚪ Chưa bắt đầu | Media mapping, full-frame coverage, claim verifier, corpus benchmark |
 | **G3** | Kịch bản dựng được | S16 – S19 | ⚪ Chưa bắt đầu | Outline hợp lệ, TTS thật, beam search shot selection, script approval snapshot |
@@ -29,10 +29,10 @@
   *Biên bản:* [`reports/progress/S00.md`](reports/progress/S00.md) · *Trạng thái:* `DONE`
 - [x] **S01** — Khảo sát môi trường máy thật (macOS, Xcode, Python, FFmpeg, Resolve, Models) và lập compatibility matrix.  
   *Biên bản:* [`reports/progress/S01.md`](reports/progress/S01.md) · *Trạng thái:* `DONE`
-- [ ] **S02** — Bản `.app` macOS tối thiểu, IPC JSON-RPC qua stdio, kiểm tra quyền truy cập file/security-scoped bookmark và một lượt inference local.  
-  *Biên bản:* [`reports/progress/S02.md`](reports/progress/S02.md) · *Trạng thái:* `IN_REVIEW` (Đang sửa các lỗi sau audit)
+- [ ] **S02** — Bản `.app` macOS tối thiểu, IPC JSON-RPC qua stdio, kiểm tra quyền truy cập file/security-scoped bookmark và một lượt inference local model thật (G0 smoke test).  
+  *Biên bản:* [`reports/progress/S02.md`](reports/progress/S02.md) · *Trạng thái:* `IN_REVIEW` (Đã sửa kiến trúc IPC, SequentialPipeWriter, AsyncStream framer, giữ IN_REVIEW; manual tests S02.T1/T2 giữ NOT_RUN)
 - [ ] **S03** — DaVinci Resolve spike 10 giây (timeline 2160x3840 24fps), xác nhận chạy hoàn toàn offline và đóng Gate G0.  
-  *Biên bản:* [`reports/progress/S03.md`](reports/progress/S03.md) · *Trạng thái:* `IN_REVIEW` (Đang sửa các lỗi sau audit)
+  *Biên bản:* [`reports/progress/S03.md`](reports/progress/S03.md) · *Trạng thái:* `IN_REVIEW` (Đã hoàn thành Live Resolve Spike 10s 240 frames trên DaVinci Resolve Studio v21.2.0.5 với atomic export, giữ IN_REVIEW chờ thẩm định độc lập)
 
 ### G1 — Dữ liệu và phục hồi
 - [ ] **S04** — Hợp đồng dữ liệu JSON Schema, IPC contracts và định nghĩa các state machines.  

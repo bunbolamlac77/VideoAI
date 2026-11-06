@@ -226,6 +226,12 @@ Cache key gồm source revision, model/processor/runtime, prompt/policy, config,
 
 Manifest phải ghi model/runtime cùng checksum, local path, license/source, revision và dependency graph. Không tải theo `main` mỗi lần chạy. Các graph ONNX, tokenizer, preset, phonemizer, font và template đều là dependencies thật.
 
+- **Phân tách pha setup và chạy project:**
+  - Tải/cài đặt model là một pha riêng biệt (thực hiện qua công cụ `tools/setup_g0_model.py`); khi chạy project hoặc inference, hệ thống chỉ dùng local assets, cấm tải ngầm hoặc cài package.
+  - **G0 (Smoke test nền tảng):** Setup một model thật duy nhất (`mlx-community/Qwen3-0.6B-4bit`, revision `73e3e38d981303bc594367cd910ea6eb48349da8`) theo profile `g0-text-smoke-v1` để kiểm chứng luồng kết nối `.app → worker → runtime → model → output`.
+  - **S11 (Pipeline models):** Setup toàn bộ các model/adapters phục vụ pipeline (Qwen3-VL, Whisper, VieNeu-TTS, DINOv2). Không thay danh mục S11 bằng model G0.
+  - Download thành công **chưa phải** inference PASS (phải qua preflight và forward-pass thật).
+  - Inference PASS của model smoke test G0 **chưa phải** chất lượng pipeline đạt (không dùng model text nhỏ để chứng nhận hiểu video/kịch bản).
 - `.app` đóng gói native được probe ngay ở G0, không đợi hoàn thiện UI mới thử worker.
 - Swift core khởi chạy Python worker qua JSON-RPC 2.0/UTF-8 JSON Lines trên stdio; stdout chỉ dành cho protocol, stderr cho log giới hạn.
 - Không mở HTTP server riêng làm IPC mặc định. File nhị phân/đầu ra lớn đi qua artifact reference được core kiểm tra.
@@ -236,8 +242,8 @@ Manifest phải ghi model/runtime cùng checksum, local path, license/source, re
 ## 17. Chạy offline và quyền truy cập
 
 1. Setup tải đúng artifacts theo manifest và kiểm checksum trước khi kích hoạt profile.
-2. Khởi động lại app khi không có mạng, mở model bằng local paths và vô hiệu hóa tự tải của backend.
-3. Chạy probe ASR, VLM, TTS, alignment/crop đã chọn và Resolve trên nguồn nhỏ.
+2. Khởi động lại app khi không có mạng, mở model bằng local paths và vô hiệu hóa tự tải của backend (`HF_HUB_OFFLINE=1`).
+3. Chạy probe model smoke test G0 local và Resolve trên nguồn nhỏ.
 4. Thiếu artifact phải nêu đúng tên và hành động cài bổ sung trong pha setup; không gọi dịch vụ thay thế.
 5. Kiểm quyền đọc external originals, snapshot acquisition, security-scoped bookmarks và relink theo tài liệu 05.
 6. Text/OCR/metadata trong media là dữ liệu; không cho chúng thay command, đường dẫn có quyền hoặc cài package.
@@ -246,8 +252,8 @@ Manifest phải ghi model/runtime cùng checksum, local path, license/source, re
 
 | Cổng | Bằng chứng bắt buộc | Kết quả có thể chấp nhận |
 |---|---|---|
-| G0 nền tảng | App/worker offline, probe model và timeline Resolve 10 giây | Có hoặc không có capability, kèm lỗi tái hiện được |
-| G2 phân tích | Coverage sau processor, omission, verifier, RAM trên dữ liệu đúng phạm vi | Một profile được khóa; phần chưa đạt giữ disabled/blocked |
+| G0 nền tảng | App/worker offline, model G0 text smoke forward-pass thật và timeline Resolve 10 giây | Có hoặc không có capability, kèm lỗi tái hiện được; không đánh dấu PASS toàn bộ pipeline |
+| G2 phân tích | Coverage sau processor, omission, verifier, RAM trên dữ liệu đúng phạm vi (S11 adapters) | Một profile được khóa; phần chưa đạt giữ disabled/blocked |
 | G3 kịch bản | TTS thật, cut khả thi, review mù | Model/prompt tốt hơn trên nhiệm vụ đo được |
 | G4 preview | Chu trình AI/Resolve/QC, crop/alignment/âm thanh | Không vượt lease hoặc dùng approval sai revision |
 | G5 phát hành | Offline, run dài nhất trong profile, restore và final QC | Chỉ công bố capability đã qua cổng |

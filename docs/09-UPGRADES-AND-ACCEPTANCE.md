@@ -407,9 +407,9 @@ Timing dùng WAV cuối, pause/cut/ảnh/SFX/chữ có cue. Kiểm không lộ p
 
 | ID | Ca kiểm/cổng | Điều kiện đạt |
 |---|---|---|
-| `OFF-01` | Ngắt mạng sau setup trong toàn pipeline | Không gọi AI cloud, không tải ngầm; log/kiểm soát kết nối xác nhận đúng phạm vi; không giả completed khi thiếu artifact |
-| `OFF-02` | Thiếu model graph/tokenizer/phonemizer/font/preset, checksum sai | Báo dependency cụ thể, phase setup riêng; giữ công việc; không đổi model/voice ngầm |
-| `OFF-03` | Mở `.app` ngoài terminal, môi trường sạch theo ma trận | Không phụ thuộc PATH/venv ngẫu nhiên của shell; quyền helper/runtime đúng; có hướng dẫn cài và lỗi actionable |
+| `OFF-01` | Ngắt mạng sau setup trong toàn pipeline | Không gọi AI cloud, không tải ngầm; log/kiểm soát kết nối xác nhận đúng phạm vi; không giả completed khi thiếu artifact. Tại G0, chỉ chứng minh đường model local đã kiểm (.app → worker → runtime → model → output) qua profile g0-text-smoke-v1; không dùng model text nhỏ để tuyên bố ASR/VLM/TTS đều đạt (chúng thuộc S11/Gate G2–G3). |
+| `OFF-02` | Thiếu model graph/tokenizer/phonemizer/font/preset, checksum sai | Báo dependency cụ thể, phase setup riêng; giữ công việc; không đổi model/voice ngầm. |
+| `OFF-03` | Mở `.app` ngoài terminal, môi trường sạch theo ma trận | Không phụ thuộc PATH/venv ngẫu nhiên của shell; quyền helper/runtime đúng; có hướng dẫn cài và lỗi actionable. |
 | `REL-01` | Công bố E0/E1 và ma trận OS/SDK/Resolve/codec | Chỉ phạm vi đã chạy và đạt được đánh dấu hỗ trợ; fixture UI không thay envelope pipeline |
 | `REL-02` | Completion/abstention/blocked/failure trên held-out | Tất cả project giữ trong mẫu số; completion đạt target; không dùng từ chối để giấu khó |
 | `REL-03` | Hồ sơ phát hành và không còn blocker đã biết trong phạm vi | Có build, config, test/metric/CI, log, artifact và hạn chế; không còn vi phạm invariant hoặc lỗi chặn luồng chính |

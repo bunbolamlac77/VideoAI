@@ -6,10 +6,12 @@ AIVideo v3.1 Protocol Specification:
 - JSON-RPC 2.0 strictly over UTF-8 JSON Lines (stdin / stdout).
 - stdout MUST ONLY contain valid protocol response lines.
 - All diagnostics, logging, and tracebacks MUST go to stderr.
-- Strict envelope validation: dict root, "2.0" version, string method, non-bool id.
+- Strict envelope validation: dict root, "2.0" version, string method, valid string/int id.
+- Reject invalid id types (bool, object, array).
+- Bounded framing with full discard of oversized line tails (no partial tail dispatch).
 - Standard JSON-RPC error codes (-32700, -32600, -32601, -32602, -32603).
 - Notifications (requests without 'id') do NOT receive a response.
-- Parent-loss background watchdog monitors parent PID and cleans up if parent terminates.
+- Parent-loss background watchdog monitors parent PID and cleans up tracked child subprocesses.
 - 100% offline local inference with verifiable local weights checksum.
 """
 
@@ -23,25 +25,66 @@ import math
 import hashlib
 import threading
 import traceback
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Set
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 PROTOCOL_VERSION = "2.0"
-WORKER_VERSION = "0.2.0"
+WORKER_VERSION = "0.2.1"
 MAX_FRAME_BYTES = 1024 * 1024 # 1 MiB strict limit
 
+# Tracked child subprocesses spawned by this worker
+_TRACKED_CHILD_PIDS: Set[int] = set()
+_CHILD_LOCK = threading.Lock()
+
+def register_child_pid(pid: int):
+    with _CHILD_LOCK:
+        _TRACKED_CHILD_PIDS.add(pid)
+
+def unregister_child_pid(pid: int):
+    with _CHILD_LOCK:
+        _TRACKED_CHILD_PIDS.discard(pid)
+
+def cleanup_child_subprocesses():
+    """Cleanly terminate only subprocesses tracked by this worker."""
+    with _CHILD_LOCK:
+        pids = list(_TRACKED_CHILD_PIDS)
+
+    for pid in pids:
+        if is_pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+    # Wait up to 1.0 second for child processes to exit
+    deadline = time.time() + 1.0
+    for pid in pids:
+        while time.time() < deadline and is_pid_alive(pid):
+            time.sleep(0.05)
+        if is_pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
 def log_err(msg: str):
-    """Write strictly to stderr with timestamp and PID prefix."""
-    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    sys.stderr.write(f"[{ts}] [Worker-{os.getpid()}] {msg}\n")
-    sys.stderr.flush()
+    """Write strictly to stderr with timestamp and PID prefix. Protected against BrokenPipeError."""
+    try:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        sys.stderr.write(f"[{ts}] [Worker-{os.getpid()}] {msg}\n")
+        sys.stderr.flush()
+    except (BrokenPipeError, OSError):
+        pass
 
 def send_response(response: dict):
-    """Serialize and write a single JSON line strictly to stdout."""
-    line = json.dumps(response, ensure_ascii=False)
-    sys.stdout.write(line + "\n")
-    sys.stdout.flush()
+    """Serialize and write a single JSON line strictly to stdout. Protected against BrokenPipeError."""
+    try:
+        line = json.dumps(response, ensure_ascii=False)
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+    except (BrokenPipeError, OSError):
+        pass
 
 def is_pid_alive(pid: int) -> bool:
     if pid <= 0:
@@ -59,7 +102,11 @@ def start_parent_watchdog(initial_ppid: int):
             time.sleep(0.5)
             curr_ppid = os.getppid()
             if curr_ppid != initial_ppid or not is_pid_alive(initial_ppid):
-                log_err(f"Parent process (PID {initial_ppid}) has terminated. Worker exiting cleanly.")
+                try:
+                    log_err(f"Parent process (PID {initial_ppid}) has terminated. Cleaning up and exiting.")
+                except Exception:
+                    pass
+                cleanup_child_subprocesses()
                 os._exit(0)
 
     t = threading.Thread(target=watchdog_loop, daemon=True, name="ParentWatchdog")
@@ -78,8 +125,8 @@ def handle_initialize(params: dict) -> dict:
         "capabilities": [
             "system.ping",
             "media.probe",
-            "ai.deterministic_smoke_test",
-            "ai.local_model_infer",
+            "ai.model_status",
+            "ai.local_infer_test",
             "resolve.status",
             "resolve.spike_timeline"
         ]
@@ -116,11 +163,20 @@ def handle_media_probe(params: dict) -> dict:
         file_path
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=15)
-        probe_data = json.loads(proc.stdout)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"ffprobe execution failed: {e.stderr.strip()}")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        register_child_pid(proc.pid)
+        try:
+            stdout, stderr = proc.communicate(timeout=15)
+        finally:
+            unregister_child_pid(proc.pid)
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffprobe execution failed: {stderr.strip()}")
+        probe_data = json.loads(stdout)
     except subprocess.TimeoutExpired:
+        if proc:
+            proc.kill()
+            unregister_child_pid(proc.pid)
         raise TimeoutError(f"ffprobe timed out after 15s for file: {file_path}")
 
     fmt = probe_data.get("format", {})
@@ -160,96 +216,18 @@ def handle_media_probe(params: dict) -> dict:
         "audio_streams": audio_streams
     }
 
-def handle_deterministic_smoke_test(params: dict) -> dict:
-    """Deterministic string-hashing smoke test to verify IPC data flow without calling neural weights."""
-    text = params.get("text", "")
-    tokens = text.split()
-    sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    is_vi = any(c in text.lower() for c in "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
+def handle_model_status(params: dict) -> dict:
+    """Preflight check for local model and runtime readiness. Strictly offline, no downloads."""
+    import local_model
+    return local_model.check_status(params)
 
-    return {
-        "status": "PASS",
-        "execution_type": "DETERMINISTIC_SMOKE_TEST",
-        "input_length": len(text),
-        "token_count": len(tokens),
-        "content_sha256": sha256,
-        "detected_language": "vi" if is_vi else "en",
-        "offline_verified": True
-    }
-
-def handle_local_model_infer(params: dict) -> dict:
+def handle_local_infer_test(params: dict) -> dict:
     """
-    Real local neural inference calculation using local weights matrix.
-    No network requests, runs 100% offline on local CPU.
+    Real local neural inference calculation using local_model adapter.
+    Runs 100% offline via MLX-LM backend.
     """
-    start_time = time.time()
-    prompt = params.get("prompt", "")
-    if not prompt:
-        raise ValueError("Missing required parameter: 'prompt'")
-
-    # Locate weights file
-    model_path = params.get("model_path") or "fixtures/models/micro_model_weights.json"
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Local model weights not found at '{model_path}'. Status: BLOCKED / NOT_INSTALLED")
-
-    with open(model_path, "r", encoding="utf-8") as f:
-        weights_content = f.read()
-
-    weights_sha256 = hashlib.sha256(weights_content.encode("utf-8")).hexdigest()
-    model_data = json.loads(weights_content)
-
-    vocab_weights = model_data.get("vocab_weights", {})
-    projection_matrix = model_data.get("projection_matrix", [])
-    output_classes = model_data.get("output_classes", [])
-    embedding_dim = model_data.get("embedding_dim", 8)
-
-    # 1. Tokenize prompt into lowercase words
-    words = [w.strip(".,!?:;\"'()[]{}") for w in prompt.lower().split() if w.strip()]
-    
-    # 2. Compute aggregate embedding vector
-    embed_vector = [0.0] * embedding_dim
-    matched_tokens = 0
-    for w in words:
-        if w in vocab_weights:
-            token_vec = vocab_weights[w]
-            for i in range(embedding_dim):
-                embed_vector[i] += token_vec[i]
-            matched_tokens += 1
-
-    if matched_tokens > 0:
-        for i in range(embedding_dim):
-            embed_vector[i] /= matched_tokens
-
-    # 3. Matrix multiplication: embed_vector (1x8) @ projection_matrix (8x4) -> logits (1x4)
-    num_classes = len(output_classes)
-    logits = [0.0] * num_classes
-    for c in range(num_classes):
-        for i in range(embedding_dim):
-            logits[c] += embed_vector[i] * projection_matrix[i][c]
-
-    # 4. Softmax activation
-    max_logit = max(logits) if logits else 0.0
-    exp_logits = [math.exp(l - max_logit) for l in logits]
-    sum_exp = sum(exp_logits) or 1.0
-    probabilities = [e / sum_exp for e in exp_logits]
-
-    # Best class
-    best_idx = int(max(range(num_classes), key=lambda idx: probabilities[idx]))
-    best_class = output_classes[best_idx]
-    best_confidence = round(probabilities[best_idx], 4)
-
-    latency_ms = round((time.time() - start_time) * 1000.0, 2)
-
-    return {
-        "status": "PASS",
-        "model_id": model_data.get("model_id", "micro-model"),
-        "runtime": f"Python {sys.version.split()[0]} Local Micro-Inference Engine",
-        "weights_sha256": weights_sha256,
-        "tokens_generated": matched_tokens,
-        "output_text": f"Classification: {best_class} (Confidence: {best_confidence * 100:.1f}%)",
-        "inference_latency_ms": latency_ms,
-        "offline_verified": True
-    }
+    import local_model
+    return local_model.run_inference(params)
 
 def handle_resolve_status(params: dict) -> dict:
     import resolve_adapter
@@ -265,8 +243,9 @@ METHODS = {
     "initialize": handle_initialize,
     "system.ping": handle_ping,
     "media.probe": handle_media_probe,
-    "ai.deterministic_smoke_test": handle_deterministic_smoke_test,
-    "ai.local_model_infer": handle_local_model_infer,
+    "ai.model_status": handle_model_status,
+    "ai.local_infer_test": handle_local_infer_test,
+    "ai.local_model_infer": handle_local_infer_test,
     "resolve.status": handle_resolve_status,
     "resolve.spike_timeline": handle_resolve_spike,
 }
@@ -316,7 +295,7 @@ def validate_and_dispatch(line_bytes: bytes):
         })
         return
 
-    # 5.1 Root envelope must be a JSON Object (dict)
+    # Root envelope must be a JSON Object (dict)
     if not isinstance(req, dict):
         send_response({
             "jsonrpc": PROTOCOL_VERSION,
@@ -353,21 +332,44 @@ def validate_and_dispatch(line_bytes: bytes):
         })
         return
 
-    # Check id: Cannot be a boolean!
+    # Check id: MUST NOT be a boolean, object (dict), or array (list)
+    has_id = ("id" in req)
     req_id = req.get("id")
-    if isinstance(req_id, bool):
-        send_response({
-            "jsonrpc": PROTOCOL_VERSION,
-            "id": None,
-            "error": {
-                "code": -32600,
-                "message": "Invalid Request: 'id' cannot be a boolean."
-            }
-        })
-        return
+
+    if has_id and req_id is not None:
+        if isinstance(req_id, bool):
+            send_response({
+                "jsonrpc": PROTOCOL_VERSION,
+                "id": None,
+                "error": {
+                    "code": -32600,
+                    "message": "Invalid Request: 'id' cannot be a boolean."
+                }
+            })
+            return
+        if isinstance(req_id, (dict, list)):
+            send_response({
+                "jsonrpc": PROTOCOL_VERSION,
+                "id": None,
+                "error": {
+                    "code": -32600,
+                    "message": f"Invalid Request: 'id' cannot be an {type(req_id).__name__}."
+                }
+            })
+            return
+        if not isinstance(req_id, (str, int)):
+            send_response({
+                "jsonrpc": PROTOCOL_VERSION,
+                "id": None,
+                "error": {
+                    "code": -32600,
+                    "message": f"Invalid Request: 'id' must be a string or integer, got {type(req_id).__name__}."
+                }
+            })
+            return
 
     # Check notification: in JSON-RPC 2.0, if 'id' is omitted, it's a notification
-    is_notification = ("id" not in req)
+    is_notification = (not has_id)
 
     # Check params
     params = req.get("params")
@@ -388,13 +390,14 @@ def validate_and_dispatch(line_bytes: bytes):
 
     # Handle shutdown notification / request
     if method == "shutdown":
-        log_err("Received shutdown directive. Terminating worker.")
+        log_err("Received shutdown directive. Cleaning up and terminating worker.")
         if not is_notification:
             send_response({
                 "jsonrpc": PROTOCOL_VERSION,
                 "id": req_id,
                 "result": {"status": "terminated"}
             })
+        cleanup_child_subprocesses()
         sys.exit(0)
 
     # Dispatch method
@@ -419,40 +422,56 @@ def validate_and_dispatch(line_bytes: bytes):
                 "id": req_id,
                 "result": result
             })
-    except FileNotFoundError as err:
-        if not is_notification:
-            send_response({
-                "jsonrpc": PROTOCOL_VERSION,
-                "id": req_id,
-                "error": {
-                    "code": -32001,
-                    "message": str(err),
-                    "data": {"type": "FILE_NOT_FOUND"}
-                }
-            })
-    except PermissionError as err:
-        if not is_notification:
-            send_response({
-                "jsonrpc": PROTOCOL_VERSION,
-                "id": req_id,
-                "error": {
-                    "code": -32002,
-                    "message": str(err),
-                    "data": {"type": "PERMISSION_DENIED"}
-                }
-            })
-    except ValueError as err:
-        if not is_notification:
-            send_response({
-                "jsonrpc": PROTOCOL_VERSION,
-                "id": req_id,
-                "error": {
-                    "code": -32602,
-                    "message": str(err),
-                    "data": {"type": "INVALID_PARAMS"}
-                }
-            })
     except Exception as err:
+        import local_model
+        if isinstance(err, local_model.ModelError):
+            if not is_notification:
+                send_response({
+                    "jsonrpc": PROTOCOL_VERSION,
+                    "id": req_id,
+                    "error": err.to_rpc_error()
+                })
+            return
+
+        if isinstance(err, FileNotFoundError):
+            if not is_notification:
+                send_response({
+                    "jsonrpc": PROTOCOL_VERSION,
+                    "id": req_id,
+                    "error": {
+                        "code": -32001,
+                        "message": str(err),
+                        "data": {"kind": "FILE_NOT_FOUND"}
+                    }
+                })
+            return
+
+        if isinstance(err, PermissionError):
+            if not is_notification:
+                send_response({
+                    "jsonrpc": PROTOCOL_VERSION,
+                    "id": req_id,
+                    "error": {
+                        "code": -32002,
+                        "message": str(err),
+                        "data": {"kind": "PERMISSION_DENIED"}
+                    }
+                })
+            return
+
+        if isinstance(err, ValueError):
+            if not is_notification:
+                send_response({
+                    "jsonrpc": PROTOCOL_VERSION,
+                    "id": req_id,
+                    "error": {
+                        "code": -32602,
+                        "message": str(err),
+                        "data": {"kind": "INVALID_PARAMS"}
+                    }
+                })
+            return
+
         log_err(f"Exception handling '{method}': {err}\n{traceback.format_exc()}")
         if not is_notification:
             send_response({
@@ -461,7 +480,7 @@ def validate_and_dispatch(line_bytes: bytes):
                 "error": {
                     "code": -32603,
                     "message": str(err),
-                    "data": {"type": "INTERNAL_ERROR"}
+                    "data": {"kind": "INTERNAL_ERROR"}
                 }
             })
 
@@ -473,7 +492,8 @@ def main():
 
     # Graceful signals
     def sig_handler(signum, frame):
-        log_err(f"Signal {signum} caught, exiting.")
+        log_err(f"Signal {signum} caught, cleaning up child processes and exiting.")
+        cleanup_child_subprocesses()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, sig_handler)
@@ -489,15 +509,36 @@ def main():
                 log_err("EOF on stdin. Worker terminating cleanly.")
                 break
 
+            # If the line length exceeded MAX_FRAME_BYTES or does not end with newline:
+            # We must discard the entire oversized line up to newline, and NEVER execute the tail!
+            if len(line_bytes) > MAX_FRAME_BYTES and not line_bytes.endswith(b"\n"):
+                log_err(f"Frame exceeded {MAX_FRAME_BYTES} bytes. Discarding rest of oversized line.")
+                # Read and discard chunks until newline or EOF
+                discard_chunk_size = 65536
+                while True:
+                    next_chunk = stdin_buf.readline(discard_chunk_size)
+                    if not next_chunk or next_chunk.endswith(b"\n"):
+                        break
+
+                send_response({
+                    "jsonrpc": PROTOCOL_VERSION,
+                    "id": None,
+                    "error": {
+                        "code": -32600,
+                        "message": f"Invalid Request: Message size exceeds {MAX_FRAME_BYTES} bytes limit."
+                    }
+                })
+                continue
+
             validate_and_dispatch(line_bytes)
 
         except KeyboardInterrupt:
             break
         except Exception as e:
             log_err(f"Unexpected loop exception: {e}\n{traceback.format_exc()}")
-            # Never exit on transient framing error; continue loop
             continue
 
+    cleanup_child_subprocesses()
     log_err("Worker main loop terminated.")
     sys.exit(0)
 

@@ -186,7 +186,7 @@ và bước đã đủ điều kiện hoàn thành hay chưa.
 
 - [ ] S01.1 — Ghi máy, RAM, phiên bản macOS, Xcode/Swift/SDK, Resolve/edition/API, dung lượng bytes thực và nơi đặt project.
 - [ ] S01.2 — Chọn minimum OS theo giao điểm yêu cầu đã xác minh; ghi lý do, không chọn chỉ để có hiệu ứng UI.
-- [ ] S01.3 — Kiểm FFmpeg/ffprobe, Python/ARM64, MLX/ONNX/whisper.cpp và model candidates theo config thật; khóa revision/checksum của ứng viên dùng cho spike.
+- [ ] S01.3 — Kiểm FFmpeg/ffprobe, Python/ARM64, MLX/ONNX/whisper.cpp và model candidates theo config thật; chọn và khóa revision/checksum của ứng viên dùng cho smoke test G0 (g0-text-smoke-v1: mlx-community/Qwen3-0.6B-4bit); danh mục model cho pipeline giữ tại S11.
 - [ ] S01.4 — Chọn chính sách đóng gói/phân phối thử local và sandbox hay không; nếu dự định phân phối ngoài máy cá nhân, ghi đường ký/notarization sẽ nghiệm thu ở S26.
 - [ ] S01.5 — Chọn fixture E0 có quyền sử dụng; tính tổng thời lượng, asset, độ phân giải/fps và ngân sách snapshot/proxy/render/backup.
 
@@ -213,7 +213,7 @@ và bước đã đủ điều kiện hoàn thành hay chưa.
 - [ ] S02.1 — Tạo shell native có project picker, nút chọn file và một màn tác vụ; mock hiển thị rõ, không giả tiến trình AI.
 - [ ] S02.2 — Spawn Python worker không dựa vào shell startup/PATH cá nhân; triển khai handshake JSON-RPC/JSON Lines, stdout chỉ chứa protocol.
 - [ ] S02.3 — Đọc video qua worker/ffprobe từ file picker; giữ/bookmark quyền theo chính sách đóng gói đã chọn và kiểm vòng đời quyền.
-- [ ] S02.4 — Chạy một suy luận model local nhỏ từ `.app`; tách lỗi runtime, thiếu file và thiếu quyền thành trạng thái khác nhau.
+- [ ] S02.4 — Chạy một suy luận model local thật từ .app (G0 text smoke: Qwen3-0.6B-4bit trên MLX-LM); tách lỗi runtime, thiếu file, sai hash và thiếu quyền thành trạng thái khác nhau trên UI.
 - [ ] S02.5 — Thoát app có thu hồi worker; chưa có feature nào được phép để worker chạy mồ côi vô hạn.
 
 **Kiểm tra**
@@ -221,7 +221,7 @@ và bước đã đủ điều kiện hoàn thành hay chưa.
 - [ ] S02.T1 — Mở từ Finder, không mở terminal chuẩn bị môi trường; kiểm đường dẫn Unicode và nguồn trên ổ ngoài phù hợp.
 - [ ] S02.T2 — Thoát/mở lại rồi đọc nguồn đã chọn; stale bookmark hoặc mất quyền có hành động chọn lại rõ ràng.
 - [ ] S02.T3 — Worker lỗi hoặc ghi dòng stdout sai định dạng không làm app giả thành công, không treo main actor.
-- [ ] S02.T4 — Sau setup, ngắt mạng rồi lặp phép thử inference/ffprobe; không tải ngầm và không fallback cloud.
+- [ ] S02.T4 — Khởi động/chạy lại khi offline sau setup, ngắt mạng rồi lặp phép thử inference/ffprobe; không tải ngầm và không fallback cloud; phát hiện đúng thiếu artifact/runtime.
 
 **Điều kiện xong**
 
@@ -451,14 +451,14 @@ và bước đã đủ điều kiện hoàn thành hay chưa.
 **Công việc**
 
 - [ ] S11.1 — Tạo interfaces riêng cho vision, text, ASR, TTS và embedding; capability chưa có backend không giả dữ liệu trả về.
-- [ ] S11.2 — Prefetch đủ weights/processor/tokenizer/codec/phonemizer/preset/font cần thiết; verify checksum và local paths, không tải lúc chạy project.
+- [ ] S11.2 — Chuẩn bị đủ model, weights, processor, tokenizer, codec, phonemizer, preset và dependencies cho toàn bộ các adapter phục vụ pipeline E0; verify checksum và local paths, không tải lúc chạy project.
 - [ ] S11.3 — Đo grid profile phát triển của 03 trên source thật; ghi frame/pixel/token thực sau processor, peak RAM/swap và memory pressure.
 - [ ] S11.4 — Đóng process trả bộ nhớ giữa pha AI/Resolve; chỉ kích hoạt profile đã qua ngân sách chung, không ép model 32B trên 16 GB.
 - [ ] S11.5 — Capability registry phân biệt candidate/validated/disabled; SED/alignment/tracker chưa đạt có fallback đúng nghĩa đã đặc tả.
 
 **Kiểm tra**
 
-- [ ] S11.T1 — Ngắt mạng sau setup, chạy từng adapter cần cho E0; artifact thiếu gây lỗi cụ thể, không cloud fallback.
+- [ ] S11.T1 — Ngắt mạng sau setup, kiểm offline từng adapter cần cho E0 (Qwen-VL, Whisper, VieNeu-TTS, DINOv2); artifact thiếu gây lỗi cụ thể, không cloud fallback.
 - [ ] S11.T2 — Backend truncate/sample frame bị phát hiện qua post-processor audit; không báo đủ coverage từ danh sách định gửi.
 - [ ] S11.T3 — Lặp nạp/thoát model và AI↔Resolve phases; kiểm process/lease/memory thực, không chỉ MLX allocator statistic.
 - [ ] S11.T4 — Lỗi output JSON/schema hoặc tiếng Việt không hợp lệ không được ghi thành claim/voice đạt.
