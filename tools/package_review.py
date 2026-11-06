@@ -73,6 +73,8 @@ EXCLUDED_EXTENSIONS = {
     ".token"
 }
 
+REPORTS_DIR = os.path.abspath("build/reports")
+
 EXCLUDED_FILE_NAMES = {
     ".DS_Store",
     "AIVideo-review.zip",
@@ -183,7 +185,14 @@ def get_git_info() -> dict:
     return info
 
 def execute_regression_tests() -> List[Dict[str, Any]]:
-    """Runs tools/run_tests.sh and parses real execution records."""
+    """
+    Executes regression test suites and aggregates per-testcase structured JSONL records.
+    Complies with Patch 3:
+    - Never infers PASS from stdout string markers.
+    - Captures real exit codes. If runner fails (exit != 0), PASS is rejected and converted to FAIL.
+    - Skipped tests are recorded as NOT_RUN, never PASS.
+    - Integrates real JSONL records emitted by each test harness.
+    """
     records = []
     test_script = os.path.abspath("tools/run_tests.sh")
     if not os.path.exists(test_script):
@@ -191,199 +200,71 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
 
     print("=== Đang chạy bộ kiểm thử hồi quy thực tế (Regression Tests) ===")
     start_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    
+    # Report directory where test runners place records
+    report_dir = getattr(sys.modules[__name__], "REPORTS_DIR", os.path.abspath("build/reports"))
+    os.makedirs(report_dir, exist_ok=True)
+
     try:
-        proc = subprocess.run([test_script], capture_output=True, text=True, timeout=120)
+        proc = subprocess.run([test_script], capture_output=True, text=True, timeout=180)
         exit_code = proc.returncode
         stdout = proc.stdout
         stderr = proc.stderr
     except subprocess.TimeoutExpired:
         exit_code = -1
         stdout = ""
-        stderr = "Test script execution timed out after 120s"
+        stderr = "Test script execution timed out after 180s"
     except Exception as e:
         exit_code = -1
         stdout = ""
         stderr = str(e)
 
-    # 1. Parse Worker IPC results
-    has_init = "S02.IPC.1: Worker Start & Initialize Handshake" in stdout and "✅ PASS: Worker initialized" in stdout
-    records.append({
-        "requirement_id": "JOB-04",
-        "testcase_id": "S02.IPC.1",
-        "command": "./build/tests/test_worker_ipc",
-        "expected": "Worker process spawns, handshakes JSON-RPC 2.0 via stdio, reports capabilities",
-        "observed": "Worker connected with PID, protocol 2.0, capabilities verified" if has_init else (f"Init failed (exit code {exit_code}): {stderr.strip()[:100]}" if exit_code != 0 else "Init failed"),
-        "status": "PASS" if has_init else "FAIL",
-        "test_type": "automated",
-        "exit_status": 0 if has_init else (exit_code if exit_code != 0 else 1),
-        "timestamp": start_ts
-    })
+    # Helper to load JSONL records
+    def load_jsonl_records(filename: str) -> List[Dict[str, Any]]:
+        file_path = os.path.join(report_dir, filename)
+        loaded = []
+        if os.path.isfile(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            loaded.append(json.loads(line))
+            except Exception:
+                pass
+        return loaded
 
-    has_ping = "S02.IPC.2: system.ping Heartbeat" in stdout and "✅ PASS: Ping returned pong" in stdout
-    records.append({
-        "requirement_id": "JOB-04",
-        "testcase_id": "S02.IPC.2",
-        "command": "./build/tests/test_worker_ipc",
-        "expected": "system.ping returns pong status",
-        "observed": "Pong returned" if has_ping else "Ping failed",
-        "status": "PASS" if has_ping else "FAIL",
-        "test_type": "automated",
-        "exit_status": 0 if has_ping else (exit_code if exit_code != 0 else 1),
-        "timestamp": start_ts
-    })
+    # 1. Load Worker IPC & Local Model records
+    ipc_records = load_jsonl_records("worker_ipc_records.jsonl")
+    for r in ipc_records:
+        r.setdefault("test_type", "automated")
+        records.append(r)
 
-    has_probe = "S02.IPC.3: Media Probe via ffprobe" in stdout and "✅ PASS: Media probed" in stdout
-    records.append({
-        "requirement_id": "UI-16",
-        "testcase_id": "S02.IPC.3",
-        "command": "./build/tests/test_worker_ipc",
-        "expected": "ffprobe probes video dimensions, duration, format via JSON output",
-        "observed": "Probed test clip successfully via ffprobe" if has_probe else "Probe failed",
-        "status": "PASS" if has_probe else "FAIL",
-        "test_type": "automated",
-        "exit_status": 0 if has_probe else (exit_code if exit_code != 0 else 1),
-        "timestamp": start_ts
-    })
+    # 2. Load DaVinci Resolve records
+    resolve_records = load_jsonl_records("resolve_spike_records.jsonl")
+    for r in resolve_records:
+        r.setdefault("test_type", "integration")
+        records.append(r)
 
-    has_stderr = "S02.IPC.4: Stderr Draining" in stdout and "✅ PASS: Stderr captured" in stdout
-    records.append({
-        "requirement_id": "JOB-04",
-        "testcase_id": "S02.IPC.4",
-        "command": "./build/tests/test_worker_ipc",
-        "expected": "Continuous non-blocking stderr drain to ring buffer without stdout pipe deadlock",
-        "observed": "Stderr lines captured safely in ring buffer" if has_stderr else "Stderr drain failed",
-        "status": "PASS" if has_stderr else "FAIL",
-        "test_type": "automated",
-        "exit_status": 0 if has_stderr else (exit_code if exit_code != 0 else 1),
-        "timestamp": start_ts
-    })
+    # 3. Load Python Unit Test records
+    py_records = load_jsonl_records("python_test_records.jsonl")
+    for r in py_records:
+        r.setdefault("test_type", "automated")
+        records.append(r)
 
-    has_err_prof = "S02.ERR.1: Unknown Model Profile Rejection" in stdout and "✅ PASS: Correctly rejected unknown profile" in stdout
-    records.append({
-        "requirement_id": "OFF-02",
-        "testcase_id": "S02.ERR.1",
-        "command": "./build/tests/test_worker_ipc",
-        "expected": "Unknown or uninstalled profile returns not_configured/not_installed without crashing",
-        "observed": "Rejected unknown profile as not_configured" if has_err_prof else "Failed error handling",
-        "status": "PASS" if has_err_prof else "FAIL",
-        "test_type": "automated",
-        "exit_status": 0 if has_err_prof else (exit_code if exit_code != 0 else 1),
-        "timestamp": start_ts
-    })
-
-    has_err_bound = "S02.ERR.2: Bounded Input Rejection" in stdout and "✅ PASS: Caught expected error for oversized prompt" in stdout
-    records.append({
-        "requirement_id": "OFF-01",
-        "testcase_id": "S02.ERR.2",
-        "command": "./build/tests/test_worker_ipc",
-        "expected": "Input exceeding 1024 tokens rejected with INPUT_TOO_LARGE, not silently truncated",
-        "observed": "Caught expected error (-32006) INPUT_TOO_LARGE" if has_err_bound else "Failed bounded input check",
-        "status": "PASS" if has_err_bound else "FAIL",
-        "test_type": "automated",
-        "exit_status": 0 if has_err_bound else (exit_code if exit_code != 0 else 1),
-        "timestamp": start_ts
-    })
-
-    has_mod_preflight = "S02.MOD.1: Real Model Preflight Status Check" in stdout and "✅ PASS: Model preflight verified" in stdout
-    records.append({
-        "requirement_id": "OFF-01",
-        "testcase_id": "S02.MOD.1",
-        "command": "./build/tests/test_worker_ipc",
-        "expected": "Model preflight checks local artifacts without download and confirms available_unloaded",
-        "observed": "Preflight passed (available_unloaded, mlx-community/Qwen3-0.6B-4bit)" if has_mod_preflight else "Preflight failed",
-        "status": "PASS" if has_mod_preflight else "FAIL",
-        "test_type": "automated",
-        "exit_status": 0 if has_mod_preflight else (exit_code if exit_code != 0 else 1),
-        "timestamp": start_ts
-    })
-
-    has_infer_1 = "S02.MOD.2: Real Local Inference — Prompt 1" in stdout and "✅ PASS: Real inference 1 succeeded" in stdout
-    records.append({
-        "requirement_id": "OFF-01",
-        "testcase_id": "S02.MOD.2",
-        "command": "./build/tests/test_worker_ipc",
-        "expected": "Real MLX-LM neural forward-pass text generation with prompt 1, token counts, measured timings",
-        "observed": "Generated real response on Apple Silicon M1 Pro GPU Metal" if has_infer_1 else "Inference 1 failed",
-        "status": "PASS" if has_infer_1 else "FAIL",
-        "test_type": "automated",
-        "exit_status": 0 if has_infer_1 else (exit_code if exit_code != 0 else 1),
-        "timestamp": start_ts
-    })
-
-    has_infer_2 = "S02.MOD.3: Real Local Inference — Prompt 2" in stdout and "✅ PASS: Real inference 2 succeeded" in stdout
-    records.append({
-        "requirement_id": "OFF-01",
-        "testcase_id": "S02.MOD.3",
-        "command": "./build/tests/test_worker_ipc",
-        "expected": "Real local inference with distinct prompt 2 producing distinct output and valid finish_reason",
-        "observed": "Generated distinct response for prompt 2 successfully" if has_infer_2 else "Inference 2 failed",
-        "status": "PASS" if has_infer_2 else "FAIL",
-        "test_type": "automated",
-        "exit_status": 0 if has_infer_2 else (exit_code if exit_code != 0 else 1),
-        "timestamp": start_ts
-    })
-
-    has_zombie = "S02.IPC.8: Clean Termination" in stdout and "✅ PASS: Worker process" in stdout
-    records.append({
-        "requirement_id": "JOB-04",
-        "testcase_id": "S02.IPC.8",
-        "command": "./build/tests/test_worker_ipc",
-        "expected": "Terminate child cleanly, wait/escalate SIGTERM/SIGKILL, kill(pid, 0) confirms no orphan",
-        "observed": "Process terminated and confirmed reaped via kill(pid, 0)" if has_zombie else "Process leak",
-        "status": "PASS" if has_zombie else "FAIL",
-        "test_type": "automated",
-        "exit_status": 0 if has_zombie else (exit_code if exit_code != 0 else 1),
-        "timestamp": start_ts
-    })
-
-    # 2. Parse Resolve results
-    has_res_connected = "✅ PASS: Connected to DaVinci Resolve" in stdout
-    has_res_offline = "✅ PASS: Gracefully detected offline" in stdout
-    has_res_probe = has_res_connected or has_res_offline
-    res_probe_observed = (
-        "Connected to DaVinci Resolve Studio and probed status successfully"
-        if has_res_connected
-        else ("Gracefully detected offline Resolve status without crash" if has_res_offline else "Status probe failed")
-    )
-    records.append({
-        "requirement_id": "RES-05",
-        "testcase_id": "S03.T2",
-        "command": "./build/tests/test_resolve_spike",
-        "expected": "Probe Resolve status and handle connected or disconnected state gracefully without crash",
-        "observed": res_probe_observed,
-        "status": "PASS" if has_res_probe else "FAIL",
-        "test_type": "automated",
-        "exit_status": 0 if has_res_probe else (exit_code if exit_code != 0 else 1),
-        "timestamp": start_ts
-    })
-
-    # DaVinci Resolve Live Spike
-    has_res_live = "✅ PASS: Real Resolve Spike executed successfully" in stdout
-    res_not_running = "DaVinci Resolve is not running" in stdout or "DaVinci Resolve is NOT running" in stdout
-    if has_res_live:
-        spike_status = "PASS"
-        spike_observed = "Verified live in DaVinci Resolve Studio: 2160x3840 @ 24.0fps, exactly 240 frames, DRP exported"
-        spike_exit = 0
-    elif res_not_running:
-        spike_status = "BLOCKED"
-        spike_observed = "DaVinci Resolve Studio is not running during this run (Status: BLOCKED_BY_ENVIRONMENT)"
-        spike_exit = 2
-    else:
-        spike_status = "FAIL"
-        spike_observed = f"Spike execution failed (runner exit code {exit_code}): {stderr.strip()[:100]}"
-        spike_exit = exit_code if exit_code != 0 else 1
-
-    records.append({
-        "requirement_id": "RES-01",
-        "testcase_id": "S03.T1",
-        "command": "Run 10s timeline spike in active DaVinci Resolve Studio instance",
-        "expected": "Create timeline 2160x3840 @ 24.0fps with EXACTLY 240 frames, title item, export DRP",
-        "observed": spike_observed,
-        "status": spike_status,
-        "test_type": "integration",
-        "exit_status": spike_exit,
-        "timestamp": start_ts
-    })
+    # If no records were produced (e.g. build failure), record runner error
+    if not records:
+        records.append({
+            "requirement_id": "JOB-04",
+            "testcase_id": "RUNNER_BUILD",
+            "command": "tools/run_tests.sh",
+            "expected": "Build and run regression test suites",
+            "observed": f"Runner failed with exit={exit_code}: {stderr.strip()[:200]}",
+            "status": "FAIL",
+            "test_type": "automated",
+            "exit_status": exit_code if exit_code != 0 else 1,
+            "timestamp": start_ts
+        })
 
     # S02 Manual/Evidence-Gated Tests (NOT_RUN if no evidence file)
     s02_t1_evidence = os.path.abspath("reports/evidence/s02_t1_finder_launch.json")
@@ -443,6 +324,25 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
         "exit_status": t2_exit,
         "timestamp": start_ts
     })
+
+    # Strict Patch 3 Invariant: If runner exited non-zero, reject ANY PASS marker!
+    if exit_code != 0:
+        for record in records:
+            if (
+                record["test_type"] in (
+                    "automated",
+                    "integration"
+                )
+                and record["status"] == "PASS"
+            ):
+                record["status"] = "FAIL"
+                record["exit_status"] = exit_code
+                record["observed"] = (
+                    f"Runner failed with exit={exit_code}; "
+                    "PASS marker is not accepted."
+                )
+
+    return records
 
     return records
 

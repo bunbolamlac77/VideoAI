@@ -56,7 +56,7 @@ def check_resolve_status() -> dict:
     }
 
 def create_synthetic_test_assets(target_dir: str) -> Tuple[str, str]:
-    """Generates exactly 10.0 seconds (240 frames @ 24 fps) synthetic video & audio test assets."""
+    """Generates exactly 10.0 seconds (240 frames @ 24 fps) synthetic video & audio test assets with process supervision."""
     os.makedirs(target_dir, exist_ok=True)
     video_path = os.path.join(target_dir, "test_clip_10s_24fps.mp4")
     audio_path = os.path.join(target_dir, "test_voice_10s_48k.wav")
@@ -64,6 +64,38 @@ def create_synthetic_test_assets(target_dir: str) -> Tuple[str, str]:
     ffmpeg_bin = "/opt/homebrew/bin/ffmpeg"
     if not os.path.exists(ffmpeg_bin):
         ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
+
+    def run_ffmpeg_supervised(cmd: list, timeout: float = 30.0):
+        try:
+            from main import register_child_pid, unregister_child_pid
+        except ImportError:
+            register_child_pid = None
+            unregister_child_pid = None
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True
+        )
+        if register_child_pid:
+            register_child_pid(proc.pid)
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+            if proc.returncode != 0:
+                raise RuntimeError(f"FFmpeg fixture generation failed (exit {proc.returncode}): {stderr.strip()}")
+            return stdout, stderr
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, 9)
+            except OSError:
+                proc.kill()
+            stdout, stderr = proc.communicate()
+            raise TimeoutError(f"FFmpeg command timed out after {timeout}s: {' '.join(cmd[:4])}")
+        finally:
+            if unregister_child_pid:
+                unregister_child_pid(proc.pid)
 
     # Exactly 240 frames (10 seconds at 24fps) with parallel synchronous audio
     cmd_video = [
@@ -73,7 +105,7 @@ def create_synthetic_test_assets(target_dir: str) -> Tuple[str, str]:
         "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p",
         video_path
     ]
-    subprocess.run(cmd_video, capture_output=True, check=True)
+    run_ffmpeg_supervised(cmd_video, timeout=30.0)
 
     # Standalone 10.0s 48kHz audio tone
     cmd_audio = [
@@ -82,7 +114,7 @@ def create_synthetic_test_assets(target_dir: str) -> Tuple[str, str]:
         "-ar", "48000", "-ac", "2",
         audio_path
     ]
-    subprocess.run(cmd_audio, capture_output=True, check=True)
+    run_ffmpeg_supervised(cmd_audio, timeout=30.0)
 
     return video_path, audio_path
 
@@ -215,6 +247,20 @@ def run_g0_spike(output_drp_path: str = "fixtures/AIVideo_G0_Spike.drp", force_f
         if moved:
             title_inserted = True
 
+    if not title_inserted:
+        raise RuntimeError(
+            "Resolve title insertion or placement failed."
+        )
+
+    title_track_items = (
+        tl.GetItemListInTrack("video", 2) or []
+    )
+
+    if not title_track_items:
+        raise RuntimeError(
+            "Title was not found on Video Track 2."
+        )
+
     # 6. Verify Frame Duration: MUST be EXACTLY 240 frames (10 seconds @ 24fps)
     start_frame = tl.GetStartFrame()
     end_frame = tl.GetEndFrame()
@@ -251,12 +297,14 @@ def run_g0_spike(output_drp_path: str = "fixtures/AIVideo_G0_Spike.drp", force_f
 
     # 7. Render Configuration Setup
     render_codecs_mp4 = proj.GetRenderCodecs("mp4") or {}
-    supported_codecs = list(render_codecs_mp4.keys()) if isinstance(render_codecs_mp4, dict) else render_codecs_mp4
+    supported_codecs = list(render_codecs_mp4.keys()) if isinstance(render_codecs_mp4, dict) else list(render_codecs_mp4)
+
+    if not supported_codecs:
+        raise RuntimeError("No valid MP4 render codecs available in Resolve for target profile.")
 
     render_out_dir = os.path.abspath("fixtures/renders")
     os.makedirs(render_out_dir, exist_ok=True)
     preview_name = f"preview_{run_uuid}"
-    preview_path = os.path.join(render_out_dir, f"{preview_name}.mp4")
 
     render_settings_ok = proj.SetRenderSettings({
         "SelectAllFrames": True,
@@ -269,10 +317,19 @@ def run_g0_spike(output_drp_path: str = "fixtures/AIVideo_G0_Spike.drp", force_f
         "ExportAudio": True
     })
 
-    # 8. Save Project & Verify Return Value
+    if render_settings_ok is not True:
+        raise RuntimeError(
+            "Resolve SetRenderSettings failed."
+        )
+
+    # 8. Save Project & Verify Return Value & Reopening
     save_ok = pm.SaveProject()
     if not save_ok:
         raise RuntimeError("Resolve ProjectManager.SaveProject() returned False.")
+
+    reopened_proj = pm.LoadProject(project_name)
+    if not reopened_proj:
+        raise RuntimeError(f"Failed to reopen/verify saved project '{project_name}'.")
 
     # 9. Atomic DRP Export (Preserves old DRP on failure)
     tmp_drp_path = f"{abs_drp_path}.tmp_{run_uuid}.drp"
@@ -287,6 +344,24 @@ def run_g0_spike(output_drp_path: str = "fixtures/AIVideo_G0_Spike.drp", force_f
             except OSError:
                 pass
         raise RuntimeError(f"Failed to export Resolve project archive to temporary path '{tmp_drp_path}'. Existing DRP preserved.")
+
+    import zipfile
+    if not zipfile.is_zipfile(tmp_drp_path):
+        if os.path.exists(tmp_drp_path):
+            try:
+                os.remove(tmp_drp_path)
+            except OSError:
+                pass
+        raise RuntimeError(f"Exported DRP is not a valid zip archive: '{tmp_drp_path}'.")
+
+    with zipfile.ZipFile(tmp_drp_path, "r") as zf:
+        if not zf.namelist():
+            if os.path.exists(tmp_drp_path):
+                try:
+                    os.remove(tmp_drp_path)
+                except OSError:
+                    pass
+            raise RuntimeError(f"Exported DRP zip archive is empty: '{tmp_drp_path}'.")
 
     # Atomically replace final DRP
     os.replace(tmp_drp_path, abs_drp_path)
@@ -312,7 +387,7 @@ def run_g0_spike(output_drp_path: str = "fixtures/AIVideo_G0_Spike.drp", force_f
         "title_inserted": title_inserted,
         "render_settings_configured": bool(render_settings_ok),
         "project_saved": bool(save_ok),
-        "preview_path": preview_path,
+        "preview_path": None,
         "drp_exported": True,
         "drp_path": abs_drp_path,
         "drp_size_bytes": final_drp_size,
@@ -326,9 +401,12 @@ def run_g0_spike(output_drp_path: str = "fixtures/AIVideo_G0_Spike.drp", force_f
             "media_appended_parallel",
             "frame_boundary_240_verified",
             "title_inserted",
+            "title_verified_track_2",
             "render_settings_configured",
             "project_saved",
-            "atomic_drp_exported"
+            "project_reopened_verified",
+            "atomic_drp_exported",
+            "drp_zip_archive_verified"
         ]
     }
 

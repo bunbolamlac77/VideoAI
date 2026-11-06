@@ -33,25 +33,43 @@ PROTOCOL_VERSION = "2.0"
 WORKER_VERSION = "0.2.1"
 MAX_FRAME_BYTES = 1024 * 1024 # 1 MiB strict limit
 
-# Tracked child subprocesses spawned by this worker
-_TRACKED_CHILD_PIDS: Set[int] = set()
+# Tracked child subprocesses spawned by this worker (handles + process groups)
+_TRACKED_CHILD_PROCS: Dict[int, Optional[subprocess.Popen]] = {}
 _CHILD_LOCK = threading.Lock()
+
+def register_child_process(proc: subprocess.Popen):
+    with _CHILD_LOCK:
+        _TRACKED_CHILD_PROCS[proc.pid] = proc
+
+def unregister_child_process(proc: subprocess.Popen):
+    with _CHILD_LOCK:
+        _TRACKED_CHILD_PROCS.pop(proc.pid, None)
 
 def register_child_pid(pid: int):
     with _CHILD_LOCK:
-        _TRACKED_CHILD_PIDS.add(pid)
+        if pid not in _TRACKED_CHILD_PROCS:
+            _TRACKED_CHILD_PROCS[pid] = None
 
 def unregister_child_pid(pid: int):
     with _CHILD_LOCK:
-        _TRACKED_CHILD_PIDS.discard(pid)
+        _TRACKED_CHILD_PROCS.pop(pid, None)
 
 def cleanup_child_subprocesses():
-    """Cleanly terminate only subprocesses tracked by this worker."""
+    """Cleanly terminate only subprocesses tracked and verified owned by this worker."""
     with _CHILD_LOCK:
-        pids = list(_TRACKED_CHILD_PIDS)
+        tracked = list(_TRACKED_CHILD_PROCS.items())
 
-    for pid in pids:
-        if is_pid_alive(pid):
+    for pid, proc in tracked:
+        # Check ownership and state
+        if proc is not None:
+            if proc.poll() is not None:
+                continue
+        elif not is_pid_alive(pid):
+            continue
+
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except OSError:
             try:
                 os.kill(pid, signal.SIGTERM)
             except OSError:
@@ -59,13 +77,30 @@ def cleanup_child_subprocesses():
 
     # Wait up to 1.0 second for child processes to exit
     deadline = time.time() + 1.0
-    for pid in pids:
-        while time.time() < deadline and is_pid_alive(pid):
+    for pid, proc in tracked:
+        while time.time() < deadline:
+            if proc is not None:
+                if proc.poll() is not None:
+                    break
+            elif not is_pid_alive(pid):
+                break
             time.sleep(0.05)
-        if is_pid_alive(pid):
+
+        still_alive = proc.poll() is None if proc is not None else is_pid_alive(pid)
+        if still_alive:
             try:
-                os.kill(pid, signal.SIGKILL)
+                os.killpg(pid, signal.SIGKILL)
             except OSError:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+
+        # Reap zombie
+        if proc is not None:
+            try:
+                proc.poll()
+            except Exception:
                 pass
 
 def log_err(msg: str):
@@ -162,22 +197,33 @@ def handle_media_probe(params: dict) -> dict:
         "-show_streams",
         file_path
     ]
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        register_child_pid(proc.pid)
-        try:
-            stdout, stderr = proc.communicate(timeout=15)
-        finally:
-            unregister_child_pid(proc.pid)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True
+    )
 
-        if proc.returncode != 0:
-            raise RuntimeError(f"ffprobe execution failed: {stderr.strip()}")
-        probe_data = json.loads(stdout)
+    register_child_process(proc)
+
+    try:
+        stdout, stderr = proc.communicate(timeout=15)
     except subprocess.TimeoutExpired:
-        if proc:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
             proc.kill()
-            unregister_child_pid(proc.pid)
-        raise TimeoutError(f"ffprobe timed out after 15s for file: {file_path}")
+        stdout, stderr = proc.communicate()
+        raise TimeoutError(
+            f"ffprobe timed out after 15s: {file_path}"
+        )
+    finally:
+        unregister_child_process(proc)
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffprobe execution failed: {stderr.strip()}")
+    probe_data = json.loads(stdout)
 
     fmt = probe_data.get("format", {})
     streams = probe_data.get("streams", [])

@@ -71,41 +71,167 @@ fileprivate struct GenericRPCEnvelope<T: Decodable>: Decodable {
     let error: JSONRPCErrorPayload?
 }
 
-// MARK: - Sequential Pipe Writer (Actor with bounded queue)
+// MARK: - Sequential Pipe Writer (Actor with non-blocking fd and bounded queue)
 
 fileprivate actor SequentialPipeWriter {
-    private let fileHandle: FileHandle
-    private var isClosed: Bool = false
-    private let maxQueuedBytes: Int = 4 * 1024 * 1024 // 4 MiB buffer limit
-    private var queuedBytes: Int = 0
-
-    init(fileHandle: FileHandle) {
-        self.fileHandle = fileHandle
+    private struct Job {
+        let data: Data
+        let ack: CheckedContinuation<Void, Error>
     }
 
-    func write(data: Data) throws {
-        guard !isClosed else {
-            throw WorkerError.processNotRunning
-        }
-        guard queuedBytes + data.count <= maxQueuedBytes else {
-            throw WorkerError.framingError("Pipe writer buffer full (\(queuedBytes) bytes queued).")
+    private let handle: FileHandle
+    private let fd: Int32
+    private var jobs: [Job] = []
+    private var queuedBytes = 0
+    private let maxQueuedBytes = 4 * 1024 * 1024
+    private var draining = false
+    private var closed = false
+
+    init(fileHandle: FileHandle) throws {
+        #if canImport(Darwin)
+        signal(SIGPIPE, SIG_IGN)
+        #endif
+
+        let fd = fileHandle.fileDescriptor
+        let flags = fcntl(fd, F_GETFL)
+
+        guard flags >= 0,
+              fcntl(fd, F_SETFL, flags | O_NONBLOCK) >= 0
+        else {
+            throw WorkerError.preflightFailed(
+                "Cannot set nonblocking worker stdin"
+            )
         }
 
-        queuedBytes += data.count
-        defer { queuedBytes -= data.count }
+        self.fd = fd
+        self.handle = fileHandle
+    }
 
-        do {
-            try fileHandle.write(contentsOf: data)
-        } catch {
-            isClosed = true
-            throw error
+    func write(data: Data) async throws {
+        try await withCheckedThrowingContinuation {
+            (ack: CheckedContinuation<Void, Error>) in
+
+            guard !closed else {
+                ack.resume(
+                    throwing: WorkerError.processNotRunning
+                )
+                return
+            }
+
+            guard data.count <= maxQueuedBytes - queuedBytes else {
+                ack.resume(
+                    throwing: WorkerError.framingError(
+                        "stdin queue capacity exceeded"
+                    )
+                )
+                return
+            }
+
+            queuedBytes += data.count
+            jobs.append(Job(data: data, ack: ack))
+
+            if !draining {
+                draining = true
+                Task { await drain() }
+            }
         }
+    }
+
+    private func drain() async {
+        while !closed && !jobs.isEmpty {
+            let current = jobs[0]
+            var offset = 0
+
+            while offset < current.data.count {
+                guard !closed else { return }
+
+                let sent: Int = current.data.withUnsafeBytes {
+                    raw in
+
+                    guard let base = raw.baseAddress else {
+                        return 0
+                    }
+
+                    #if canImport(Darwin)
+                    return Darwin.write(
+                        fd,
+                        base.advanced(by: offset),
+                        raw.count - offset
+                    )
+                    #else
+                    return Glibc.write(
+                        fd,
+                        base.advanced(by: offset),
+                        raw.count - offset
+                    )
+                    #endif
+                }
+
+                if sent > 0 {
+                    offset += sent
+                    continue
+                }
+
+                let writeErrno = errno
+
+                if sent < 0 && writeErrno == EINTR {
+                    continue
+                }
+
+                if sent < 0 &&
+                    (writeErrno == EAGAIN ||
+                     writeErrno == EWOULDBLOCK) {
+
+                    try? await Task.sleep(
+                        nanoseconds: 10_000_000
+                    )
+                    continue
+                }
+
+                if sent < 0 && writeErrno == EPIPE {
+                    failAndClose(
+                        with: WorkerError.processTerminated
+                    )
+                    return
+                }
+
+                failAndClose(
+                    with: WorkerError.framingError(
+                        "stdin write failed: errno \(writeErrno)"
+                    )
+                )
+                return
+            }
+
+            guard !closed else { return }
+
+            jobs.removeFirst()
+            queuedBytes -= current.data.count
+            current.ack.resume()
+        }
+
+        draining = false
+    }
+
+    private func failAndClose(with error: Error) {
+        guard !closed else { return }
+
+        closed = true
+        let remaining = jobs
+        jobs.removeAll()
+        queuedBytes = 0
+
+        for job in remaining {
+            job.ack.resume(throwing: error)
+        }
+
+        try? handle.close()
     }
 
     func close() {
-        guard !isClosed else { return }
-        isClosed = true
-        try? fileHandle.close()
+        failAndClose(
+            with: WorkerError.processTerminated
+        )
     }
 }
 
@@ -193,6 +319,9 @@ public actor WorkerClient {
     ) async throws -> InitializeResult {
         // Stop any previous running instance cleanly
         await self.terminate()
+        guard self.process == nil else {
+            throw WorkerError.preflightFailed("Previous worker process failed to terminate before spawning replacement.")
+        }
 
         // Preflight checks
         let fileManager = FileManager.default
@@ -231,10 +360,15 @@ public actor WorkerClient {
         self.stdinPipe = inPipe
         self.stdoutPipe = outPipe
         self.stderrPipe = errPipe
-        self.pipeWriter = SequentialPipeWriter(fileHandle: inPipe.fileHandleForWriting)
+        self.pipeWriter = try SequentialPipeWriter(
+            fileHandle: inPipe.fileHandleForWriting
+        )
 
-        // Setup ordered stdout AsyncStream to guarantee FIFO chunk handling
-        let (stream, continuation) = AsyncStream.makeStream(of: Data.self)
+        // Setup ordered stdout AsyncStream to guarantee FIFO chunk handling with bounded queue
+        let (stream, continuation) = AsyncStream.makeStream(
+            of: Data.self,
+            bufferingPolicy: .bufferingNewest(500)
+        )
         self.stdoutStreamContinuation = continuation
 
         // Spawns a single consumer task for all incoming chunks
@@ -248,14 +382,21 @@ public actor WorkerClient {
         }
 
         // Readability Handler delivers chunks to stream sequentially
-        outPipe.fileHandleForReading.readabilityHandler = { handle in
+        outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             if data.isEmpty {
                 // EOF reached
                 handle.readabilityHandler = nil
                 continuation.finish()
             } else {
-                continuation.yield(data)
+                let yieldResult = continuation.yield(data)
+                if case .dropped = yieldResult {
+                    handle.readabilityHandler = nil
+                    continuation.finish()
+                    Task { [weak self] in
+                        await self?.handleStdoutOverflow(session: sessionId)
+                    }
+                }
             }
         }
 
@@ -337,6 +478,12 @@ public actor WorkerClient {
         }
     }
 
+    private func handleStdoutOverflow(session: UUID) {
+        guard session == self.currentSessionId else { return }
+        self.isConnected = false
+        failAllPending(with: WorkerError.framingError("stdout buffer capacity exceeded (chunk dropped)"), session: session)
+    }
+
     private func handleStdoutEOF(session: UUID) {
         guard session == self.currentSessionId else { return }
 
@@ -357,15 +504,31 @@ public actor WorkerClient {
         guard session == self.currentSessionId else { return }
 
         guard let envelope = try? JSONDecoder().decode(JSONRPCResponseEnvelope.self, from: frameData) else {
+            let snippet = String(data: frameData.prefix(200), encoding: .utf8) ?? "binary data"
+            failAllPending(
+                with: WorkerError.framingError("Malformed JSON-RPC response from worker: \(snippet)"),
+                session: session
+            )
             return
         }
 
         // Validate JSON-RPC 2.0 version
         guard envelope.jsonrpc == "2.0" else {
+            failAllPending(
+                with: WorkerError.framingError("Invalid JSON-RPC version '\(envelope.jsonrpc)' from worker; expected '2.0'"),
+                session: session
+            )
             return
         }
 
         guard let id = envelope.id else {
+            if let errorPayload = envelope.error {
+                failAllPending(with: WorkerError.rpcError(
+                    code: errorPayload.code,
+                    message: errorPayload.message,
+                    data: errorPayload.data
+                ), session: session)
+            }
             return
         }
 
@@ -413,8 +576,16 @@ public actor WorkerClient {
         params: P? = nil,
         timeoutSeconds: Double = 15.0
     ) async throws -> R {
+        guard !Task.isCancelled else {
+            throw WorkerError.requestCancelled
+        }
+
         guard let proc = process, proc.isRunning, let writer = pipeWriter else {
             throw WorkerError.processNotRunning
+        }
+
+        guard pendingRequests.count < 100 else {
+            throw WorkerError.framingError("Pending request capacity exceeded (limit: 100 concurrent requests).")
         }
 
         let reqId = nextRequestId
@@ -433,6 +604,11 @@ public actor WorkerClient {
 
         let responseFrameData: Data = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(throwing: WorkerError.requestCancelled)
+                    return
+                }
+
                 // Deadline timer task that returns immediately on cancellation
                 let deadlineTask = Task { [weak self] in
                     do {
@@ -456,8 +632,12 @@ public actor WorkerClient {
                     deadlineTask: deadlineTask
                 )
 
-                // Write asynchronously via sequential pipe writer
+                // Write asynchronously via sequential pipe writer only if not cancelled
                 Task {
+                    guard !Task.isCancelled else {
+                        self.resolveRequest(id: reqId, session: sessionId, result: .failure(WorkerError.requestCancelled))
+                        return
+                    }
                     do {
                         try await writer.write(data: lineData)
                     } catch {
@@ -551,8 +731,13 @@ public actor WorkerClient {
 
         let pid = proc.processIdentifier
 
-        // 1. Try graceful shutdown notification
-        try? await sendNotification(method: "shutdown", params: nil as String?)
+        // 1. Fire-and-forget shutdown notification without blocking termination
+        Task { [weak self] in
+            try? await self?.sendNotification(
+                method: "shutdown",
+                params: nil as String?
+            )
+        }
 
         // 2. Close stdin handle
         await pipeWriter?.close()
@@ -580,17 +765,22 @@ public actor WorkerClient {
         }
 
         // 5. Hard escalation: SIGKILL
-        if !terminated && kill(pid, 0) == 0 {
+        if !terminated && proc.isRunning {
             kill(pid, SIGKILL)
         }
 
-        // 6. Verify process exit before disposal
-        for _ in 0..<10 {
-            if kill(pid, 0) != 0 {
+        // 6. Monitor process exit using proc.isRunning and reap process
+        for _ in 0..<20 {
+            if !proc.isRunning {
                 terminated = true
                 break
             }
             try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+
+        // Reap process cleanly via Process API
+        if !proc.isRunning {
+            proc.waitUntilExit()
         }
 
         // Now detach readability handlers safely after exit

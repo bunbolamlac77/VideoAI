@@ -66,6 +66,9 @@ class TestWorkerFramingAndProtocol(unittest.TestCase):
         proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "shutdown"}).encode("utf-8") + b"\n")
         proc.stdin.flush()
         proc.wait(timeout=5)
+        proc.stdin.close()
+        proc.stdout.close()
+        proc.stderr.close()
 
     def test_invalid_id_types_rejected(self):
         """JSON-RPC 2.0: id cannot be boolean, object, or array."""
@@ -97,9 +100,21 @@ class TestWorkerFramingAndProtocol(unittest.TestCase):
         proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "shutdown"}).encode("utf-8") + b"\n")
         proc.stdin.flush()
         proc.wait(timeout=5)
+        proc.stdin.close()
+        proc.stdout.close()
+        proc.stderr.close()
 
 
 class TestResolveAdapterInvariants(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, os.path.abspath("workers/src/aivideo_workers"))
+        import resolve_adapter
+        self.resolve_adapter = resolve_adapter
+        self.orig_get_resolve = resolve_adapter.get_resolve
+
+    def tearDown(self):
+        self.resolve_adapter.get_resolve = self.orig_get_resolve
+
     def test_atomic_export_preserves_old_file_on_failure(self):
         """Simulates atomic export failure to ensure previous DRP is not destroyed."""
         import tempfile
@@ -136,20 +151,228 @@ class TestResolveAdapterInvariants(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir)
 
-    def test_frame_boundary_rejection_logic(self):
-        """Verifies that any frame count != 240 is rejected."""
-        def check_frame_count(total_frames):
-            if total_frames != 240:
-                raise RuntimeError(f"Frame boundary check FAILED: Timeline duration is {total_frames} frames. Expected EXACTLY 240 frames.")
-            return True
+    def _build_fake_resolve(
+        self,
+        duration=240,
+        title_success=True,
+        title_on_track2=True,
+        render_ok=True,
+        save_ok=True,
+        reload_ok=True,
+        export_ok=True,
+        corrupt_export=False,
+        codecs=None
+    ):
+        import zipfile
 
-        self.assertTrue(check_frame_count(240))
+        class FakeItem:
+            def __init__(self, dur=240, start=86400, end=86640):
+                self._dur = dur
+                self._start = start
+                self._end = end
+            def GetDuration(self): return self._dur
+            def GetStart(self): return self._start
+            def GetEnd(self): return self._end
 
-        invalid_counts = [0, 239, 241, 480, 481, 1000]
-        for count in invalid_counts:
+        class FakeTimeline:
+            def __init__(self):
+                self.settings = {
+                    "useCustomSettings": "1",
+                    "timelineResolutionWidth": "2160",
+                    "timelineResolutionHeight": "3840",
+                    "timelineFrameRate": "24"
+                }
+                self.v_track1 = [FakeItem(240)]
+                self.v_track2 = [FakeItem(120)] if title_on_track2 else []
+                self.a_track1 = [FakeItem(240)]
+            def AddTrack(self, t): return True
+            def SetSetting(self, k, v): self.settings[k] = str(v)
+            def GetSetting(self, k): return self.settings.get(k)
+            def InsertFusionTitleIntoTimeline(self, t): return FakeItem(120) if title_success else None
+            def InsertTitleIntoTimeline(self, t): return FakeItem(120) if title_success else None
+            def MoveItems(self, items, d): return title_success
+            def GetStartFrame(self): return 86400
+            def GetEndFrame(self): return 86400 + duration
+            def GetTrackCount(self, t): return 2 if t == "video" else 1
+            def GetItemListInTrack(self, t, idx):
+                if t == "video":
+                    return self.v_track1 if idx == 1 else self.v_track2
+                return self.a_track1
+
+        class FakeMediaPool:
+            def __init__(self, tl): self.tl = tl
+            def ImportMedia(self, paths): return [FakeItem(240), FakeItem(240)]
+            def CreateEmptyTimeline(self, name): return self.tl
+            def AppendToTimeline(self, clips): return [FakeItem(240), FakeItem(240)]
+
+        class FakeProject:
+            def __init__(self, tl):
+                self.tl = tl
+                self.mp = FakeMediaPool(tl)
+                self.codecs = codecs if codecs is not None else {"H264": "H.264"}
+            def GetMediaPool(self): return self.mp
+            def GetName(self): return "AIVideo_Test_Project"
+            def GetRenderCodecs(self, fmt): return self.codecs
+            def SetRenderSettings(self, s): return render_ok
+
+        class FakeProjectManager:
+            def __init__(self, proj):
+                self.proj = proj
+            def CreateProject(self, name): return self.proj
+            def GetCurrentProject(self): return self.proj
+            def CloseProject(self, p): return True
+            def SaveProject(self): return save_ok
+            def LoadProject(self, name): return self.proj if reload_ok else None
+            def ExportProject(self, name, path):
+                if not export_ok: return False
+                if corrupt_export:
+                    with open(path, "wb") as f: f.write(b"NOT_A_VALID_ZIP_ARCHIVE_CORRUPTED_" * 50) # > 1024 bytes
+                    return True
+                with zipfile.ZipFile(path, "w") as zf:
+                    zf.writestr("project.db", b"FAKE_RESOLVE_PROJECT_DB_PAYLOAD_" * 100) # > 1024 bytes
+                return True
+
+        class FakeResolve:
+            def __init__(self, pm): self.pm = pm
+            def GetProductName(self): return "DaVinci Resolve Studio"
+            def GetVersionString(self): return "21.2.0.5"
+            def GetProjectManager(self): return self.pm
+
+        tl = FakeTimeline()
+        proj = FakeProject(tl)
+        pm = FakeProjectManager(proj)
+        return FakeResolve(pm)
+
+    def test_run_g0_spike_success_with_fake_sdk(self):
+        """Calls actual run_g0_spike() via FakeResolve and verifies return metadata."""
+        import tempfile
+        import shutil
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            target_drp = os.path.join(tmp_dir, "test_spike.drp")
+            fake_res = self._build_fake_resolve()
+            self.resolve_adapter.get_resolve = lambda: fake_res
+
+            res = self.resolve_adapter.run_g0_spike(output_drp_path=target_drp, force_fresh_run=True)
+            self.assertTrue(res["success"])
+            self.assertEqual(res["timeline_total_frames"], 240)
+            self.assertEqual(res["timeline_resolution"], "2160x3840")
+            self.assertEqual(res["timeline_fps"], 24.0)
+            self.assertTrue(res["title_inserted"])
+            self.assertTrue(res["render_settings_configured"])
+            self.assertTrue(res["project_saved"])
+            self.assertIsNone(res["preview_path"])
+            self.assertTrue(res["drp_exported"])
+            self.assertTrue(os.path.isfile(target_drp))
+            self.assertTrue(os.path.getsize(target_drp) > 100)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_run_g0_spike_title_failure_raises(self):
+        """Calls actual run_g0_spike() and asserts failure when title placement fails."""
+        import tempfile
+        import shutil
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            target_drp = os.path.join(tmp_dir, "test_spike.drp")
+            # Title insertion fails
+            fake_res = self._build_fake_resolve(title_success=False)
+            self.resolve_adapter.get_resolve = lambda: fake_res
+
             with self.assertRaises(RuntimeError) as ctx:
-                check_frame_count(count)
-            self.assertIn("EXACTLY 240 frames", str(ctx.exception))
+                self.resolve_adapter.run_g0_spike(output_drp_path=target_drp)
+            self.assertIn("title insertion or placement failed", str(ctx.exception).lower())
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_run_g0_spike_title_not_on_track2_raises(self):
+        """Calls actual run_g0_spike() and asserts failure when Track 2 is missing title."""
+        import tempfile
+        import shutil
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            target_drp = os.path.join(tmp_dir, "test_spike.drp")
+            fake_res = self._build_fake_resolve(title_on_track2=False)
+            self.resolve_adapter.get_resolve = lambda: fake_res
+
+            with self.assertRaises(RuntimeError) as ctx:
+                self.resolve_adapter.run_g0_spike(output_drp_path=target_drp)
+            self.assertIn("video track 2", str(ctx.exception).lower())
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_run_g0_spike_render_settings_failure_raises(self):
+        """Calls actual run_g0_spike() and asserts failure when SetRenderSettings returns False."""
+        import tempfile
+        import shutil
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            target_drp = os.path.join(tmp_dir, "test_spike.drp")
+            fake_res = self._build_fake_resolve(render_ok=False)
+            self.resolve_adapter.get_resolve = lambda: fake_res
+
+            with self.assertRaises(RuntimeError) as ctx:
+                self.resolve_adapter.run_g0_spike(output_drp_path=target_drp)
+            self.assertIn("setrendersettings failed", str(ctx.exception).lower())
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_run_g0_spike_duration_rejection_raises(self):
+        """Calls actual run_g0_spike() with invalid durations (239, 241, 480) and asserts rejection."""
+        import tempfile
+        import shutil
+        for invalid_duration in [239, 241, 480]:
+            tmp_dir = tempfile.mkdtemp()
+            try:
+                target_drp = os.path.join(tmp_dir, "test_spike.drp")
+                fake_res = self._build_fake_resolve(duration=invalid_duration)
+                self.resolve_adapter.get_resolve = lambda: fake_res
+
+                with self.assertRaises(RuntimeError) as ctx:
+                    self.resolve_adapter.run_g0_spike(output_drp_path=target_drp)
+                self.assertIn("exactly 240 frames", str(ctx.exception).lower())
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_run_g0_spike_save_project_failure_raises(self):
+        """Calls actual run_g0_spike() and asserts failure when SaveProject fails."""
+        import tempfile
+        import shutil
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            target_drp = os.path.join(tmp_dir, "test_spike.drp")
+            fake_res = self._build_fake_resolve(save_ok=False)
+            self.resolve_adapter.get_resolve = lambda: fake_res
+
+            with self.assertRaises(RuntimeError) as ctx:
+                self.resolve_adapter.run_g0_spike(output_drp_path=target_drp)
+            self.assertIn("saveproject() returned false", str(ctx.exception).lower())
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_run_g0_spike_drp_corruption_preserves_old_drp(self):
+        """Calls actual run_g0_spike() when DRP export is corrupted and asserts old DRP is preserved."""
+        import tempfile
+        import shutil
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            target_drp = os.path.join(tmp_dir, "test_spike.drp")
+            with open(target_drp, "wb") as f:
+                f.write(b"PREVIOUS_VALID_DRP_CONTENT_50KB")
+
+            fake_res = self._build_fake_resolve(corrupt_export=True)
+            self.resolve_adapter.get_resolve = lambda: fake_res
+
+            with self.assertRaises(RuntimeError) as ctx:
+                self.resolve_adapter.run_g0_spike(output_drp_path=target_drp)
+            self.assertIn("zip archive", str(ctx.exception).lower())
+
+            # Original DRP must remain intact!
+            with open(target_drp, "rb") as f:
+                content = f.read()
+            self.assertEqual(content, b"PREVIOUS_VALID_DRP_CONTENT_50KB")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

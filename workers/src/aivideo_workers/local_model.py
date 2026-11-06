@@ -265,16 +265,83 @@ def check_status(params: Optional[dict] = None) -> dict:
             "missing_files": unreadable_files
         }
 
-    # Verify checksums if lock specifies verified_artifacts
+    # Lock validation: must be verified, match model_id and model_revision, and contain all required artifact hashes
+    if lock_data.get("status") != "verified":
+        return {
+            "status": "not_configured",
+            "profile_id": profile_id,
+            "model_id": G0_MODEL_ID,
+            "model_revision": G0_MODEL_REVISION,
+            "model_path": model_dir,
+            "python_path": sys.executable,
+            "backend_name": "mlx-lm",
+            "details": f"Model contract lock status is '{lock_data.get('status')}', not 'verified'. Run tools/setup_g0_model.py --install.",
+            "missing_files": []
+        }
+
+    if lock_data.get("model_id") != G0_MODEL_ID or lock_data.get("model_revision") != G0_MODEL_REVISION:
+        return {
+            "status": "not_configured",
+            "profile_id": profile_id,
+            "model_id": G0_MODEL_ID,
+            "model_revision": G0_MODEL_REVISION,
+            "model_path": model_dir,
+            "python_path": sys.executable,
+            "backend_name": "mlx-lm",
+            "details": f"Model identity mismatch in lock file: expected '{G0_MODEL_ID}@{G0_MODEL_REVISION}', got '{lock_data.get('model_id')}@{lock_data.get('model_revision')}'.",
+            "missing_files": []
+        }
+
     verified_artifacts = lock_data.get("verified_artifacts", {})
-    if verified_artifacts:
-        for art_name, art_info in verified_artifacts.items():
-            expected_hash = art_info.get("sha256")
-            expected_size = art_info.get("size_bytes")
-            art_path = os.path.join(model_dir, art_name)
-            if not os.path.isfile(art_path):
-                continue
-            if expected_size and os.path.getsize(art_path) != expected_size:
+    if not verified_artifacts or not all(a in verified_artifacts for a in REQUIRED_ARTIFACTS):
+        return {
+            "status": "invalid_assets",
+            "profile_id": profile_id,
+            "model_id": G0_MODEL_ID,
+            "model_revision": G0_MODEL_REVISION,
+            "model_path": model_dir,
+            "python_path": sys.executable,
+            "backend_name": "mlx-lm",
+            "details": "Model lock file is missing required checksums for one or more artifacts.",
+            "missing_files": [a for a in REQUIRED_ARTIFACTS if a not in verified_artifacts]
+        }
+
+    # Verify every required artifact against pinned manifest
+    for art_name in REQUIRED_ARTIFACTS:
+        art_info = verified_artifacts[art_name]
+        expected_hash = art_info.get("sha256")
+        expected_size = art_info.get("size_bytes")
+        art_path = os.path.join(model_dir, art_name)
+        if not os.path.isfile(art_path):
+            return {
+                "status": "invalid_assets",
+                "profile_id": profile_id,
+                "model_id": G0_MODEL_ID,
+                "model_revision": G0_MODEL_REVISION,
+                "model_path": model_dir,
+                "python_path": sys.executable,
+                "backend_name": "mlx-lm",
+                "details": f"Required artifact '{art_name}' not found on disk.",
+                "missing_files": [art_name]
+            }
+
+        actual_size = os.path.getsize(art_path)
+        if expected_size is not None and actual_size != expected_size:
+            return {
+                "status": "invalid_assets",
+                "profile_id": profile_id,
+                "model_id": G0_MODEL_ID,
+                "model_revision": G0_MODEL_REVISION,
+                "model_path": model_dir,
+                "python_path": sys.executable,
+                "backend_name": "mlx-lm",
+                "details": f"Size mismatch for '{art_name}' (expected {expected_size}, got {actual_size})",
+                "missing_files": [art_name]
+            }
+
+        if expected_hash:
+            actual_hash = compute_file_sha256(art_path)
+            if actual_hash != expected_hash:
                 return {
                     "status": "invalid_assets",
                     "profile_id": profile_id,
@@ -283,23 +350,9 @@ def check_status(params: Optional[dict] = None) -> dict:
                     "model_path": model_dir,
                     "python_path": sys.executable,
                     "backend_name": "mlx-lm",
-                    "details": f"Size mismatch for '{art_name}' (expected {expected_size}, got {os.path.getsize(art_path)})",
+                    "details": f"SHA-256 checksum mismatch for '{art_name}'",
                     "missing_files": [art_name]
                 }
-            if expected_hash:
-                actual_hash = compute_file_sha256(art_path)
-                if actual_hash != expected_hash:
-                    return {
-                        "status": "invalid_assets",
-                        "profile_id": profile_id,
-                        "model_id": G0_MODEL_ID,
-                        "model_revision": G0_MODEL_REVISION,
-                        "model_path": model_dir,
-                        "python_path": sys.executable,
-                        "backend_name": "mlx-lm",
-                        "details": f"SHA-256 checksum mismatch for '{art_name}'",
-                        "missing_files": [art_name]
-                    }
 
     # Verify runtime
     runtime_ok, backend_ver, runtime_err = check_runtime_import()

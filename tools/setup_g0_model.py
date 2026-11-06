@@ -88,6 +88,44 @@ def check_system_environment() -> Dict[str, Any]:
     }
 
 
+def verify_existing_pinned_install(model_dir: str) -> bool:
+    lock_path = get_contracts_lock_path()
+    if not os.path.isfile(lock_path):
+        return False
+
+    try:
+        with open(lock_path, "r", encoding="utf-8") as f:
+            lock = json.load(f)
+    except Exception:
+        return False
+
+    expected = lock.get("verified_artifacts") or {}
+
+    if lock.get("status") != "verified":
+        return False
+
+    if lock.get("model_id") != G0_MODEL_ID or lock.get("model_revision") != G0_MODEL_REVISION:
+        return False
+
+    if not all(a in expected for a in REQUIRED_ARTIFACTS):
+        return False
+
+    for name in REQUIRED_ARTIFACTS:
+        meta = expected[name]
+        path = os.path.join(model_dir, name)
+
+        if not os.path.isfile(path):
+            return False
+
+        if os.path.getsize(path) != meta["size_bytes"]:
+            return False
+
+        if compute_sha256(path) != meta["sha256"]:
+            return False
+
+    return True
+
+
 # MARK: - Mode 1: Plan
 
 def execute_plan(app_support_dir: str) -> int:
@@ -160,94 +198,120 @@ def execute_install(app_support_dir: str, python_runtime_path: Optional[str] = N
         print(f"❌ ERROR: Insufficient disk space on {app_support_dir}. Free: {disk_stat.free / (1024**3):.2f} GiB.")
         return 1
 
-    target_model_dir = os.path.join(app_support_dir, "Models", "g0-text", G0_MODEL_REVISION)
-    staging_parent = os.path.join(app_support_dir, "Models", "g0-text")
-    os.makedirs(staging_parent, exist_ok=True)
+    # Acquire exclusive installation lock
+    lock_file = os.path.join(app_support_dir, ".g0_model_install.lock")
+    lock_fd = os.open(lock_file, os.O_CREAT | os.O_RDWR)
+    try:
+        import fcntl
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, OSError):
+        print("❌ ERROR: Another model setup operation is running on this machine.")
+        os.close(lock_fd)
+        return 1
 
-    # 1. Check if model is already validly installed
-    if os.path.isdir(target_model_dir):
-        print(f"Checking existing model directory at: {target_model_dir}")
-        all_present = True
+    try:
+        target_model_dir = os.path.join(app_support_dir, "Models", "g0-text", G0_MODEL_REVISION)
+        staging_parent = os.path.join(app_support_dir, "Models", "g0-text")
+        os.makedirs(staging_parent, exist_ok=True)
+
+        # 1. Check if model already exists
+        if os.path.lexists(target_model_dir):
+            if not verify_existing_pinned_install(target_model_dir):
+                print(
+                    "BLOCKED: Existing model does not match "
+                    "pinned manifest. No files were modified."
+                )
+                return 2
+
+            with open(get_contracts_lock_path(), "r", encoding="utf-8") as f:
+                pinned = json.load(f)
+
+            return finalize_installation(
+                app_support_dir,
+                target_model_dir,
+                pinned["verified_artifacts"],
+                python_runtime_path
+            )
+
+        # 2. Download into unique staging directory on SAME filesystem
+        staging_dir = os.path.join(staging_parent, f".staging_{G0_MODEL_REVISION}_{uuid.uuid4().hex[:8]}")
+        os.makedirs(staging_dir, exist_ok=True)
+        print(f"Staging directory created at: {staging_dir}")
+
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError:
+            print("❌ ERROR: 'huggingface_hub' is required for installation. Please ensure workers/uv.lock packages are installed.")
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return 1
+
+        print(f"\nDownloading snapshot for '{G0_MODEL_ID}' (Revision: {G0_MODEL_REVISION})...")
+        try:
+            downloaded_path = snapshot_download(
+                repo_id=G0_MODEL_ID,
+                revision=G0_MODEL_REVISION,
+                local_dir=staging_dir,
+                local_dir_use_symlinks=False
+            )
+            print(f"Snapshot downloaded to staging.")
+        except Exception as e:
+            print(f"❌ ERROR: Download failed or interrupted: {e}")
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return 1
+
+        # 3. Verify all required artifacts exist in staging and match pinned manifest if present
+        print("Verifying downloaded artifacts in staging...")
+        artifact_manifest = {}
+        missing = []
         for art in REQUIRED_ARTIFACTS:
-            p = os.path.join(target_model_dir, art)
-            if not os.path.isfile(p) or os.path.getsize(p) == 0:
-                all_present = False
-                break
-        if all_present:
-            print("Existing installation contains all required artifacts. Verifying integrity...")
-            # Compute hashes and verify
-            artifact_manifest = {}
-            corrupt = False
-            for art in REQUIRED_ARTIFACTS:
-                p = os.path.join(target_model_dir, art)
-                sz = os.path.getsize(p)
-                h = compute_sha256(p)
-                artifact_manifest[art] = {"size_bytes": sz, "sha256": h}
-            if not corrupt:
-                print("✅ Existing installation is complete and verified. Reusing existing assets.")
-                return finalize_installation(app_support_dir, target_model_dir, artifact_manifest, python_runtime_path)
-
-    # 2. Download into unique staging directory on SAME filesystem
-    staging_dir = os.path.join(staging_parent, f".staging_{G0_MODEL_REVISION}_{uuid.uuid4().hex[:8]}")
-    os.makedirs(staging_dir, exist_ok=True)
-    print(f"Staging directory created at: {staging_dir}")
-
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        print("❌ ERROR: 'huggingface_hub' is required for installation. Please ensure workers/uv.lock packages are installed.")
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        return 1
-
-    print(f"\nDownloading snapshot for '{G0_MODEL_ID}' (Revision: {G0_MODEL_REVISION})...")
-    try:
-        downloaded_path = snapshot_download(
-            repo_id=G0_MODEL_ID,
-            revision=G0_MODEL_REVISION,
-            local_dir=staging_dir,
-            local_dir_use_symlinks=False
-        )
-        print(f"Snapshot downloaded to staging.")
-    except Exception as e:
-        print(f"❌ ERROR: Download failed or interrupted: {e}")
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        return 1
-
-    # 3. Verify all required artifacts exist in staging
-    print("Verifying downloaded artifacts in staging...")
-    artifact_manifest = {}
-    missing = []
-    for art in REQUIRED_ARTIFACTS:
-        art_path = os.path.join(staging_dir, art)
-        if not os.path.isfile(art_path):
-            missing.append(art)
-        else:
-            sz = os.path.getsize(art_path)
-            if sz == 0:
-                missing.append(f"{art} (empty file)")
+            art_path = os.path.join(staging_dir, art)
+            if not os.path.isfile(art_path):
+                missing.append(art)
             else:
-                h = compute_sha256(art_path)
-                artifact_manifest[art] = {"size_bytes": sz, "sha256": h}
+                sz = os.path.getsize(art_path)
+                if sz == 0:
+                    missing.append(f"{art} (empty file)")
+                else:
+                    h = compute_sha256(art_path)
+                    artifact_manifest[art] = {"size_bytes": sz, "sha256": h}
 
-    if missing:
-        print(f"❌ ERROR: Missing or invalid artifacts in downloaded snapshot: {', '.join(missing)}")
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        return 1
+        if missing:
+            print(f"❌ ERROR: Missing or invalid artifacts in downloaded snapshot: {', '.join(missing)}")
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return 1
 
-    # 4. Atomic publish: Move staging to target directory
-    print(f"Publishing model atomically to: {target_model_dir}")
-    if os.path.exists(target_model_dir):
-        # Backup or remove previous invalid directory
-        shutil.rmtree(target_model_dir, ignore_errors=True)
+        # Check against pinned lock manifest if one exists
+        contracts_lock = get_contracts_lock_path()
+        if os.path.isfile(contracts_lock):
+            with open(contracts_lock, "r", encoding="utf-8") as f:
+                lock_data = json.load(f)
+            pinned = lock_data.get("verified_artifacts") or {}
+            if pinned:
+                for art, meta in pinned.items():
+                    if art in artifact_manifest:
+                        if artifact_manifest[art]["sha256"] != meta["sha256"]:
+                            print(f"❌ ERROR: Downloaded {art} hash does not match pinned manifest in contract lock!")
+                            shutil.rmtree(staging_dir, ignore_errors=True)
+                            return 1
 
-    try:
+        # 4. Atomic publish: Move staging to target directory (never delete existing model dir)
+        print(f"Publishing model atomically to: {target_model_dir}")
+        if os.path.lexists(target_model_dir):
+            print(f"❌ ERROR: Target model directory already exists: '{target_model_dir}'. Refusing to overwrite.")
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            return 1
+
         os.replace(staging_dir, target_model_dir)
-    except Exception as e:
-        # Fallback to shutil.move if os.replace encounters cross-directory constraints
-        shutil.move(staging_dir, target_model_dir)
 
-    print("✅ Model published to destination directory.")
-    return finalize_installation(app_support_dir, target_model_dir, artifact_manifest, python_runtime_path)
+        print("✅ Model published to destination directory.")
+        return finalize_installation(app_support_dir, target_model_dir, artifact_manifest, python_runtime_path)
+    finally:
+        try:
+            import fcntl
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        os.close(lock_fd)
 
 
 def finalize_installation(

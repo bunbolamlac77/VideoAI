@@ -26,7 +26,8 @@ for candidate in "${SDK_CANDIDATES[@]}"; do
 done
 rm -f "$TMP_PROBE"
 
-mkdir -p build/tests
+mkdir -p build/tests build/reports
+rm -f build/reports/*.jsonl
 
 echo "=== [1/2] Compiling and Running Worker IPC Tests (S02) ==="
 swiftc -sdk "$SDK_PATH" \
@@ -53,6 +54,14 @@ swiftc -sdk "$SDK_PATH" \
 ./build/tests/test_resolve_spike
 
 echo "=== [3/3] Running Python Framing & Model Setup Unit Tests ==="
-python3 -m unittest tests/test_framing_resilience.py tests/test_model_setup.py
+PYTHON_BIN="python3"
+DEDICATED_PY="$HOME/Library/Application Support/AIVideo/Runtimes/g0-mlx-runtime/bin/python3"
+if [ -x "$DEDICATED_PY" ]; then
+    PYTHON_BIN="$DEDICATED_PY"
+elif [ -x "workers/.venv/bin/python3" ]; then
+    PYTHON_BIN="workers/.venv/bin/python3"
+fi
+
+"$PYTHON_BIN" tools/run_python_tests.py
 
 echo "=== ALL REGRESSION TEST SUITES EXECUTED SUCCESSFULLY ==="
