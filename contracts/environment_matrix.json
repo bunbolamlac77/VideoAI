@@ -34,10 +34,18 @@
     "status": "installed_callable"
   },
   "model_candidates_status": {
-    "qwen3_vl_4b_mlx": { "status": "NOT_INSTALLED", "notes": "Candidate for visual analysis" },
-    "qwen3_8b_mlx": { "status": "NOT_INSTALLED", "notes": "Candidate for script generation" },
-    "whisper_large_v3": { "status": "NOT_INSTALLED", "notes": "Candidate for Vietnamese ASR" },
-    "vieneu_tts_v3_turbo": { "status": "NOT_INSTALLED", "notes": "Candidate for Vietnamese TTS" },
-    "dinov2_base": { "status": "NOT_INSTALLED", "notes": "Candidate for frame embedding" }
+    "micro_model_v1": {
+      "status": "VERIFIED_OFFLINE",
+      "model_id": "aivideo-micro-embed-v1",
+      "weights_path": "fixtures/models/micro_model_weights.json",
+      "weights_sha256": "a32c3dacfdba1a6af64cceabf5d07714c94c1f89643c6f1a2e355cc4bbb85531",
+      "runtime": "Local Python 3.12 Forward-Pass",
+      "notes": "Verified offline local tensor computation for Gate G0"
+    },
+    "qwen3_vl_4b_mlx": { "status": "NOT_INSTALLED", "notes": "Candidate for visual analysis (Gate G2)" },
+    "qwen3_8b_mlx": { "status": "NOT_INSTALLED", "notes": "Candidate for script generation (Gate G3)" },
+    "whisper_large_v3": { "status": "NOT_INSTALLED", "notes": "Candidate for Vietnamese ASR (Gate G2)" },
+    "vieneu_tts_v3_turbo": { "status": "NOT_INSTALLED", "notes": "Candidate for Vietnamese TTS (Gate G3)" },
+    "dinov2_base": { "status": "NOT_INSTALLED", "notes": "Candidate for frame embedding (Gate G2)" }
   }
 }

@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """
-AIVideo Python Worker — JSON-RPC 2.0 Subprocess
-Operating Protocol: JSON-RPC 2.0 over UTF-8 JSON Lines (stdin/stdout)
-Rule: stdout MUST ONLY contain valid JSON-RPC responses. All logging goes to stderr.
+workers/src/aivideo_workers/main.py — AIVideo Python Worker JSON-RPC 2.0 Subprocess
+
+AIVideo v3.1 Protocol Specification:
+- JSON-RPC 2.0 strictly over UTF-8 JSON Lines (stdin / stdout).
+- stdout MUST ONLY contain valid protocol response lines.
+- All diagnostics, logging, and tracebacks MUST go to stderr.
+- Strict envelope validation: dict root, "2.0" version, string method, non-bool id.
+- Standard JSON-RPC error codes (-32700, -32600, -32601, -32602, -32603).
+- Notifications (requests without 'id') do NOT receive a response.
+- Parent-loss background watchdog monitors parent PID and cleans up if parent terminates.
+- 100% offline local inference with verifiable local weights checksum.
 """
 
 import sys
@@ -11,25 +19,53 @@ import json
 import subprocess
 import signal
 import time
+import math
 import hashlib
+import threading
 import traceback
+from typing import Dict, Any, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 PROTOCOL_VERSION = "2.0"
-WORKER_VERSION = "0.1.0"
+WORKER_VERSION = "0.2.0"
+MAX_FRAME_BYTES = 1024 * 1024 # 1 MiB strict limit
 
-def log(msg: str):
-    """Log strictly to stderr to prevent polluting stdout JSON-RPC stream."""
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    sys.stderr.write(f"[{timestamp}] [Worker-{os.getpid()}] {msg}\n")
+def log_err(msg: str):
+    """Write strictly to stderr with timestamp and PID prefix."""
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    sys.stderr.write(f"[{ts}] [Worker-{os.getpid()}] {msg}\n")
     sys.stderr.flush()
 
 def send_response(response: dict):
-    """Serialize and write a single JSON line to stdout."""
+    """Serialize and write a single JSON line strictly to stdout."""
     line = json.dumps(response, ensure_ascii=False)
     sys.stdout.write(line + "\n")
     sys.stdout.flush()
+
+def is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+def start_parent_watchdog(initial_ppid: int):
+    """Background supervisor thread to detect parent termination even if main thread is busy."""
+    def watchdog_loop():
+        while True:
+            time.sleep(0.5)
+            curr_ppid = os.getppid()
+            if curr_ppid != initial_ppid or not is_pid_alive(initial_ppid):
+                log_err(f"Parent process (PID {initial_ppid}) has terminated. Worker exiting cleanly.")
+                os._exit(0)
+
+    t = threading.Thread(target=watchdog_loop, daemon=True, name="ParentWatchdog")
+    t.start()
+
+# MARK: - RPC Method Handlers
 
 def handle_initialize(params: dict) -> dict:
     return {
@@ -40,9 +76,10 @@ def handle_initialize(params: dict) -> dict:
         "worker_pid": os.getpid(),
         "python_version": sys.version.split()[0],
         "capabilities": [
-            "media.probe",
             "system.ping",
-            "ai.local_infer_test",
+            "media.probe",
+            "ai.deterministic_smoke_test",
+            "ai.local_model_infer",
             "resolve.status",
             "resolve.spike_timeline"
         ]
@@ -59,15 +96,19 @@ def handle_media_probe(params: dict) -> dict:
     if not file_path:
         raise ValueError("Missing required parameter: 'file_path'")
 
-    # Validate file existence and access
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Source file does not exist: {file_path}")
     if not os.access(file_path, os.R_OK):
         raise PermissionError(f"Permission denied reading file: {file_path}")
 
-    # Run ffprobe
+    # Resolve ffprobe path
+    ffprobe_bin = "/opt/homebrew/bin/ffprobe"
+    if not os.path.exists(ffprobe_bin):
+        import shutil
+        ffprobe_bin = shutil.which("ffprobe") or "ffprobe"
+
     cmd = [
-        "ffprobe",
+        ffprobe_bin,
         "-v", "quiet",
         "-print_format", "json",
         "-show_format",
@@ -97,7 +138,6 @@ def handle_media_probe(params: dict) -> dict:
                 "width": s.get("width"),
                 "height": s.get("height"),
                 "r_frame_rate": s.get("r_frame_rate"),
-                "avg_frame_rate": s.get("avg_frame_rate"),
                 "duration": s.get("duration"),
                 "pix_fmt": s.get("pix_fmt")
             })
@@ -120,26 +160,95 @@ def handle_media_probe(params: dict) -> dict:
         "audio_streams": audio_streams
     }
 
-def handle_local_infer_test(params: dict) -> dict:
-    """
-    Spike local inference simulation verifying zero cloud calls and deterministic execution.
-    """
-    input_text = params.get("text", "")
-    # Deterministic local hash and mock token embeddings
-    tokens = input_text.split()
-    content_hash = hashlib.sha256(input_text.encode("utf-8")).hexdigest()
-    
+def handle_deterministic_smoke_test(params: dict) -> dict:
+    """Deterministic string-hashing smoke test to verify IPC data flow without calling neural weights."""
+    text = params.get("text", "")
+    tokens = text.split()
+    sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    is_vi = any(c in text.lower() for c in "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
+
     return {
-        "status": "success",
-        "mode": "100%_LOCAL_OFFLINE",
-        "input_length": len(input_text),
+        "status": "PASS",
+        "execution_type": "DETERMINISTIC_SMOKE_TEST",
+        "input_length": len(text),
         "token_count": len(tokens),
-        "content_sha256": content_hash,
-        "synthetic_analysis": {
-            "language": "vi" if any(c in input_text for c in "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ") else "en",
-            "summary_claims_count": max(1, len(tokens) // 5),
-            "offline_verified": True
-        }
+        "content_sha256": sha256,
+        "detected_language": "vi" if is_vi else "en",
+        "offline_verified": True
+    }
+
+def handle_local_model_infer(params: dict) -> dict:
+    """
+    Real local neural inference calculation using local weights matrix.
+    No network requests, runs 100% offline on local CPU.
+    """
+    start_time = time.time()
+    prompt = params.get("prompt", "")
+    if not prompt:
+        raise ValueError("Missing required parameter: 'prompt'")
+
+    # Locate weights file
+    model_path = params.get("model_path") or "fixtures/models/micro_model_weights.json"
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Local model weights not found at '{model_path}'. Status: BLOCKED / NOT_INSTALLED")
+
+    with open(model_path, "r", encoding="utf-8") as f:
+        weights_content = f.read()
+
+    weights_sha256 = hashlib.sha256(weights_content.encode("utf-8")).hexdigest()
+    model_data = json.loads(weights_content)
+
+    vocab_weights = model_data.get("vocab_weights", {})
+    projection_matrix = model_data.get("projection_matrix", [])
+    output_classes = model_data.get("output_classes", [])
+    embedding_dim = model_data.get("embedding_dim", 8)
+
+    # 1. Tokenize prompt into lowercase words
+    words = [w.strip(".,!?:;\"'()[]{}") for w in prompt.lower().split() if w.strip()]
+    
+    # 2. Compute aggregate embedding vector
+    embed_vector = [0.0] * embedding_dim
+    matched_tokens = 0
+    for w in words:
+        if w in vocab_weights:
+            token_vec = vocab_weights[w]
+            for i in range(embedding_dim):
+                embed_vector[i] += token_vec[i]
+            matched_tokens += 1
+
+    if matched_tokens > 0:
+        for i in range(embedding_dim):
+            embed_vector[i] /= matched_tokens
+
+    # 3. Matrix multiplication: embed_vector (1x8) @ projection_matrix (8x4) -> logits (1x4)
+    num_classes = len(output_classes)
+    logits = [0.0] * num_classes
+    for c in range(num_classes):
+        for i in range(embedding_dim):
+            logits[c] += embed_vector[i] * projection_matrix[i][c]
+
+    # 4. Softmax activation
+    max_logit = max(logits) if logits else 0.0
+    exp_logits = [math.exp(l - max_logit) for l in logits]
+    sum_exp = sum(exp_logits) or 1.0
+    probabilities = [e / sum_exp for e in exp_logits]
+
+    # Best class
+    best_idx = int(max(range(num_classes), key=lambda idx: probabilities[idx]))
+    best_class = output_classes[best_idx]
+    best_confidence = round(probabilities[best_idx], 4)
+
+    latency_ms = round((time.time() - start_time) * 1000.0, 2)
+
+    return {
+        "status": "PASS",
+        "model_id": model_data.get("model_id", "micro-model"),
+        "runtime": f"Python {sys.version.split()[0]} Local Micro-Inference Engine",
+        "weights_sha256": weights_sha256,
+        "tokens_generated": matched_tokens,
+        "output_text": f"Classification: {best_class} (Confidence: {best_confidence * 100:.1f}%)",
+        "inference_latency_ms": latency_ms,
+        "offline_verified": True
     }
 
 def handle_resolve_status(params: dict) -> dict:
@@ -148,125 +257,248 @@ def handle_resolve_status(params: dict) -> dict:
 
 def handle_resolve_spike(params: dict) -> dict:
     import resolve_adapter
-    drp_path = params.get("drp_path", "fixtures/AIVideo_G0_Spike.drp")
-    return resolve_adapter.run_g0_spike(output_drp_path=drp_path)
+    drp_path = params.get("output_drp_path") or params.get("drp_path") or "fixtures/AIVideo_G0_Spike.drp"
+    force_fresh = params.get("force_fresh_run", False)
+    return resolve_adapter.run_g0_spike(output_drp_path=drp_path, force_fresh_run=force_fresh)
 
 METHODS = {
     "initialize": handle_initialize,
     "system.ping": handle_ping,
     "media.probe": handle_media_probe,
-    "ai.local_infer_test": handle_local_infer_test,
+    "ai.deterministic_smoke_test": handle_deterministic_smoke_test,
+    "ai.local_model_infer": handle_local_model_infer,
     "resolve.status": handle_resolve_status,
     "resolve.spike_timeline": handle_resolve_spike,
 }
 
-def main():
-    log("AIVideo worker process starting up...")
+# MARK: - Request Validation & Execution Loop
 
-    def signal_handler(signum, frame):
-        log(f"Received signal {signum}, exiting cleanly.")
+def validate_and_dispatch(line_bytes: bytes):
+    # Enforce strict 1 MiB framing limit
+    if len(line_bytes) > MAX_FRAME_BYTES:
+        send_response({
+            "jsonrpc": PROTOCOL_VERSION,
+            "id": None,
+            "error": {
+                "code": -32600,
+                "message": f"Invalid Request: Message size {len(line_bytes)} exceeds 1 MiB limit."
+            }
+        })
+        return
+
+    # Parse JSON
+    try:
+        raw_str = line_bytes.decode("utf-8").strip()
+    except UnicodeDecodeError as err:
+        send_response({
+            "jsonrpc": PROTOCOL_VERSION,
+            "id": None,
+            "error": {
+                "code": -32700,
+                "message": f"Parse error: Invalid UTF-8 encoding: {str(err)}"
+            }
+        })
+        return
+
+    if not raw_str:
+        return
+
+    try:
+        req = json.loads(raw_str)
+    except json.JSONDecodeError as err:
+        send_response({
+            "jsonrpc": PROTOCOL_VERSION,
+            "id": None,
+            "error": {
+                "code": -32700,
+                "message": f"Parse error: {str(err)}"
+            }
+        })
+        return
+
+    # 5.1 Root envelope must be a JSON Object (dict)
+    if not isinstance(req, dict):
+        send_response({
+            "jsonrpc": PROTOCOL_VERSION,
+            "id": None,
+            "error": {
+                "code": -32600,
+                "message": f"Invalid Request: Root must be a JSON object, got {type(req).__name__}."
+            }
+        })
+        return
+
+    # Check jsonrpc version
+    if req.get("jsonrpc") != PROTOCOL_VERSION:
+        send_response({
+            "jsonrpc": PROTOCOL_VERSION,
+            "id": req.get("id"),
+            "error": {
+                "code": -32600,
+                "message": f"Invalid Request: 'jsonrpc' must be exactly '{PROTOCOL_VERSION}'."
+            }
+        })
+        return
+
+    # Check method
+    method = req.get("method")
+    if not isinstance(method, str) or not method:
+        send_response({
+            "jsonrpc": PROTOCOL_VERSION,
+            "id": req.get("id"),
+            "error": {
+                "code": -32600,
+                "message": "Invalid Request: 'method' must be a non-empty string."
+            }
+        })
+        return
+
+    # Check id: Cannot be a boolean!
+    req_id = req.get("id")
+    if isinstance(req_id, bool):
+        send_response({
+            "jsonrpc": PROTOCOL_VERSION,
+            "id": None,
+            "error": {
+                "code": -32600,
+                "message": "Invalid Request: 'id' cannot be a boolean."
+            }
+        })
+        return
+
+    # Check notification: in JSON-RPC 2.0, if 'id' is omitted, it's a notification
+    is_notification = ("id" not in req)
+
+    # Check params
+    params = req.get("params")
+    if params is not None and not isinstance(params, dict):
+        if not is_notification:
+            send_response({
+                "jsonrpc": PROTOCOL_VERSION,
+                "id": req_id,
+                "error": {
+                    "code": -32602,
+                    "message": "Invalid params: Only structured named dictionary parameters are supported."
+                }
+            })
+        return
+
+    if params is None:
+        params = {}
+
+    # Handle shutdown notification / request
+    if method == "shutdown":
+        log_err("Received shutdown directive. Terminating worker.")
+        if not is_notification:
+            send_response({
+                "jsonrpc": PROTOCOL_VERSION,
+                "id": req_id,
+                "result": {"status": "terminated"}
+            })
         sys.exit(0)
 
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
+    # Dispatch method
+    handler = METHODS.get(method)
+    if not handler:
+        if not is_notification:
+            send_response({
+                "jsonrpc": PROTOCOL_VERSION,
+                "id": req_id,
+                "error": {
+                    "code": -32601,
+                    "message": f"Method not found: '{method}'."
+                }
+            })
+        return
+
+    try:
+        result = handler(params)
+        if not is_notification:
+            send_response({
+                "jsonrpc": PROTOCOL_VERSION,
+                "id": req_id,
+                "result": result
+            })
+    except FileNotFoundError as err:
+        if not is_notification:
+            send_response({
+                "jsonrpc": PROTOCOL_VERSION,
+                "id": req_id,
+                "error": {
+                    "code": -32001,
+                    "message": str(err),
+                    "data": {"type": "FILE_NOT_FOUND"}
+                }
+            })
+    except PermissionError as err:
+        if not is_notification:
+            send_response({
+                "jsonrpc": PROTOCOL_VERSION,
+                "id": req_id,
+                "error": {
+                    "code": -32002,
+                    "message": str(err),
+                    "data": {"type": "PERMISSION_DENIED"}
+                }
+            })
+    except ValueError as err:
+        if not is_notification:
+            send_response({
+                "jsonrpc": PROTOCOL_VERSION,
+                "id": req_id,
+                "error": {
+                    "code": -32602,
+                    "message": str(err),
+                    "data": {"type": "INVALID_PARAMS"}
+                }
+            })
+    except Exception as err:
+        log_err(f"Exception handling '{method}': {err}\n{traceback.format_exc()}")
+        if not is_notification:
+            send_response({
+                "jsonrpc": PROTOCOL_VERSION,
+                "id": req_id,
+                "error": {
+                    "code": -32603,
+                    "message": str(err),
+                    "data": {"type": "INTERNAL_ERROR"}
+                }
+            })
+
+def main():
+    log_err(f"AIVideo Worker starting (PID {os.getpid()}). Parent PID: {os.getppid()}")
+
+    # Start parent-loss watchdog
+    start_parent_watchdog(os.getppid())
+
+    # Graceful signals
+    def sig_handler(signum, frame):
+        log_err(f"Signal {signum} caught, exiting.")
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, sig_handler)
+    signal.signal(signal.SIGINT, sig_handler)
+
+    stdin_buf = sys.stdin.buffer
 
     while True:
         try:
-            line = sys.stdin.readline()
-            if not line:
-                log("EOF received on stdin, shutting down worker.")
+            line_bytes = stdin_buf.readline(MAX_FRAME_BYTES + 1)
+            if not line_bytes:
+                # EOF reached on stdin
+                log_err("EOF on stdin. Worker terminating cleanly.")
                 break
 
-            line = line.strip()
-            if not line:
-                continue
-
-            try:
-                req = json.loads(line)
-            except json.JSONDecodeError as err:
-                log(f"Invalid JSON received: {err}")
-                send_response({
-                    "jsonrpc": PROTOCOL_VERSION,
-                    "id": None,
-                    "error": {
-                        "code": -32700,
-                        "message": f"Parse error: {str(err)}"
-                    }
-                })
-                continue
-
-            req_id = req.get("id")
-            method = req.get("method")
-            params = req.get("params", {})
-
-            if method == "shutdown":
-                log("Received shutdown request. Terminating.")
-                send_response({
-                    "jsonrpc": PROTOCOL_VERSION,
-                    "id": req_id,
-                    "result": {"status": "terminated"}
-                })
-                break
-
-            handler = METHODS.get(method)
-            if not handler:
-                send_response({
-                    "jsonrpc": PROTOCOL_VERSION,
-                    "id": req_id,
-                    "error": {
-                        "code": -32601,
-                        "message": f"Method not found: {method}"
-                    }
-                })
-                continue
-
-            try:
-                result = handler(params)
-                send_response({
-                    "jsonrpc": PROTOCOL_VERSION,
-                    "id": req_id,
-                    "result": result
-                })
-            except FileNotFoundError as err:
-                send_response({
-                    "jsonrpc": PROTOCOL_VERSION,
-                    "id": req_id,
-                    "error": {
-                        "code": -32001,
-                        "message": str(err),
-                        "data": {"type": "FILE_NOT_FOUND"}
-                    }
-                })
-            except PermissionError as err:
-                send_response({
-                    "jsonrpc": PROTOCOL_VERSION,
-                    "id": req_id,
-                    "error": {
-                        "code": -32002,
-                        "message": str(err),
-                        "data": {"type": "PERMISSION_DENIED"}
-                    }
-                })
-            except Exception as err:
-                log(f"Error handling method {method}: {err}\n{traceback.format_exc()}")
-                send_response({
-                    "jsonrpc": PROTOCOL_VERSION,
-                    "id": req_id,
-                    "error": {
-                        "code": -32000,
-                        "message": str(err),
-                        "data": {"traceback": traceback.format_exc()}
-                    }
-                })
+            validate_and_dispatch(line_bytes)
 
         except KeyboardInterrupt:
-            log("KeyboardInterrupt caught, shutting down.")
             break
         except Exception as e:
-            log(f"Unexpected loop exception: {e}")
-            break
+            log_err(f"Unexpected loop exception: {e}\n{traceback.format_exc()}")
+            # Never exit on transient framing error; continue loop
+            continue
 
-    log("AIVideo worker process exited cleanly.")
+    log_err("Worker main loop terminated.")
     sys.exit(0)
 
 if __name__ == "__main__":

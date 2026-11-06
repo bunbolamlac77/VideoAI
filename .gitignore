@@ -57,17 +57,21 @@ wheels/
 *.gguf
 *.pt
 *.pth
-weights/
-models/
-model_cache/
+/weights/
+/models/
+/model_cache/
 
 # User Private Media & Snapshots (Protect user privacy)
 # Fixtures should only contain synthetic metadata/manifests unless explicitly whitelisted
-media/
-snapshots/
-raw_source/
-captures/
-renders/
+/media/
+/snapshots/
+/raw_source/
+/captures/
+/renders/
+/build/
+/apps/macos/build/
+/tests/.build/
+/tests/build/
 *.mov
 *.mp4
 *.avi
