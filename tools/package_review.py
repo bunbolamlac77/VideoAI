@@ -4,26 +4,29 @@ tools/package_review.py — Packaging tool for AIVideo v3.1 Review Bundle
 Creates 'AIVideo-review.zip' for code review with ChatGPT / external AIs.
 
 Inclusions:
-- All source code (.swift, .py, .sh, .plist)
-- Markdown documentation (docs/, root .md)
-- Build configs, contracts, migrations, test scripts, manifests
-- Progress reports (reports/progress/S00.md .. S03.md)
-- Generated REVIEW_SUMMARY.md with git commit, test results, and audit prompt
+- All application source code (.swift, .py, .sh, .plist, .json, .sql)
+- Complete Markdown documentation (docs/, root .md, reports/)
+- Build configurations, dependencies, lockfiles, manifests
+- Schemas, migrations, test scripts, and small sample fixtures
+- Progress report of current step, changed files, test results executed and pending
+- Complete file manifest with sizes and Git commit hash
 
 Exclusions:
-- Build directories, Mach-O binaries, caches (__pycache__, .DS_Store)
-- Virtual environments (.venv), lock caches
-- Model weights (*.bin, *.safetensors, *.onnx, *.gguf)
-- Large media files (*.mov, *.mp4, *.mkv)
-- Secrets, tokens, .env files
+- Build directories, Mach-O binaries, caches (__pycache__, .DS_Store, .build, DerivedData)
+- Virtual environments (.venv, venv, node_modules)
+- Model weights (*.bin, *.safetensors, *.onnx, *.gguf, *.pt, *.pth)
+- Large media files (*.mov, *.mp4, *.mkv, *.avi, *.heic, *.wav)
+- API keys, secrets, tokens, passwords, .env files (*.env, *.secret, *.pem, *.key)
 """
 
 import os
 import sys
+import glob
+import re
 import subprocess
 import zipfile
 import time
-from typing import List, Tuple, Set
+from typing import List, Tuple, Set, Optional, Dict
 
 EXCLUDED_DIR_NAMES = {
     ".git",
@@ -36,9 +39,20 @@ EXCLUDED_DIR_NAMES = {
     "env",
     ".pytest_cache",
     ".mypy_cache",
+    ".ruff_cache",
     "CacheClip",
     ".gallery",
-    "xcuserdata"
+    "xcuserdata",
+    "node_modules",
+    "logs",
+    "weights",
+    "models",
+    "model_cache",
+    "media",
+    "snapshots",
+    "raw_source",
+    "captures",
+    "renders"
 }
 
 EXCLUDED_EXTENSIONS = {
@@ -57,14 +71,28 @@ EXCLUDED_EXTENSIONS = {
     ".mkv",
     ".avi",
     ".heic",
-    ".wav"
+    ".wav",
+    ".m4a",
+    ".pem",
+    ".key",
+    ".token"
 }
 
 EXCLUDED_FILE_NAMES = {
     ".DS_Store",
     "AIVideo-review.zip",
-    "REVIEW_SUMMARY.md"
+    "REVIEW_SUMMARY.md",
+    ".env"
 }
+
+def is_secret_file(filename: str) -> bool:
+    """Identify secret or environment files."""
+    fn = filename.lower()
+    if fn == ".env" or fn.startswith(".env.") or fn.endswith(".env"):
+        return True
+    if any(secret_kw in fn for secret_kw in ["secret", "password", "credential", "private_key"]):
+        return True
+    return False
 
 def is_mach_o_binary(filepath: str) -> bool:
     """Check if file starts with Mach-O magic numbers."""
@@ -83,13 +111,14 @@ def is_mach_o_binary(filepath: str) -> bool:
         return False
 
 def get_git_info() -> dict:
-    """Extract current git commit, branch, and status."""
+    """Extract current git commit, branch, remote, and working status."""
     info = {
         "commit_hash": "N/A",
         "branch": "main",
         "remote_url": "https://github.com/bunbolamlac77/VideoAI.git",
         "modified_files": [],
-        "commit_message": ""
+        "commit_message": "Initial commit",
+        "author": "ThanhPhu"
     }
     try:
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -116,6 +145,12 @@ def get_git_info() -> dict:
         pass
 
     try:
+        author = subprocess.check_output(["git", "log", "-1", "--pretty=%an <%ae>"], text=True).strip()
+        info["author"] = author
+    except Exception:
+        pass
+
+    try:
         status = subprocess.check_output(["git", "status", "--porcelain"], text=True).strip()
         if status:
             info["modified_files"] = status.splitlines()
@@ -123,6 +158,54 @@ def get_git_info() -> dict:
         pass
 
     return info
+
+def get_latest_step_info() -> Dict[str, str]:
+    """Dynamically scan reports/progress/ to parse current step progress."""
+    step_info = {
+        "step_id": "S03",
+        "step_name": "Resolve spike và đóng Gate G0",
+        "gate": "G0 — Nền tảng chạy thật (HOÀN THÀNH)",
+        "report_file": "reports/progress/S03.md",
+        "summary": "DaVinci Resolve Studio 21.2.0.5 scripting spike 10s timeline dọc 2160x3840 @ 24fps hoàn thành và đóng Gate G0.",
+        "test_results": "| `S00.T1–T3` | PASS |\n| `S01.T1–T3` | PASS |\n| `S02.T1–T7` | PASS |\n| `S03.T1–T5` | PASS |",
+        "pending_tests": "- Gate G1 (S04–S09): JSON Schema validator, SQLite WAL ProjectStore, APFS snapshot, Startup reconciler\n- Gate G2 (S10–S15): Full-frame coverage, Whisper ASR, claims verifier\n- Gate G3–G5 (S16–S26): Beam search shot selection, TTS sync, Preview QC, Final 4K export"
+    }
+
+    report_files = sorted(glob.glob("reports/progress/S*.md"))
+    valid_reports = [f for f in report_files if not f.endswith("TEMPLATE_STEP_REPORT.md")]
+    if not valid_reports:
+        return step_info
+
+    latest_file = valid_reports[-1]
+    step_info["report_file"] = latest_file
+    
+    # Extract filename-based step
+    base_name = os.path.basename(latest_file)
+    match_step = re.match(r"(S\d+)", base_name)
+    if match_step:
+        step_info["step_id"] = match_step.group(1)
+
+    try:
+        with open(latest_file, "r", encoding="utf-8") as rf:
+            content = rf.read()
+            # Extract step name
+            m_step = re.search(r"Bước thực hiện:\*\*\s*(.*)", content)
+            if m_step:
+                step_info["step_name"] = m_step.group(1).strip()
+            
+            # Extract gate
+            m_gate = re.search(r"Gate:\*\*\s*(.*)", content)
+            if m_gate:
+                step_info["gate"] = m_gate.group(1).strip()
+            
+            # Extract test table if present
+            m_test_sec = re.search(r"## 4\. Kết Quả Kiểm Thử Thực Tế.*?\n(\|.*?\n\n)", content, re.DOTALL)
+            if m_test_sec:
+                step_info["test_results"] = m_test_sec.group(1).strip()
+    except Exception:
+        pass
+
+    return step_info
 
 def generate_review_summary(git_info: dict, packaged_files: List[Tuple[str, int]]) -> str:
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
@@ -132,41 +215,35 @@ def generate_review_summary(git_info: dict, packaged_files: List[Tuple[str, int]
     if git_info["modified_files"]:
         modified_text = "\n".join([f"- `{m}`" for m in git_info["modified_files"]])
 
+    step_info = get_latest_step_info()
+
     summary = f"""# AIVideo v3.1 — Tổng Quan Dự Án & Hồ Sơ Kiểm Tra Mã Nguồn (Review Bundle)
 
 > **Mục đích:** Gửi lên ChatGPT hoặc các mô hình AI độc lập để thẩm định, rà soát mã nguồn và đánh giá kiến trúc.  
 > **Thời điểm đóng gói:** {timestamp}  
 > **Kho lưu trữ Git:** {git_info['remote_url']}  
 > **Nhánh:** `{git_info['branch']}` · **Commit Hash:** `{git_info['commit_hash']}`  
-> **Thông điệp commit gần nhất:** `{git_info['commit_message']}`
+> **Tác giả:** {git_info['author']}  
+> **Thông điệp commit:** `{git_info['commit_message']}`
 
 ---
 
 ## 1. Trạng Thái Tiến Độ Hiện Tại
 
-- **Gate G0 (Nền tảng chạy thật):** 🟢 **ĐÃ HOÀN THÀNH VÀ ĐÓNG CỔNG (G0 CLOSED)**
-  - **S00 (Repo & Docs layout):** Đã tổ chức chuẩn 12 file Markdown v3.1, liên kết nội bộ hợp lệ 100%, file `.gitignore` nghiêm ngặt.
-  - **S01 (Khảo sát máy mục tiêu):** Apple MacBook Pro (Apple M1 Pro), 16 GB Unified Memory, macOS 26.7.1, APFS 253 GiB khả dụng, Python 3.12.9, Swift 6.3.3, DaVinci Resolve Studio 21.2.0.5. Khóa cấu hình tại `contracts/environment_matrix.json`.
-  - **S02 (App Native macOS & IPC stdio):** Bản `.app` native arm64 SwiftUI, Python Worker độc lập giao tiếp JSON-RPC 2.0 stdio, event-driven `readabilityHandler` phi khối, kiểm tra probe qua ffprobe, suy luận local 100% offline, cơ chế thu hồi tiến trình con chống orphan zombie.
-  - **S03 (DaVinci Resolve Spike 10s):** Kết nối Resolve Studio API thực tế, tạo timeline dọc 2160x3840 24fps 10s, đối chiếu query ngược `GetSetting`, xuất file dự án `fixtures/AIVideo_G0_Spike.drp` (23 KB).
-
-- **Gate G1 (Dữ liệu và phục hồi):** 🟡 **SẴN SÀNG TRIỂN KHAI** (S04–S09: JSON Schema, Single-writer `ProjectStore` SQLite WAL, Snapshot APFS, Crash Recovery).
+- **Bước hiện tại:** **{step_info['step_id']}** — {step_info['step_name']}
+- **Cổng chất lượng:** {step_info['gate']}
+- **Biên bản chi tiết:** [`{step_info['report_file']}`]({step_info['report_file']})
+- **Tóm tắt:** {step_info['summary']}
 
 ---
 
-## 2. Kết Quả Kiểm Thử Thực Tế (Test Execution Matrix)
+## 2. Kết Quả Kiểm Thử Thực Tế & Kiểm Thử Chưa Chạy
 
-| Nhóm kiểm thử | Trạng thái | Bằng chứng thực tế trên máy mục tiêu |
-|---|---|---|
-| **S00.T1 – S00.T3** | **PASS** | 100% link markdown hợp lệ, git sạch sẽ, tài liệu chuẩn hóa |
-| **S01.T1 – S01.T3** | **PASS** | Đo đạc phần cứng thật, Resolve 21.2 scriptable, E0 manifest khóa |
-| **S02.T1 – S02.T7** | **PASS** | Test harness `tests/test_worker_ipc.swift` đạt 100%, handshake JSON-RPC, ffprobe media probe, offline infer, kill(pid, 0) xác nhận không mồ côi |
-| **S03.T1 – S03.T5** | **PASS** | Test harness `tests/test_resolve_spike.swift` đạt 100%, timeline 2160x3840 @ 24fps, DRP 23KB sinh thật |
+### 2.1. Kiểm thử đã chạy đạt (Executed Tests)
+{step_info['test_results']}
 
-### Danh mục kiểm thử chưa chạy (Backlog các Gate tiếp theo):
-- **Gate G1 (S04–S09):** JSON Schema validator, `ProjectStore` actor ACID transactions, Fencing token simulation, Crash recovery reconciliation, APFS clone snapshot bytes test.
-- **Gate G2 (S10–S15):** Full-frame visual coverage, Whisper.cpp large-v3 Vietnamese ASR benchmark, Claims verifier, Held-out evaluation corpus.
-- **Gate G3–G5 (S16–S26):** Beam search shot selection, TTS timing sync, Preview QC, Final 4K export QC, Soak stress testing.
+### 2.2. Danh mục kiểm thử chưa chạy (Pending Tests / Future Gates)
+{step_info['pending_tests']}
 
 ---
 
@@ -208,19 +285,20 @@ Hãy xem xét toàn bộ mã nguồn, tài liệu và biên bản kiểm thử t
 
 ---
 
-## 6. Danh Mục Các File Được Đóng Gói (Package Manifest)
+## 6. Danh Mục Các File Được Đóng Gói (Package Manifest: {len(packaged_files) + 1} files)
 
 | Đường dẫn trong gói | Kích thước |
 |---|---|
+| `REVIEW_SUMMARY.md` | (Tài liệu tổng quan động được tạo tự động) |
 {file_list_md}
 """
     return summary
 
-def create_review_package(output_zip: str = "AIVideo-review.zip") -> None:
+def create_review_package(output_zip: str = "AIVideo-review.zip") -> str:
     print(f"=== Đang đóng gói dự án AIVideo v3.1 vào '{output_zip}' ===")
     root_dir = os.path.abspath(".")
     git_info = get_git_info()
-    print(f"Git Branch: {git_info['branch']} | Commit: {git_info['commit_hash'][:8]}")
+    print(f"Git Branch: {git_info['branch']} | Commit: {git_info['commit_hash'][:8] if len(git_info['commit_hash'])>=8 else git_info['commit_hash']}")
 
     packaged_files: List[Tuple[str, int]] = []
     zip_entries: List[Tuple[str, str]] = [] # (abs_path, arc_name)
@@ -237,6 +315,8 @@ def create_review_package(output_zip: str = "AIVideo-review.zip") -> None:
         for f in sorted(files):
             # Check exclusions
             if f in EXCLUDED_FILE_NAMES:
+                continue
+            if is_secret_file(f):
                 continue
             if any(f.endswith(ext) for ext in EXCLUDED_EXTENSIONS):
                 continue
@@ -295,6 +375,7 @@ def create_review_package(output_zip: str = "AIVideo-review.zip") -> None:
     print(f"📊 Dung lượng trước nén: {total_uncompressed / 1024:.1f} KB -> Sau nén: {zip_size / 1024:.1f} KB (Tỷ lệ: {zip_size/total_uncompressed*100:.1f}%)")
     print(f"🔍 Kiểm tra tính toàn vẹn ZIP: {'HỢP LỆ' if zipfile.ZipFile(abs_output).testzip() is None else 'LỖI'}")
     print(f"📝 Đã tạo file tóm tắt tại: REVIEW_SUMMARY.md")
+    return abs_output
 
 if __name__ == "__main__":
     out_name = sys.argv[1] if len(sys.argv) > 1 else "AIVideo-review.zip"

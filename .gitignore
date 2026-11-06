@@ -85,6 +85,10 @@ CacheClip/
 *.gallery/
 *.drp.bak
 
+# Test Executables (Mach-O binaries)
+tests/test_resolve_spike
+tests/test_worker_ipc
+
 # Run-time & Review Bundles
 AIVideo-review.zip
 REVIEW_SUMMARY.md
