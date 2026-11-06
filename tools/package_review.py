@@ -420,9 +420,10 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
         g0_status_badge = "🟢 **DONE (Đã đóng Gate G0: Đạt 100% tất cả các tiêu chí nghiệm thu G0)**"
         s02_status = "DONE"
         s03_status = "DONE"
-        g1_status_badge = "🟡 **IN_PROGRESS (Mở Gate G1: S04 & S05 DONE, chuẩn bị S06)**"
+        g1_status_badge = "🟡 **IN_PROGRESS (Mở Gate G1: S04 & S05 DONE, S06 IN_PROGRESS)**"
         s04_status = "DONE"
         s05_status = "DONE"
+        s06_status = "IN_PROGRESS"
     else:
         g0_status_badge = "🔵 **IN_REVIEW (Đang thẩm định / còn testcase chưa hoàn thành)**"
         s02_status = "IN_REVIEW"
@@ -430,6 +431,7 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
         g1_status_badge = "🟡 **IN_PROGRESS (Gate G1 còn lỗi, chưa hoàn thành nghiệm thu)**"
         s04_status = "IN_REVIEW"
         s05_status = "IN_REVIEW"
+        s06_status = "IN_REVIEW"
 
     summary = f"""# AIVideo v3.1 — Hồ Sơ Thẩm Định Mã Nguồn (Review Bundle)
 
@@ -454,7 +456,8 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
 - **Gate G1 (Dữ liệu và phục hồi):** {g1_status_badge}.
   - **S04:** Hợp đồng dữ liệu JSON Schema (5 trục bằng chứng, chu trình artifact 4 bước, RPC envelope nghiêm ngặt), SQLite WAL DDL hỗ trợ revision immutability, song ngữ Swift/Python với bi-directional golden tests. Trạng thái: `{s04_status}`.
   - **S05:** Import nguồn, content identity băm SHA-256, APFS clone & full-copy fallback, snapshot bất biến niêm phong, dedup và content revisions, budget & staging recovery. Trạng thái: `{s05_status}`.
-  - **S06 – S09:** Trạng thái: `NOT_STARTED` (Chưa triển khai, giữ nghiêm ngặt quy trình tuần tự).
+  - **S06:** ProjectStore actor + SQLite WAL, migration 002, brief immutability, optimistic concurrency CAS, idempotency journal, AI proposal isolation, fact confirmation, script selection/approval, S05 bridge. Trạng thái: `{s06_status}` (18/18 Baseline PASS, chờ nghiệm thu toàn diện macOS UI & crash recovery).
+  - **S07 – S09:** Trạng thái: `NOT_STARTED` (Chưa triển khai, giữ nghiêm ngặt quy trình tuần tự).
 - **Gate G2 – G5:** ⚪ **Chưa bắt đầu**.
 
 ---

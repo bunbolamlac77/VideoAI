@@ -127,4 +127,7 @@ swiftc -sdk "$SDK_PATH" \
 
 ./build/tests/test_s05_hardening
 
+echo "=== [8/8] Running Swift Gate G1 S06 ProjectStore Tests ==="
+bash tools/run_s06_tests.sh
+
 echo "=== ALL REGRESSION TEST SUITES EXECUTED SUCCESSFULLY ==="

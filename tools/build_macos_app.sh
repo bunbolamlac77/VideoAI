@@ -73,6 +73,15 @@ if [ -f "contracts/environment_matrix.json" ]; then
     cp "contracts/environment_matrix.json" "$RESOURCES_DIR/contracts/environment_matrix.json"
 fi
 
+# S06 canonical SQLite migrations
+mkdir -p "$RESOURCES_DIR/contracts/migrations"
+
+cp contracts/migrations/001_initial_g1_schema.sql \
+  "$RESOURCES_DIR/contracts/migrations/"
+
+cp contracts/migrations/002_s06_editor.sql \
+  "$RESOURCES_DIR/contracts/migrations/"
+
 # 4. Generate build manifest
 BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 cat <<EOF > "$RESOURCES_DIR/build_manifest.json"
@@ -92,8 +101,24 @@ swiftc -sdk "$SDK_PATH" \
   -swift-version 6 \
   -parse-as-library \
   packages/AIVideoCore/Sources/Models/DomainModels.swift \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
   packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
+  packages/AIVideoCore/Sources/SourceImport/SourceImportModels.swift \
+  packages/AIVideoCore/Sources/SourceImport/APFSCapability.swift \
+  packages/AIVideoCore/Sources/SourceImport/DiskBudgetPlanner.swift \
+  packages/AIVideoCore/Sources/SourceImport/SourceInspector.swift \
+  packages/AIVideoCore/Sources/SourceImport/SnapshotVerifier.swift \
+  packages/AIVideoCore/Sources/SourceImport/SourceAcquisition.swift \
+  packages/AIVideoCore/Sources/SourceImport/SourceManifestStore.swift \
+  packages/AIVideoCore/Sources/ProjectStore/ProjectStoreModels.swift \
+  packages/AIVideoCore/Sources/ProjectStore/SQLiteStoreDatabase.swift \
+  packages/AIVideoCore/Sources/ProjectStore/ProjectStore.swift \
+  packages/AIVideoCore/Sources/ProjectStore/ProjectStoreRegistry.swift \
+  packages/AIVideoCore/Sources/ProjectStore/SourceStoreBridge.swift \
+  apps/macos/Sources/BriefEditorView.swift \
+  apps/macos/Sources/ProjectStoreDemoHost.swift \
   apps/macos/Sources/AIVideoApp.swift \
+  -lsqlite3 \
   -o "$TARGET_DIR/AIVideo"
 
 echo "=== [4/4] Ad-hoc Code Signing App Bundle ==="

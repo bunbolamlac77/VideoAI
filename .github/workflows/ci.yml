@@ -119,6 +119,15 @@ jobs:
           ./build/tests/test_s05_hardening \
             2>&1 | tee build/reports/s05-hardening.log
 
+      - name: Run G1 S06 ProjectStore Regression
+        shell: bash
+        run: |
+          mkdir -p build/reports
+          set -o pipefail
+
+          bash tools/run_s06_tests.sh \
+            2>&1 | tee build/reports/s06-ci.log
+
       - name: Verify No Model Binaries Tracked by Git
         run: |
           if git ls-files | grep -E '\.(safetensors|bin|gguf)$'; then

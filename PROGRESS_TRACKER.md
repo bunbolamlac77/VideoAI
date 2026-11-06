@@ -40,7 +40,7 @@
 - [x] **S05** — Import nguồn, băm nội dung (content hash) và cơ chế snapshot nguồn niêm phong trên APFS.  
   *Biên bản:* [`reports/progress/S05.md`](reports/progress/S05.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Readonly scanner & preflight, APFS clone & fallback copy, Streaming SHA-256 & immutable sealed blob, Content deduplication & revisions, Disk budget & orphan staging recovery, 14/14 test cases 100% PASS)
 - [ ] **S06** — Triển khai `ProjectStore` actor trong Swift core, SQLite WAL, quản lý revision và transaction ngắn.  
-  *Biên bản:* [`reports/progress/S06.md`](reports/progress/S06.md) · *Trạng thái:* `NOT_STARTED`
+  *Biên bản:* [`reports/progress/S06.md`](reports/progress/S06.md) · *Trạng thái:* `IN_PROGRESS` (18/18 Baseline tests PASS, ProjectStore actor, SQLite WAL, Migration 002, Brief Editor UI)
 - [ ] **S07** — Resource Governor, Task Scheduler, Fencing tokens và hủy attempt trễ.  
   *Biên bản:* [`reports/progress/S07.md`](reports/progress/S07.md) · *Trạng thái:* `NOT_STARTED`
 - [ ] **S08** — Chu trình công bố artifact (`PREPARED` → `MATERIALIZED` → `VERIFIED` → `COMMITTED`) và Startup Reconciler.  

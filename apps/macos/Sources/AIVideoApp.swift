@@ -657,6 +657,9 @@ struct ContentView: View {
                         .padding(8)
                     }
 
+                    // Gate G1 - Real canonical SQLite editor
+                    ProjectStoreDemoHost()
+
                     // Section 4: Future Capabilities (Gate G1 Matrix)
                     GroupBox(label: Label("4. Bản đồ năng lực hệ thống (Capabilities Matrix)", systemImage: "checklist")) {
                         VStack(alignment: .leading, spacing: 6) {
