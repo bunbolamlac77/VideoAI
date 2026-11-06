@@ -117,17 +117,52 @@ def resolve_app_support_dir(custom_path: Optional[str] = None) -> str:
     return os.path.join(home, "Library", "Application Support", "AIVideo")
 
 def resolve_lock_file() -> Optional[str]:
-    # 1. Check workspace contracts
+    # 1. Environment variables if provided by .app bundle or test harness
+    if "AIVIDEO_CONTRACTS_DIR" in os.environ:
+        p = os.path.join(os.environ["AIVIDEO_CONTRACTS_DIR"], "g0_model.lock.json")
+        if os.path.isfile(p):
+            return os.path.abspath(p)
+    if "AIVIDEO_APP_RESOURCES" in os.environ:
+        p = os.path.join(os.environ["AIVIDEO_APP_RESOURCES"], "contracts", "g0_model.lock.json")
+        if os.path.isfile(p):
+            return os.path.abspath(p)
+
+    # 2. Check candidate paths relative to current file and workspace
+    file_dir = os.path.dirname(os.path.abspath(__file__))
     candidates = [
+        # Explicit workspace relative
         os.path.abspath("contracts/g0_model.lock.json"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "contracts", "g0_model.lock.json"),
-        # App bundle resources
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "contracts", "g0_model.lock.json")
+        # Relative to src/aivideo_workers -> ../../../contracts/g0_model.lock.json
+        os.path.join(file_dir, "..", "..", "..", "contracts", "g0_model.lock.json"),
+        # Relative to aivideo_workers in Contents/Resources/Workers/aivideo_workers/ -> ../../contracts/g0_model.lock.json
+        os.path.join(file_dir, "..", "..", "contracts", "g0_model.lock.json"),
+        # Relative to Contents/Resources/workers/src/aivideo_workers/ -> ../../../../contracts/g0_model.lock.json
+        os.path.join(file_dir, "..", "..", "..", "..", "contracts", "g0_model.lock.json"),
+        # Direct sibling contracts
+        os.path.join(file_dir, "..", "contracts", "g0_model.lock.json")
     ]
     for p in candidates:
         norm = os.path.normpath(p)
         if os.path.isfile(norm):
             return norm
+
+    # 3. Walk up directory tree to find Contents/Resources/contracts or contracts
+    curr = file_dir
+    for _ in range(6):
+        bundle_cand = os.path.join(curr, "Contents", "Resources", "contracts", "g0_model.lock.json")
+        if os.path.isfile(bundle_cand):
+            return os.path.normpath(bundle_cand)
+        res_cand = os.path.join(curr, "Resources", "contracts", "g0_model.lock.json")
+        if os.path.isfile(res_cand):
+            return os.path.normpath(res_cand)
+        contracts_cand = os.path.join(curr, "contracts", "g0_model.lock.json")
+        if os.path.isfile(contracts_cand):
+            return os.path.normpath(contracts_cand)
+        parent = os.path.dirname(curr)
+        if parent == curr:
+            break
+        curr = parent
+
     return None
 
 def compute_file_sha256(path: str) -> str:

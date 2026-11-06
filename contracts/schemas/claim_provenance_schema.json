@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivideo.local/schemas/claim_provenance_schema.json",
+  "title": "ClaimProvenanceSchema",
+  "description": "Defines canonical claim and evidence provenance across the 5 orthogonal axes as specified in docs/02-ANALYSIS-AND-DATA.md.",
+  "type": "object",
+  "required": [
+    "claim_id",
+    "revision_id",
+    "workday_id",
+    "text",
+    "origin",
+    "epistemic_status",
+    "review_status",
+    "support_status",
+    "allowed_use",
+    "created_at"
+  ],
+  "properties": {
+    "claim_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "revision_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "workday_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "origin": {
+      "type": "string",
+      "enum": [
+        "user",
+        "visual_model",
+        "asr",
+        "audio_detector",
+        "ocr",
+        "metadata",
+        "derived"
+      ]
+    },
+    "epistemic_status": {
+      "type": "string",
+      "enum": [
+        "observed",
+        "reported",
+        "inferred",
+        "unknown"
+      ]
+    },
+    "review_status": {
+      "type": "string",
+      "enum": [
+        "unreviewed",
+        "auto_checked",
+        "needs_review",
+        "confirmed",
+        "rejected",
+        "superseded"
+      ]
+    },
+    "support_status": {
+      "type": "string",
+      "enum": [
+        "supported",
+        "contradicted",
+        "insufficient",
+        "disputed"
+      ]
+    },
+    "allowed_use": {
+      "type": "string",
+      "enum": [
+        "direct_claim",
+        "attributed_or_qualified",
+        "illustrative_only",
+        "exclude"
+      ]
+    },
+    "source_revision_id": {
+      "type": ["string", "null"],
+      "format": "uuid"
+    },
+    "time_range": {
+      "type": ["object", "null"],
+      "properties": {
+        "start_frame": { "type": "integer", "minimum": 0 },
+        "end_frame": { "type": "integer", "minimum": 0 },
+        "time_base_num": { "type": "integer", "minimum": 1 },
+        "time_base_den": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["start_frame", "end_frame", "time_base_num", "time_base_den"]
+    },
+    "confirmation_id": {
+      "type": ["string", "null"],
+      "format": "uuid"
+    },
+    "confidence_raw": {
+      "type": ["number", "null"],
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

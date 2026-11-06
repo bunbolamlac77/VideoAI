@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivideo.local/schemas/rpc_envelope_schema.json",
+  "title": "RPCEnvelopeSchema",
+  "description": "JSON-RPC 2.0 message envelope with session and fencing tokens compliant with JOB-04 and DATA-04.",
+  "type": "object",
+  "required": ["jsonrpc"],
+  "properties": {
+    "jsonrpc": {
+      "type": "string",
+      "const": "2.0"
+    },
+    "id": {
+      "type": ["string", "integer", "null"]
+    },
+    "method": {
+      "type": "string",
+      "minLength": 1
+    },
+    "params": {
+      "type": ["object", "array", "null"]
+    },
+    "result": {},
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "integer" },
+        "message": { "type": "string" },
+        "data": {}
+      },
+      "additionalProperties": false
+    },
+    "session_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "fencing_token": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "expected_revision": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false
+}

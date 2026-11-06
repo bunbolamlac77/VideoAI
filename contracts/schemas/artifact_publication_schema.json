@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aivideo.local/schemas/artifact_publication_schema.json",
+  "title": "ArtifactPublicationSchema",
+  "description": "Defines canonical artifact publication lifecycle as specified in docs/05-ARCHITECTURE-AND-ROADMAP.md Section 6.",
+  "type": "object",
+  "required": [
+    "publication_id",
+    "project_id",
+    "job_id",
+    "attempt_id",
+    "fencing_token",
+    "artifact_type",
+    "state",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "publication_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "project_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "job_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "attempt_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "fencing_token": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "artifact_type": {
+      "type": "string",
+      "enum": [
+        "source_snapshot",
+        "proxy_video",
+        "audio_extract",
+        "transcript",
+        "visual_features",
+        "tts_audio",
+        "resolve_drp",
+        "preview_render",
+        "final_render",
+        "backup_archive"
+      ]
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "PREPARED",
+        "MATERIALIZED",
+        "VERIFIED",
+        "COMMITTED"
+      ]
+    },
+    "temp_path": {
+      "type": ["string", "null"]
+    },
+    "canonical_path": {
+      "type": ["string", "null"]
+    },
+    "sha256_hash": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "byte_size": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

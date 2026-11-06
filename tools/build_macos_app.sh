@@ -69,6 +69,9 @@ mkdir -p "$RESOURCES_DIR/contracts"
 if [ -f "contracts/g0_model.lock.json" ]; then
     cp "contracts/g0_model.lock.json" "$RESOURCES_DIR/contracts/g0_model.lock.json"
 fi
+if [ -f "contracts/environment_matrix.json" ]; then
+    cp "contracts/environment_matrix.json" "$RESOURCES_DIR/contracts/environment_matrix.json"
+fi
 
 # 4. Generate build manifest
 BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"

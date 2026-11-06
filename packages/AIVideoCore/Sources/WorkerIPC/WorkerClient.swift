@@ -272,6 +272,7 @@ public actor WorkerClient {
 
     // Public State
     public private(set) var workerPid: Int32 = 0
+    public private(set) var lastTerminatedPid: Int32 = 0
     public private(set) var pythonVersion: String = ""
     public private(set) var workerVersion: String = ""
     public private(set) var capabilities: [String] = []
@@ -303,11 +304,16 @@ public actor WorkerClient {
         self.startupTask = task
 
         do {
-            let res = try await task.value
+            let res = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
             self.startupTask = nil
             return res
         } catch {
             self.startupTask = nil
+            await self.terminate()
             throw error
         }
     }
@@ -347,6 +353,16 @@ public actor WorkerClient {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pythonPath)
         proc.arguments = ["-u", scriptPath]
+
+        var env = ProcessInfo.processInfo.environment
+        if let resURL = Bundle.main.resourceURL {
+            env["AIVIDEO_APP_RESOURCES"] = resURL.path
+            let contractsDir = resURL.appendingPathComponent("contracts").path
+            if FileManager.default.fileExists(atPath: contractsDir) {
+                env["AIVIDEO_CONTRACTS_DIR"] = contractsDir
+            }
+        }
+        proc.environment = env
 
         let inPipe = Pipe()
         let outPipe = Pipe()
@@ -412,23 +428,41 @@ public actor WorkerClient {
             }
         }
 
-        try proc.run()
-        self.workerPid = proc.processIdentifier
+        do {
+            if Task.isCancelled {
+                throw WorkerError.requestCancelled
+            }
 
-        // Perform Initialize Handshake
-        let initParams = InitializeParams(clientName: "AIVideoCore", clientVersion: "1.0.0")
-        let initResult: InitializeResult = try await sendRequest(
-            method: "initialize",
-            params: initParams,
-            timeoutSeconds: timeoutSeconds
-        )
+            try proc.run()
+            self.workerPid = proc.processIdentifier
 
-        self.pythonVersion = initResult.pythonVersion
-        self.workerVersion = initResult.workerVersion
-        self.capabilities = initResult.capabilities
-        self.isConnected = true
+            if Task.isCancelled {
+                throw WorkerError.requestCancelled
+            }
 
-        return initResult
+            // Perform Initialize Handshake
+            let initParams = InitializeParams(clientName: "AIVideoCore", clientVersion: "1.0.0")
+            let initResult: InitializeResult = try await sendRequest(
+                method: "initialize",
+                params: initParams,
+                timeoutSeconds: timeoutSeconds
+            )
+
+            if Task.isCancelled {
+                throw WorkerError.requestCancelled
+            }
+
+            self.pythonVersion = initResult.pythonVersion
+            self.workerVersion = initResult.workerVersion
+            self.capabilities = initResult.capabilities
+            self.isConnected = true
+
+            return initResult
+        } catch {
+            // Clean up child process and pipes immediately on handshake timeout, proc.run() failure or cancellation
+            await self.terminate()
+            throw error
+        }
     }
 
     // MARK: - Incoming Chunk & Framing Handling (FIFO)
@@ -789,6 +823,7 @@ public actor WorkerClient {
         stdoutStreamContinuation?.finish()
         stdoutConsumerTask?.cancel()
 
+        self.lastTerminatedPid = pid
         self.process = nil
         self.isConnected = false
         self.workerPid = 0

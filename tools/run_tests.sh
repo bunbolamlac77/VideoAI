@@ -53,7 +53,7 @@ swiftc -sdk "$SDK_PATH" \
 
 ./build/tests/test_resolve_spike
 
-echo "=== [3/3] Running Python Framing & Model Setup Unit Tests ==="
+echo "=== [3/4] Running Python Framing & Model Setup Unit Tests ==="
 PYTHON_BIN="python3"
 DEDICATED_PY="$HOME/Library/Application Support/AIVideo/Runtimes/g0-mlx-runtime/bin/python3"
 if [ -x "$DEDICATED_PY" ]; then
@@ -63,5 +63,29 @@ elif [ -x "workers/.venv/bin/python3" ]; then
 fi
 
 "$PYTHON_BIN" tools/run_python_tests.py
+
+echo "=== [4/5] Building .app and Running S02.T1 & S02.T2 Verification Harness ==="
+./tools/build_macos_app.sh >/dev/null
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DomainModels.swift \
+  packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
+  tests/test_s02_manual_verification.swift \
+  -o build/tests/test_s02_manual_verification
+
+./build/tests/test_s02_manual_verification
+
+echo "=== [5/5] Running Swift Gate G1 S04 Contract Unit Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  tests/test_g1_contracts.swift \
+  -o build/tests/test_g1_contracts
+
+./build/tests/test_g1_contracts
 
 echo "=== ALL REGRESSION TEST SUITES EXECUTED SUCCESSFULLY ==="

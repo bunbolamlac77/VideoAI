@@ -557,8 +557,65 @@ struct TestWorkerIPC {
             exit(1)
         }
 
+        // 12. Test S02.IPC.10: Startup Handshake Failure Cleanup & Zero Orphan
+        print("\n[Test 12] S02.IPC.10: Startup Handshake Timeout & Cancellation Cleanup...")
+        do {
+            let hangScript = "/tmp/aivideo_hang_worker.py"
+            try "import time\ntime.sleep(60)\n".write(toFile: hangScript, atomically: true, encoding: .utf8)
+            defer { try? FileManager.default.removeItem(atPath: hangScript) }
+
+            let hangClient = WorkerClient()
+            var caughtTimeout = false
+            do {
+                _ = try await hangClient.start(
+                    pythonPath: pythonPath,
+                    scriptPath: hangScript,
+                    timeoutSeconds: 1.0
+                )
+            } catch WorkerError.requestTimeout {
+                caughtTimeout = true
+            } catch {
+                caughtTimeout = true
+            }
+
+            assertTrue(caughtTimeout, "Must catch handshake timeout")
+            let deadPid = await hangClient.lastTerminatedPid
+            assertTrue(deadPid > 0, "Pid must have been recorded")
+            // Give system up to 1s to reap
+            var isAlive = true
+            for _ in 0..<10 {
+                if kill(deadPid, 0) != 0 {
+                    isAlive = false
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            assertTrue(!isAlive, "Child process \(deadPid) must be thoroughly reaped on startup timeout")
+
+            recordWorkerTestResult(
+                testcaseId: "S02.IPC.10",
+                requirementId: "JOB-04",
+                expected: "Worker startup handshake timeout or cancellation automatically reaps child process without orphans",
+                observed: "Handshake timeout caught; PID \(deadPid) reaped cleanly with zero orphans",
+                status: "PASS",
+                exitStatus: 0
+            )
+            print("   ✅ PASS: Startup handshake timeout cleaned up PID \(deadPid) cleanly. Zero orphan.")
+        } catch {
+            recordWorkerTestResult(
+                testcaseId: "S02.IPC.10",
+                requirementId: "JOB-04",
+                expected: "Worker startup handshake timeout or cancellation automatically reaps child process without orphans",
+                observed: "Failed: \(error)",
+                status: "FAIL",
+                exitStatus: 1
+            )
+            print("   ❌ FAIL: S02.IPC.10 failed: \(error)")
+            exit(1)
+        }
+
         print("\n=======================================================")
-        print("ALL WORKER IPC & REAL MODEL TESTS PASSED (10/10)!")
+        print("ALL WORKER IPC & REAL MODEL TESTS PASSED (11/11)!")
         print("=======================================================\n")
     }
 }

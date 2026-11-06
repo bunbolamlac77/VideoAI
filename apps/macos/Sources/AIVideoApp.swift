@@ -325,6 +325,13 @@ final class AppState: ObservableObject {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var appState: AppState?
 
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        if let first = filenames.first {
+            let url = URL(fileURLWithPath: first)
+            appState?.handleSelectedURL(url)
+        }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let state = appState else { return .terminateNow }
 
@@ -355,6 +362,9 @@ struct AIVideoApp: App {
                         await state.initializeWorker()
                         state.restoreSavedBookmark()
                     }
+                }
+                .onOpenURL { url in
+                    state.handleSelectedURL(url)
                 }
         }
         .windowStyle(.titleBar)

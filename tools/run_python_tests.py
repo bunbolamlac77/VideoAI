@@ -36,10 +36,11 @@ class StructuredJSONLTestResult(unittest.TextTestResult):
         super().addSuccess(test)
         test_id = test.id()
         doc = (test.shortDescription() or "").strip()
+        req_id = "DATA-04" if "g1_contracts" in test_id else ("OFF-01" if "model" in test_id else "JOB-04")
         record_test(
             self.records_file,
             test_id,
-            "OFF-01" if "model" in test_id else "JOB-04",
+            req_id,
             "PASS",
             0,
             doc or "Test passed successfully",
@@ -101,6 +102,7 @@ def main():
     suite.addTests(loader.loadTestsFromName("tests.test_framing_resilience"))
     suite.addTests(loader.loadTestsFromName("tests.test_model_setup"))
     suite.addTests(loader.loadTestsFromName("tests.test_package_review_fault_injection"))
+    suite.addTests(loader.loadTestsFromName("tests.test_g1_contracts"))
 
     runner = unittest.TextTestRunner(
         verbosity=2,
