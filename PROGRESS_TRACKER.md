@@ -11,8 +11,8 @@
 
 | Cổng | Tên cổng | Bước bao hàm | Trạng thái hiện tại | Điều kiện tiên quyết |
 |---|---|---|---|---|
-| **G0** | Nền tảng chạy thật | S00 – S03 | 🟡 **ĐANG THỰC HIỆN (S00)** | Build `.app` arm64, worker thật, file sandbox/bookmark, model local, offline, Resolve spike |
-| **G1** | Dữ liệu và phục hồi | S04 – S09 | ⚪ Chưa bắt đầu | Single-writer `ProjectStore`, snapshot bất biến, publication state machine, crash recovery |
+| **G0** | Nền tảng chạy thật | S00 – S03 | 🟢 **ĐÃ HOÀN THÀNH (GATE CLOSED)** | Build `.app` arm64, worker thật, file sandbox/bookmark, model local, offline, Resolve spike |
+| **G1** | Dữ liệu và phục hồi | S04 – S09 | 🟡 **SẴN SÀNG TRIỂN KHAI** | Single-writer `ProjectStore`, snapshot bất biến, publication state machine, crash recovery |
 | **G2** | Phân tích và bằng chứng | S10 – S15 | ⚪ Chưa bắt đầu | Media mapping, full-frame coverage, claim verifier, corpus benchmark |
 | **G3** | Kịch bản dựng được | S16 – S19 | ⚪ Chưa bắt đầu | Outline hợp lệ, TTS thật, beam search shot selection, script approval snapshot |
 | **G4** | Preview được duyệt | S20 – S21 | ⚪ Chưa bắt đầu | Managed timeline Resolve, QC preview tự động, preview approval |
@@ -31,8 +31,8 @@
   *Biên bản:* [`reports/progress/S01.md`](reports/progress/S01.md) · *Trạng thái:* `DONE`
 - [x] **S02** — Bản `.app` macOS tối thiểu, IPC JSON-RPC qua stdio, kiểm tra quyền truy cập file/security-scoped bookmark và một lượt inference local.  
   *Biên bản:* [`reports/progress/S02.md`](reports/progress/S02.md) · *Trạng thái:* `DONE`
-- [ ] **S03** — DaVinci Resolve spike 10 giây (timeline 2160x3840 24fps), xác nhận chạy hoàn toàn offline và đóng Gate G0.  
-  *Biên bản:* [`reports/progress/S03.md`](reports/progress/S03.md) · *Trạng thái:* `NOT_STARTED`
+- [x] **S03** — DaVinci Resolve spike 10 giây (timeline 2160x3840 24fps), xác nhận chạy hoàn toàn offline và đóng Gate G0.  
+  *Biên bản:* [`reports/progress/S03.md`](reports/progress/S03.md) · *Trạng thái:* `DONE`
 
 ### G1 — Dữ liệu và phục hồi
 - [ ] **S04** — Hợp đồng dữ liệu JSON Schema, IPC contracts và định nghĩa các state machines.  

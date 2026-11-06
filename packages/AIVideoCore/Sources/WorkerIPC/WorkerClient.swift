@@ -227,6 +227,14 @@ public actor WorkerClient {
         )
     }
 
+    public func resolveStatus() async throws -> [String: Any] {
+        return try await sendRequest(method: "resolve.status")
+    }
+
+    public func runResolveSpike(drpPath: String = "fixtures/AIVideo_G0_Spike.drp") async throws -> [String: Any] {
+        return try await sendRequest(method: "resolve.spike_timeline", params: ["drp_path": drpPath])
+    }
+
     public func terminate() {
         stdoutPipe?.fileHandleForReading.readabilityHandler = nil
 

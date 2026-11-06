@@ -14,6 +14,8 @@ import time
 import hashlib
 import traceback
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 PROTOCOL_VERSION = "2.0"
 WORKER_VERSION = "0.1.0"
 
@@ -40,7 +42,9 @@ def handle_initialize(params: dict) -> dict:
         "capabilities": [
             "media.probe",
             "system.ping",
-            "ai.local_infer_test"
+            "ai.local_infer_test",
+            "resolve.status",
+            "resolve.spike_timeline"
         ]
     }
 
@@ -138,11 +142,22 @@ def handle_local_infer_test(params: dict) -> dict:
         }
     }
 
+def handle_resolve_status(params: dict) -> dict:
+    import resolve_adapter
+    return resolve_adapter.check_resolve_status()
+
+def handle_resolve_spike(params: dict) -> dict:
+    import resolve_adapter
+    drp_path = params.get("drp_path", "fixtures/AIVideo_G0_Spike.drp")
+    return resolve_adapter.run_g0_spike(output_drp_path=drp_path)
+
 METHODS = {
     "initialize": handle_initialize,
     "system.ping": handle_ping,
     "media.probe": handle_media_probe,
     "ai.local_infer_test": handle_local_infer_test,
+    "resolve.status": handle_resolve_status,
+    "resolve.spike_timeline": handle_resolve_spike,
 }
 
 def main():
