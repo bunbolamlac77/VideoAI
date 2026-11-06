@@ -35,9 +35,8 @@
   *Biên bản:* [`reports/progress/S03.md`](reports/progress/S03.md) · *Trạng thái:* `DONE` (Live Resolve Studio spike 240 frames @ 24fps, V2 title, atomic DRP export, offline 100%)
 
 ### G1 — Dữ liệu và phục hồi
-- [ ] **S04** — Hợp đồng dữ liệu JSON Schema, IPC contracts và định nghĩa các state machines.  
-  *Biên bản:* [`reports/progress/S04.md`](reports/progress/S04.md) · *Trạng thái:* `IN_PROGRESS`
-  *Biên bản:* [`reports/progress/S04.md`](reports/progress/S04.md) · *Trạng thái:* `NOT_STARTED`
+- [x] **S04** — Hợp đồng dữ liệu JSON Schema, IPC contracts và định nghĩa các state machines.  
+  *Biên bản:* [`reports/progress/S04.md`](reports/progress/S04.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: snake_case & ISO-8601 Codable, Golden tests hai chiều, SQLite WAL disk test, JSON-RPC schema strictness)
 - [ ] **S05** — Import nguồn, băm nội dung (content hash) và cơ chế snapshot nguồn niêm phong trên APFS.  
   *Biên bản:* [`reports/progress/S05.md`](reports/progress/S05.md) · *Trạng thái:* `NOT_STARTED`
 - [ ] **S06** — Triển khai `ProjectStore` actor trong Swift core, SQLite WAL, quản lý revision và transaction ngắn.  

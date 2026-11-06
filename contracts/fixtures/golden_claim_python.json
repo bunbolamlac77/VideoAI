@@ -1,0 +1,21 @@
+{
+  "claim_id": "00000000-0000-4000-8000-000000000001",
+  "revision_id": "00000000-0000-4000-8000-000000000011",
+  "workday_id": "00000000-0000-4000-8000-000000000101",
+  "text": "Golden test: Xe chạy qua ngã tư lúc 08:30 sáng.",
+  "origin": "visual_model",
+  "epistemic_status": "inferred",
+  "review_status": "unreviewed",
+  "support_status": "supported",
+  "allowed_use": "direct_claim",
+  "source_revision_id": "00000000-0000-4000-8000-000000000201",
+  "time_range": {
+    "start_frame": 100,
+    "end_frame": 240,
+    "time_base_num": 1,
+    "time_base_den": 24
+  },
+  "confirmation_id": null,
+  "confidence_raw": 0.95,
+  "created_at": "2026-11-06T12:00:00Z"
+}

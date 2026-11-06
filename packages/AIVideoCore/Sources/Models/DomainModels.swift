@@ -40,7 +40,26 @@ public struct JSONRPCErrorPayload: Codable, Sendable {
 public struct JSONRPCResponseEnvelope: Decodable, Sendable {
     public let jsonrpc: String
     public let id: Int?
+    public let hasResult: Bool
+    public let hasMethod: Bool
     public let error: JSONRPCErrorPayload?
+
+    private enum CodingKeys: String, CodingKey {
+        case jsonrpc
+        case id
+        case result
+        case error
+        case method
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.jsonrpc = try container.decode(String.self, forKey: .jsonrpc)
+        self.id = try container.decodeIfPresent(Int.self, forKey: .id)
+        self.hasResult = container.contains(.result)
+        self.hasMethod = container.contains(.method)
+        self.error = try container.decodeIfPresent(JSONRPCErrorPayload.self, forKey: .error)
+    }
 }
 
 // MARK: - Handshake & System DTOs

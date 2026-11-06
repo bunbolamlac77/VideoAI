@@ -555,6 +555,16 @@ public actor WorkerClient {
             return
         }
 
+        // Reject message that only has {"jsonrpc": "2.0"} or lacks method, result, and error
+        guard envelope.hasMethod || envelope.hasResult || envelope.error != nil else {
+            let snippet = String(data: frameData.prefix(200), encoding: .utf8) ?? "binary data"
+            failAllPending(
+                with: WorkerError.framingError("Invalid JSON-RPC envelope (missing method, result, and error): \(snippet)"),
+                session: session
+            )
+            return
+        }
+
         guard let id = envelope.id else {
             if let errorPayload = envelope.error {
                 failAllPending(with: WorkerError.rpcError(
@@ -576,8 +586,12 @@ public actor WorkerClient {
                 message: errorPayload.message,
                 data: errorPayload.data
             )))
-        } else {
+        } else if envelope.hasResult {
             resolveRequest(id: id, session: session, result: .success(frameData))
+        } else {
+            resolveRequest(id: id, session: session, result: .failure(WorkerError.framingError(
+                "JSON-RPC response id \(id) contained neither 'result' nor 'error'"
+            )))
         }
     }
 

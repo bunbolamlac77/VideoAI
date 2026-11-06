@@ -82,6 +82,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DomainModels.swift \
   packages/AIVideoCore/Sources/Models/DataContracts.swift \
   tests/test_g1_contracts.swift \
   -o build/tests/test_g1_contracts

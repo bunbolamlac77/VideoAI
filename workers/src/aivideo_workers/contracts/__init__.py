@@ -6,6 +6,7 @@ from .data_contracts import (
     AllowedUse,
     ArtifactPublicationState,
     JobStatus,
+    TimeRange,
     ClaimRecord,
     ArtifactPublicationRecord,
     ContractError
@@ -19,6 +20,7 @@ __all__ = [
     "AllowedUse",
     "ArtifactPublicationState",
     "JobStatus",
+    "TimeRange",
     "ClaimRecord",
     "ArtifactPublicationRecord",
     "ContractError"

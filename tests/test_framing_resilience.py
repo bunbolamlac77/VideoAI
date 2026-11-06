@@ -70,6 +70,40 @@ class TestWorkerFramingAndProtocol(unittest.TestCase):
         proc.stdout.close()
         proc.stderr.close()
 
+    def test_bare_or_empty_envelope_rejected(self):
+        """Worker strictly rejects messages that only contain {"jsonrpc": "2.0"} or lack method."""
+        proc = subprocess.Popen(
+            [PYTHON_EXE, "-u", WORKER_MAIN],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False
+        )
+
+        # 1. Bare {"jsonrpc": "2.0"}
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0"}).encode("utf-8") + b"\n")
+        proc.stdin.flush()
+        resp1 = json.loads(proc.stdout.readline().decode("utf-8"))
+        self.assertIn("error", resp1)
+        self.assertEqual(resp1["error"]["code"], -32600)
+        self.assertIn("method", resp1["error"]["message"].lower())
+
+        # 2. {"jsonrpc": "2.0", "id": 123} without method
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 123}).encode("utf-8") + b"\n")
+        proc.stdin.flush()
+        resp2 = json.loads(proc.stdout.readline().decode("utf-8"))
+        self.assertIn("error", resp2)
+        self.assertEqual(resp2["error"]["code"], -32600)
+        self.assertEqual(resp2.get("id"), 123)
+
+        # Clean shutdown
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "shutdown"}).encode("utf-8") + b"\n")
+        proc.stdin.flush()
+        proc.wait(timeout=5)
+        proc.stdin.close()
+        proc.stdout.close()
+        proc.stderr.close()
+
     def test_invalid_id_types_rejected(self):
         """JSON-RPC 2.0: id cannot be boolean, object, or array."""
         proc = subprocess.Popen(

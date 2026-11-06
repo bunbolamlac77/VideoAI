@@ -267,6 +267,12 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
         r.setdefault("test_type", "automated")
         records.append(r)
 
+    # 4. Load Swift G1 Contract records
+    swift_g1_records = load_jsonl_records("swift_g1_records.jsonl")
+    for r in swift_g1_records:
+        r.setdefault("test_type", "automated")
+        records.append(r)
+
     # If no records were produced (e.g. build failure), record runner error
     if not records:
         records.append({
@@ -399,16 +405,18 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
         g0_status_badge = "🟢 **DONE (Đã đóng Gate G0: Đạt 100% tất cả các tiêu chí nghiệm thu G0)**"
         s02_status = "DONE"
         s03_status = "DONE"
-        g1_status_badge = "🟡 **IN_PROGRESS (Mở Gate G1: Bắt đầu S04 – S09 Dữ liệu và phục hồi)**"
+        g1_status_badge = "🟡 **IN_PROGRESS (Mở Gate G1: S04 DONE, chuẩn bị S05)**"
+        s04_status = "DONE"
     else:
         g0_status_badge = "🔵 **IN_REVIEW (Đang thẩm định / còn testcase chưa hoàn thành)**"
         s02_status = "IN_REVIEW"
         s03_status = "IN_REVIEW"
-        g1_status_badge = "⚪ **Chưa bắt đầu (Giữ nguyên tắc không mở G1 trước khi G0 được nghiệm thu)**"
+        g1_status_badge = "🟡 **IN_PROGRESS (S04 còn lỗi, chưa hoàn thành nghiệm thu)**"
+        s04_status = "IN_REVIEW"
 
     summary = f"""# AIVideo v3.1 — Hồ Sơ Thẩm Định Mã Nguồn (Review Bundle)
 
-> **Mục đích:** Bàn giao mã nguồn cho ChatGPT hoặc kiểm định viên độc lập sau khi nghiệm thu toàn diện Gate G0 và mở Gate G1.  
+> **Mục đích:** Bàn giao mã nguồn cho ChatGPT hoặc kiểm định viên độc lập sau khi nghiệm thu toàn diện Gate G0 và hoàn thành bước S04 Gate G1.  
 > **Thời điểm đóng gói:** {timestamp}  
 > **Kho lưu trữ Git:** {git_info['remote_url']}  
 > **Nhánh:** `{git_info['branch']}` · **Commit Hash:** `{git_info['commit_hash']}`  
@@ -427,6 +435,8 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
   - **S03:** DaVinci Resolve Scripting Adapter, kiểm tra 2160x3840 @ 24fps, timeline đúng 240 frames, tiêu đề trên Track 2, atomic DRP export, bắt lỗi disconnect không crash. Trạng thái: `{s03_status}`.
 - **Model Pipeline Sản Phẩm (S11: Qwen-VL, Whisper, VieNeu-TTS, DINOv2):** ⚪ **NOT_INSTALLED (Chưa cài đặt, không dùng smoke test fixture để đóng điều kiện LLM sản phẩm)**.
 - **Gate G1 (Dữ liệu và phục hồi):** {g1_status_badge}.
+  - **S04:** Hợp đồng dữ liệu JSON Schema (5 trục bằng chứng, chu trình artifact 4 bước, RPC envelope nghiêm ngặt), SQLite WAL DDL hỗ trợ revision immutability, song ngữ Swift/Python với bi-directional golden tests. Trạng thái: `{s04_status}`.
+  - **S05 – S09:** Trạng thái: `NOT_STARTED` (Chưa triển khai, giữ nghiêm ngặt quy trình tuần tự).
 - **Gate G2 – G5:** ⚪ **Chưa bắt đầu**.
 
 ---

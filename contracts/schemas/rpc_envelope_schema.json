@@ -44,5 +44,50 @@
       "minimum": 0
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "description": "Request envelope",
+      "required": ["jsonrpc", "id", "method"],
+      "not": {
+        "anyOf": [
+          { "required": ["result"] },
+          { "required": ["error"] }
+        ]
+      }
+    },
+    {
+      "description": "Notification envelope",
+      "required": ["jsonrpc", "method"],
+      "not": {
+        "anyOf": [
+          { "required": ["id"] },
+          { "required": ["result"] },
+          { "required": ["error"] }
+        ]
+      }
+    },
+    {
+      "description": "Success response envelope",
+      "required": ["jsonrpc", "id", "result"],
+      "not": {
+        "anyOf": [
+          { "required": ["method"] },
+          { "required": ["params"] },
+          { "required": ["error"] }
+        ]
+      }
+    },
+    {
+      "description": "Error response envelope",
+      "required": ["jsonrpc", "id", "error"],
+      "not": {
+        "anyOf": [
+          { "required": ["method"] },
+          { "required": ["params"] },
+          { "required": ["result"] }
+        ]
+      }
+    }
+  ]
 }

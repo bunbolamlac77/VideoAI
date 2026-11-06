@@ -100,11 +100,36 @@ public enum JobStatus: String, Codable, Sendable {
 
 // MARK: - 4. Canonical Claim Model
 
+public enum DataContractDateFormatters {
+    public static func string(from date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: date)
+    }
+
+    public static func date(from string: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        if let d = formatter.date(from: string) {
+            return d
+        }
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: string)
+    }
+}
+
 public struct TimeRange: Codable, Sendable, Equatable {
     public let startFrame: Int
     public let endFrame: Int
     public let timeBaseNum: Int
     public let timeBaseDen: Int
+
+    public enum CodingKeys: String, CodingKey {
+        case startFrame = "start_frame"
+        case endFrame = "end_frame"
+        case timeBaseNum = "time_base_num"
+        case timeBaseDen = "time_base_den"
+    }
 
     public init(startFrame: Int, endFrame: Int, timeBaseNum: Int = 1, timeBaseDen: Int = 24) {
         self.startFrame = startFrame
@@ -120,7 +145,7 @@ public struct TimeRange: Codable, Sendable, Equatable {
     }
 }
 
-public struct ClaimRecord: Codable, Sendable, Identifiable {
+public struct ClaimRecord: Codable, Sendable, Identifiable, Equatable {
     public var id: UUID { claimId }
     public let claimId: UUID
     public let revisionId: UUID
@@ -139,6 +164,23 @@ public struct ClaimRecord: Codable, Sendable, Identifiable {
     public let confirmationId: UUID?
     public let confidenceRaw: Double?
     public let createdAt: Date
+
+    public enum CodingKeys: String, CodingKey {
+        case claimId = "claim_id"
+        case revisionId = "revision_id"
+        case workdayId = "workday_id"
+        case text
+        case origin
+        case epistemicStatus = "epistemic_status"
+        case reviewStatus = "review_status"
+        case supportStatus = "support_status"
+        case allowedUse = "allowed_use"
+        case sourceRevisionId = "source_revision_id"
+        case timeRange = "time_range"
+        case confirmationId = "confirmation_id"
+        case confidenceRaw = "confidence_raw"
+        case createdAt = "created_at"
+    }
 
     public init(
         claimId: UUID = UUID(),
@@ -172,6 +214,47 @@ public struct ClaimRecord: Codable, Sendable, Identifiable {
         self.createdAt = createdAt
     }
 
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.claimId = try container.decode(UUID.self, forKey: .claimId)
+        self.revisionId = try container.decode(UUID.self, forKey: .revisionId)
+        self.workdayId = try container.decode(UUID.self, forKey: .workdayId)
+        self.text = try container.decode(String.self, forKey: .text)
+        self.origin = try container.decode(Origin.self, forKey: .origin)
+        self.epistemicStatus = try container.decode(EpistemicStatus.self, forKey: .epistemicStatus)
+        self.reviewStatus = try container.decodeIfPresent(ReviewStatus.self, forKey: .reviewStatus) ?? .unreviewed
+        self.supportStatus = try container.decodeIfPresent(SupportStatus.self, forKey: .supportStatus) ?? .insufficient
+        self.allowedUse = try container.decodeIfPresent(AllowedUse.self, forKey: .allowedUse) ?? .exclude
+        self.sourceRevisionId = try container.decodeIfPresent(UUID.self, forKey: .sourceRevisionId)
+        self.timeRange = try container.decodeIfPresent(TimeRange.self, forKey: .timeRange)
+        self.confirmationId = try container.decodeIfPresent(UUID.self, forKey: .confirmationId)
+        self.confidenceRaw = try container.decodeIfPresent(Double.self, forKey: .confidenceRaw)
+
+        let dateStr = try container.decode(String.self, forKey: .createdAt)
+        guard let parsedDate = DataContractDateFormatters.date(from: dateStr) else {
+            throw DecodingError.dataCorruptedError(forKey: .createdAt, in: container, debugDescription: "Invalid ISO-8601 date format: \(dateStr)")
+        }
+        self.createdAt = parsedDate
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(claimId, forKey: .claimId)
+        try container.encode(revisionId, forKey: .revisionId)
+        try container.encode(workdayId, forKey: .workdayId)
+        try container.encode(text, forKey: .text)
+        try container.encode(origin, forKey: .origin)
+        try container.encode(epistemicStatus, forKey: .epistemicStatus)
+        try container.encode(reviewStatus, forKey: .reviewStatus)
+        try container.encode(supportStatus, forKey: .supportStatus)
+        try container.encode(allowedUse, forKey: .allowedUse)
+        try container.encodeIfPresent(sourceRevisionId, forKey: .sourceRevisionId)
+        try container.encodeIfPresent(timeRange, forKey: .timeRange)
+        try container.encodeIfPresent(confirmationId, forKey: .confirmationId)
+        try container.encodeIfPresent(confidenceRaw, forKey: .confidenceRaw)
+        try container.encode(DataContractDateFormatters.string(from: createdAt), forKey: .createdAt)
+    }
+
     /// Invariant: user_confirmed does NOT turn origin into observed
     public func confirmingUserFact(confirmationId: UUID = UUID()) -> ClaimRecord {
         return ClaimRecord(
@@ -195,7 +278,7 @@ public struct ClaimRecord: Codable, Sendable, Identifiable {
 
 // MARK: - 5. Canonical Artifact Publication Model
 
-public struct ArtifactPublicationRecord: Codable, Sendable, Identifiable {
+public struct ArtifactPublicationRecord: Codable, Sendable, Identifiable, Equatable {
     public var id: UUID { publicationId }
     public let publicationId: UUID
     public let projectId: UUID
@@ -210,6 +293,22 @@ public struct ArtifactPublicationRecord: Codable, Sendable, Identifiable {
     public private(set) var byteSize: Int?
     public let createdAt: Date
     public private(set) var updatedAt: Date
+
+    public enum CodingKeys: String, CodingKey {
+        case publicationId = "publication_id"
+        case projectId = "project_id"
+        case jobId = "job_id"
+        case attemptId = "attempt_id"
+        case fencingToken = "fencing_token"
+        case artifactType = "artifact_type"
+        case state
+        case tempPath = "temp_path"
+        case canonicalPath = "canonical_path"
+        case sha256Hash = "sha256_hash"
+        case byteSize = "byte_size"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
 
     public init(
         publicationId: UUID = UUID(),
@@ -239,6 +338,50 @@ public struct ArtifactPublicationRecord: Codable, Sendable, Identifiable {
         self.byteSize = byteSize
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.publicationId = try container.decode(UUID.self, forKey: .publicationId)
+        self.projectId = try container.decode(UUID.self, forKey: .projectId)
+        self.jobId = try container.decode(UUID.self, forKey: .jobId)
+        self.attemptId = try container.decode(UUID.self, forKey: .attemptId)
+        self.fencingToken = try container.decode(Int.self, forKey: .fencingToken)
+        self.artifactType = try container.decode(String.self, forKey: .artifactType)
+        self.state = try container.decode(ArtifactPublicationState.self, forKey: .state)
+        self.tempPath = try container.decodeIfPresent(String.self, forKey: .tempPath)
+        self.canonicalPath = try container.decodeIfPresent(String.self, forKey: .canonicalPath)
+        self.sha256Hash = try container.decodeIfPresent(String.self, forKey: .sha256Hash)
+        self.byteSize = try container.decodeIfPresent(Int.self, forKey: .byteSize)
+
+        let createdStr = try container.decode(String.self, forKey: .createdAt)
+        guard let parsedCreated = DataContractDateFormatters.date(from: createdStr) else {
+            throw DecodingError.dataCorruptedError(forKey: .createdAt, in: container, debugDescription: "Invalid ISO-8601 created_at: \(createdStr)")
+        }
+        self.createdAt = parsedCreated
+
+        let updatedStr = try container.decode(String.self, forKey: .updatedAt)
+        guard let parsedUpdated = DataContractDateFormatters.date(from: updatedStr) else {
+            throw DecodingError.dataCorruptedError(forKey: .updatedAt, in: container, debugDescription: "Invalid ISO-8601 updated_at: \(updatedStr)")
+        }
+        self.updatedAt = parsedUpdated
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(publicationId, forKey: .publicationId)
+        try container.encode(projectId, forKey: .projectId)
+        try container.encode(jobId, forKey: .jobId)
+        try container.encode(attemptId, forKey: .attemptId)
+        try container.encode(fencingToken, forKey: .fencingToken)
+        try container.encode(artifactType, forKey: .artifactType)
+        try container.encode(state, forKey: .state)
+        try container.encodeIfPresent(tempPath, forKey: .tempPath)
+        try container.encodeIfPresent(canonicalPath, forKey: .canonicalPath)
+        try container.encodeIfPresent(sha256Hash, forKey: .sha256Hash)
+        try container.encodeIfPresent(byteSize, forKey: .byteSize)
+        try container.encode(DataContractDateFormatters.string(from: createdAt), forKey: .createdAt)
+        try container.encode(DataContractDateFormatters.string(from: updatedAt), forKey: .updatedAt)
     }
 
     public mutating func transitionToMaterialized(tempPath: String) throws {

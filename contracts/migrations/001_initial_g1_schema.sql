@@ -46,10 +46,10 @@ CREATE TABLE IF NOT EXISTS source_revisions (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
--- 5. Claims Table (5 Orthogonal Axes)
+-- 5. Claims Table (5 Orthogonal Axes & Append-Only Revision Immutability)
 CREATE TABLE IF NOT EXISTS claims (
-    claim_id TEXT PRIMARY KEY NOT NULL, -- UUID
-    revision_id TEXT NOT NULL, -- UUID
+    revision_id TEXT PRIMARY KEY NOT NULL, -- UUID: Each revision is an immutable snapshot row
+    claim_id TEXT NOT NULL, -- UUID: Logical identity shared across historical revisions
     workday_id TEXT NOT NULL REFERENCES workdays(workday_id) ON DELETE RESTRICT,
     text TEXT NOT NULL,
     origin TEXT NOT NULL CHECK(origin IN ('user', 'visual_model', 'asr', 'audio_detector', 'ocr', 'metadata', 'derived')),
@@ -128,5 +128,6 @@ CREATE TABLE IF NOT EXISTS idempotency_journal (
 
 -- Indexing for fast query & join performance
 CREATE INDEX IF NOT EXISTS idx_claims_workday ON claims(workday_id);
+CREATE INDEX IF NOT EXISTS idx_claims_claim_id ON claims(claim_id);
 CREATE INDEX IF NOT EXISTS idx_artifact_publications_project ON artifact_publications(project_id, state);
 CREATE INDEX IF NOT EXISTS idx_job_attempts_job ON job_attempts(job_id);
