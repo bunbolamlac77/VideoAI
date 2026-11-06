@@ -1,0 +1,60 @@
+{
+  "fixture_version": "1.0.0",
+  "profile": "E0",
+  "description": "E0 Pilot verification profile envelope and synthetic asset constraints",
+  "envelope": {
+    "workdays": 1,
+    "max_total_video_duration_seconds": 1800,
+    "max_assets": 30,
+    "max_clip_duration_seconds": 1800,
+    "camera_sessions": 1,
+    "max_resolution": "3840x2160",
+    "max_fps": 60.0,
+    "supported_input_codecs": ["h264", "hevc", "prores"],
+    "supported_pixel_formats": ["yuv420p", "yuv422p10le"],
+    "storage_budget_gib": {
+      "managed_snapshots": 35.0,
+      "proxy_media": 8.0,
+      "render_preview": 2.0,
+      "render_final": 5.0,
+      "backup_checkpoint": 1.0
+    }
+  },
+  "synthetic_assets": [
+    {
+      "asset_id": "SYNTH_POV_01",
+      "type": "video",
+      "format": "mp4",
+      "codec": "hevc",
+      "width": 3840,
+      "height": 2160,
+      "fps_num": 60,
+      "fps_den": 1,
+      "duration_seconds": 120.0,
+      "has_audio": true,
+      "audio_channels": 2,
+      "audio_sample_rate": 48000
+    },
+    {
+      "asset_id": "SYNTH_POV_02",
+      "type": "video",
+      "format": "mp4",
+      "codec": "h264",
+      "width": 1920,
+      "height": 1080,
+      "fps_num": 30,
+      "fps_den": 1,
+      "duration_seconds": 60.0,
+      "has_audio": true,
+      "audio_channels": 2,
+      "audio_sample_rate": 48000
+    },
+    {
+      "asset_id": "SYNTH_IMG_01",
+      "type": "image",
+      "format": "jpeg",
+      "width": 4032,
+      "height": 3024
+    }
+  ]
+}

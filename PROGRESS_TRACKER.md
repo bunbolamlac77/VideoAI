@@ -27,8 +27,8 @@
 ### G0 — Nền tảng chạy thật
 - [x] **S00** — Khởi tạo Repository, cấu trúc thư mục chuẩn, bộ tài liệu và sổ tiến độ.  
   *Biên bản:* [`reports/progress/S00.md`](reports/progress/S00.md) · *Trạng thái:* `DONE`
-- [ ] **S01** — Khảo sát môi trường máy thật (macOS, Xcode, Python, FFmpeg, Resolve, Models) và lập compatibility matrix.  
-  *Biên bản:* [`reports/progress/S01.md`](reports/progress/S01.md) · *Trạng thái:* `NOT_STARTED`
+- [x] **S01** — Khảo sát môi trường máy thật (macOS, Xcode, Python, FFmpeg, Resolve, Models) và lập compatibility matrix.  
+  *Biên bản:* [`reports/progress/S01.md`](reports/progress/S01.md) · *Trạng thái:* `DONE`
 - [ ] **S02** — Bản `.app` macOS tối thiểu, IPC JSON-RPC qua stdio, kiểm tra quyền truy cập file/security-scoped bookmark và một lượt inference local.  
   *Biên bản:* [`reports/progress/S02.md`](reports/progress/S02.md) · *Trạng thái:* `NOT_STARTED`
 - [ ] **S03** — DaVinci Resolve spike 10 giây (timeline 2160x3840 24fps), xác nhận chạy hoàn toàn offline và đóng Gate G0.  
