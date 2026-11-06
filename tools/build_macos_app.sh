@@ -8,6 +8,10 @@ RESOURCES_DIR="apps/macos/build/AIVideo.app/Contents/Resources"
 
 mkdir -p "$TARGET_DIR" "$RESOURCES_DIR"
 
+if [ -f "apps/macos/Resources/Info.plist" ]; then
+  cp "apps/macos/Resources/Info.plist" "apps/macos/build/AIVideo.app/Contents/Info.plist"
+fi
+
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -parse-as-library \
