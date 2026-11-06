@@ -98,6 +98,8 @@ tests/test_worker_ipc
 
 # Run-time & Review Bundles
 AIVideo-review.zip
+AIVideo.zip
+*.zip
 REVIEW_SUMMARY.md
 
 # Logs & Run-time Storage
