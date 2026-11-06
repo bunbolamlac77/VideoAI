@@ -141,13 +141,46 @@ class TestWorkerFramingAndProtocol(unittest.TestCase):
 
 class TestResolveAdapterInvariants(unittest.TestCase):
     def setUp(self):
-        sys.path.insert(0, os.path.abspath("workers/src/aivideo_workers"))
+        import tempfile
+        sys.path.insert(
+            0,
+            os.path.abspath("workers/src/aivideo_workers")
+        )
         import resolve_adapter
         self.resolve_adapter = resolve_adapter
         self.orig_get_resolve = resolve_adapter.get_resolve
+        self.orig_create_assets = (
+            resolve_adapter.create_synthetic_test_assets
+        )
+        self._fake_media_tmp = tempfile.TemporaryDirectory(
+            prefix="aivideo_unit_media_"
+        )
+
+        def create_mock_assets(_target_dir):
+            video_path = os.path.join(
+                self._fake_media_tmp.name,
+                "fake_video.mp4"
+            )
+            audio_path = os.path.join(
+                self._fake_media_tmp.name,
+                "fake_audio.wav"
+            )
+            for file_path in (video_path, audio_path):
+                with open(file_path, "wb") as f:
+                    f.write(
+                        b"AIVIDEO_FAKE_MEDIA_FOR_UNIT_TEST_ONLY"
+                    )
+            return video_path, audio_path
+
+        resolve_adapter.create_synthetic_test_assets = create_mock_assets
 
     def tearDown(self):
         self.resolve_adapter.get_resolve = self.orig_get_resolve
+        self.resolve_adapter.create_synthetic_test_assets = (
+            self.orig_create_assets
+        )
+        if hasattr(self, "_fake_media_tmp"):
+            self._fake_media_tmp.cleanup()
 
     def test_atomic_export_preserves_old_file_on_failure(self):
         """Simulates atomic export failure to ensure previous DRP is not destroyed."""

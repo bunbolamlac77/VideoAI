@@ -57,9 +57,13 @@ jobs:
           PY
 
       - name: Run G0 IPC Framing and Resilience Tests
+        shell: bash
         run: |
+          mkdir -p build/reports
+          set -o pipefail
           python3 -m unittest -v \
-            tests/test_framing_resilience.py
+            tests/test_framing_resilience.py \
+            2>&1 | tee build/reports/g0-framing.log
 
       - name: Run G0 Model Setup Tests
         run: |

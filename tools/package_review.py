@@ -70,7 +70,8 @@ EXCLUDED_EXTENSIONS = {
     ".m4a",
     ".pem",
     ".key",
-    ".token"
+    ".token",
+    ".zip"
 }
 
 REPORTS_DIR = os.path.abspath("build/reports")
@@ -78,6 +79,7 @@ REPORTS_DIR = os.path.abspath("build/reports")
 EXCLUDED_FILE_NAMES = {
     ".DS_Store",
     "AIVideo-review.zip",
+    "AIVideo.zip",
     "REVIEW_SUMMARY.md",
     ".env"
 }
