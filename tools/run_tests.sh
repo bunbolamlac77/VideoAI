@@ -77,7 +77,7 @@ swiftc -sdk "$SDK_PATH" \
 
 ./build/tests/test_s02_manual_verification
 
-echo "=== [5/5] Running Swift Gate G1 S04 Contract Unit Tests ==="
+echo "=== [5/6] Running Swift Gate G1 S04 Contract Unit Tests ==="
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
@@ -88,5 +88,24 @@ swiftc -sdk "$SDK_PATH" \
   -o build/tests/test_g1_contracts
 
 ./build/tests/test_g1_contracts
+
+echo "=== [6/6] Running Swift Gate G1 S05 Source Import & Snapshot Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DomainModels.swift \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/SourceImport/SourceImportModels.swift \
+  packages/AIVideoCore/Sources/SourceImport/APFSCapability.swift \
+  packages/AIVideoCore/Sources/SourceImport/DiskBudgetPlanner.swift \
+  packages/AIVideoCore/Sources/SourceImport/SourceInspector.swift \
+  packages/AIVideoCore/Sources/SourceImport/SnapshotVerifier.swift \
+  packages/AIVideoCore/Sources/SourceImport/SourceAcquisition.swift \
+  packages/AIVideoCore/Sources/SourceImport/SourceManifestStore.swift \
+  tests/test_s05_source_import.swift \
+  -o build/tests/test_s05_source_import
+
+./build/tests/test_s05_source_import
 
 echo "=== ALL REGRESSION TEST SUITES EXECUTED SUCCESSFULLY ==="

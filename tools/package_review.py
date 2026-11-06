@@ -407,18 +407,20 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
         g0_status_badge = "🟢 **DONE (Đã đóng Gate G0: Đạt 100% tất cả các tiêu chí nghiệm thu G0)**"
         s02_status = "DONE"
         s03_status = "DONE"
-        g1_status_badge = "🟡 **IN_PROGRESS (Mở Gate G1: S04 DONE, chuẩn bị S05)**"
+        g1_status_badge = "🟡 **IN_PROGRESS (Mở Gate G1: S04 & S05 DONE, chuẩn bị S06)**"
         s04_status = "DONE"
+        s05_status = "DONE"
     else:
         g0_status_badge = "🔵 **IN_REVIEW (Đang thẩm định / còn testcase chưa hoàn thành)**"
         s02_status = "IN_REVIEW"
         s03_status = "IN_REVIEW"
-        g1_status_badge = "🟡 **IN_PROGRESS (S04 còn lỗi, chưa hoàn thành nghiệm thu)**"
+        g1_status_badge = "🟡 **IN_PROGRESS (Gate G1 còn lỗi, chưa hoàn thành nghiệm thu)**"
         s04_status = "IN_REVIEW"
+        s05_status = "IN_REVIEW"
 
     summary = f"""# AIVideo v3.1 — Hồ Sơ Thẩm Định Mã Nguồn (Review Bundle)
 
-> **Mục đích:** Bàn giao mã nguồn cho ChatGPT hoặc kiểm định viên độc lập sau khi nghiệm thu toàn diện Gate G0 và hoàn thành bước S04 Gate G1.  
+> **Mục đích:** Bàn giao mã nguồn cho ChatGPT hoặc kiểm định viên độc lập sau khi nghiệm thu toàn diện Gate G0 và hoàn thành bước S04 & S05 Gate G1.  
 > **Thời điểm đóng gói:** {timestamp}  
 > **Kho lưu trữ Git:** {git_info['remote_url']}  
 > **Nhánh:** `{git_info['branch']}` · **Commit Hash:** `{git_info['commit_hash']}`  
@@ -438,7 +440,8 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
 - **Model Pipeline Sản Phẩm (S11: Qwen-VL, Whisper, VieNeu-TTS, DINOv2):** ⚪ **NOT_INSTALLED (Chưa cài đặt, không dùng smoke test fixture để đóng điều kiện LLM sản phẩm)**.
 - **Gate G1 (Dữ liệu và phục hồi):** {g1_status_badge}.
   - **S04:** Hợp đồng dữ liệu JSON Schema (5 trục bằng chứng, chu trình artifact 4 bước, RPC envelope nghiêm ngặt), SQLite WAL DDL hỗ trợ revision immutability, song ngữ Swift/Python với bi-directional golden tests. Trạng thái: `{s04_status}`.
-  - **S05 – S09:** Trạng thái: `NOT_STARTED` (Chưa triển khai, giữ nghiêm ngặt quy trình tuần tự).
+  - **S05:** Import nguồn, content identity băm SHA-256, APFS clone & full-copy fallback, snapshot bất biến niêm phong, dedup và content revisions, budget & staging recovery. Trạng thái: `{s05_status}`.
+  - **S06 – S09:** Trạng thái: `NOT_STARTED` (Chưa triển khai, giữ nghiêm ngặt quy trình tuần tự).
 - **Gate G2 – G5:** ⚪ **Chưa bắt đầu**.
 
 ---
@@ -550,6 +553,14 @@ def create_review_package(output_zip: str = "AIVideo-review.zip") -> str:
             size = os.path.getsize(abs_path)
             packaged_files.append((rel_path, size))
             zip_entries.append((abs_path, rel_path))
+
+    # Include CI workflow explicitly for independent audit.
+    ci_rel = ".github/workflows/ci.yml"
+    ci_abs = os.path.join(root_dir, ci_rel)
+    if os.path.isfile(ci_abs):
+        if not any(rel == ci_rel for _, rel in zip_entries):
+            packaged_files.append((ci_rel, os.path.getsize(ci_abs)))
+            zip_entries.append((ci_abs, ci_rel))
 
     packaged_files.sort(key=lambda x: x[0])
     zip_entries.sort(key=lambda x: x[1])
