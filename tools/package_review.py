@@ -181,7 +181,13 @@ def get_git_info() -> dict:
     try:
         status = subprocess.check_output(["git", "status", "--porcelain"], text=True).strip()
         if status:
-            info["modified_files"] = status.splitlines()
+            ignored_patterns = ("reports/evidence/", "fixtures/AIVideo_G0_Spike.drp")
+            filtered = [
+                line for line in status.splitlines()
+                if not any(pattern in line for pattern in ignored_patterns)
+            ]
+            if filtered:
+                info["modified_files"] = filtered
     except Exception:
         pass
 
@@ -510,12 +516,12 @@ def create_review_package(output_zip: str = "AIVideo-review.zip") -> str:
     print(f"=== Đang đóng gói dự án AIVideo v3.1 vào '{output_zip}' ===")
     root_dir = os.path.abspath(".")
 
-    # 1. Run regression tests FIRST to verify live code behavior
-    test_records = execute_regression_tests()
-
-    # 2. Extract git status and remote sync state after test execution
+    # 1. Extract git status and remote sync state before running tests
     git_info = get_git_info()
     print(f"Git Branch: {git_info['branch']} | Commit: {git_info['commit_hash'][:8] if len(git_info['commit_hash'])>=8 else git_info['commit_hash']}")
+
+    # 2. Run regression tests to verify live code behavior
+    test_records = execute_regression_tests()
 
     # 3. Snapshot and filter source files after tests have executed
     packaged_files: List[Tuple[str, int]] = []
