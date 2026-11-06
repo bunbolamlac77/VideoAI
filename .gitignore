@@ -85,6 +85,10 @@ CacheClip/
 *.gallery/
 *.drp.bak
 
+# Run-time & Review Bundles
+AIVideo-review.zip
+REVIEW_SUMMARY.md
+
 # Logs & Run-time Storage
 *.log
 *.trace
