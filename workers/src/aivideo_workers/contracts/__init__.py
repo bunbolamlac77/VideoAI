@@ -10,7 +10,7 @@ from .data_contracts import (
     ClaimRecord,
     ArtifactPublicationRecord,
     ContractError,
-    validate_uuid
+    require_uuid
 )
 
 __all__ = [
@@ -25,5 +25,5 @@ __all__ = [
     "ClaimRecord",
     "ArtifactPublicationRecord",
     "ContractError",
-    "validate_uuid"
+    "require_uuid"
 ]

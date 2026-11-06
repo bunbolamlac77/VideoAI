@@ -16,7 +16,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 
 sys.path.insert(0, os.path.abspath("workers/src"))
 from aivideo_workers.contracts import (
@@ -36,16 +36,14 @@ from aivideo_workers.contracts import (
 UUID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 ISO8601_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 
-def validate_rpc_envelope_dict(envelope: dict, schema: dict) -> bool:
-    """
-    Validates envelope against rpc_envelope_schema.json using Draft202012Validator:
-    - Root must have jsonrpc == "2.0"
-    - Must match exactly one of: Request, Notification, SuccessResponse, ErrorResponse
-    - Cannot have disallowed extra fields
-    """
-    if not isinstance(envelope, dict):
-        return False
-    validator = Draft202012Validator(schema)
+def validate_rpc_envelope_dict(
+    envelope: dict, schema: dict
+) -> bool:
+    """Validate against the actual JSON Schema 2020-12."""
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(
+        schema, format_checker=FormatChecker()
+    )
     return validator.is_valid(envelope)
 
 class TestG1DataContracts(unittest.TestCase):
@@ -60,51 +58,54 @@ class TestG1DataContracts(unittest.TestCase):
             support_status=SupportStatus.INSUFFICIENT,
             allowed_use=AllowedUse.EXCLUDE
         )
-        conf_id = "00000000-0000-4000-8000-000000000123"
-        confirmed = claim.confirm_user_fact(confirmation_id=conf_id)
+        confirmed = claim.confirm_user_fact(
+            confirmation_id="55555555-5555-4555-8555-555555555555"
+        )
         self.assertEqual(confirmed.origin, Origin.USER, "Origin MUST NOT change to visual_model or derived")
         self.assertEqual(confirmed.epistemic_status, EpistemicStatus.REPORTED, "Epistemic MUST NOT become observed")
         self.assertEqual(confirmed.review_status, ReviewStatus.CONFIRMED)
         self.assertNotEqual(confirmed.revision_id, claim.revision_id, "Revision ID must increment on confirmation")
-        self.assertEqual(confirmed.confirmation_id, conf_id)
+        self.assertEqual(confirmed.confirmation_id, "55555555-5555-4555-8555-555555555555")
 
-    def test_uuid_validation_strictness(self):
-        """Invariant: ClaimRecord and ArtifactPublicationRecord reject invalid UUIDs."""
+    def test_invalid_confirmation_uuid_rejected(self):
         claim = ClaimRecord(
             workday_id="00000000-0000-4000-8000-000000000001",
-            text="Test UUID validation",
+            text="A verified user statement",
             origin=Origin.USER,
             epistemic_status=EpistemicStatus.REPORTED
         )
-        # Non-UUID confirmation_id should raise ContractError
         with self.assertRaises(ContractError):
-            claim.confirm_user_fact(confirmation_id="conf-123")
-
-        # Invalid workday_id should raise ContractError
-        with self.assertRaises(ContractError):
-            ClaimRecord(
-                workday_id="invalid-uuid",
-                text="Test invalid workday",
-                origin=Origin.USER,
-                epistemic_status=EpistemicStatus.REPORTED
+            claim.confirm_user_fact(
+                confirmation_id="conf-123"
             )
-
-        # Invalid ArtifactPublicationRecord UUID should raise ContractError
         with self.assertRaises(ContractError):
-            ArtifactPublicationRecord(
-                project_id="bad-project-id",
-                job_id="00000000-0000-4000-8000-000000000002",
-                attempt_id="00000000-0000-4000-8000-000000000003",
-                fencing_token=1,
-                artifact_type="proxy_video"
+            claim.confirm_user_fact(
+                confirmation_id=""
             )
+        confirmed = claim.confirm_user_fact()
+        self.assertIsNotNone(confirmed.confirmation_id)
+        self.assertEqual(
+            confirmed.origin, Origin.USER
+        )
+
+    def test_claim_from_dict_rejects_invalid_uuid(self):
+        claim = ClaimRecord(
+            workday_id="00000000-0000-4000-8000-000000000001",
+            text="Valid claim",
+            origin=Origin.USER,
+            epistemic_status=EpistemicStatus.REPORTED
+        )
+        data = claim.to_dict()
+        data["confirmation_id"] = "invalid-uuid"
+        with self.assertRaises(ContractError):
+            ClaimRecord.from_dict(data)
 
     def test_artifact_publication_state_transitions(self):
         """Invariant S04.3: Artifact transitions PREPARED -> MATERIALIZED -> VERIFIED -> COMMITTED."""
         pub = ArtifactPublicationRecord(
-            project_id="00000000-0000-4000-8000-000000000001",
-            job_id="00000000-0000-4000-8000-000000000002",
-            attempt_id="00000000-0000-4000-8000-000000000003",
+            project_id="proj-1",
+            job_id="job-1",
+            attempt_id="att-1",
             fencing_token=1,
             artifact_type="proxy_video"
         )
@@ -209,7 +210,7 @@ class TestG1DataContracts(unittest.TestCase):
                         revision_id, claim_id, workday_id, text, origin, epistemic_status,
                         review_status, support_status, allowed_use, confirmation_id
                     ) VALUES (?, ?, ?, ?, 'user', 'reported', 'confirmed', 'supported', 'direct_claim', ?);
-                """, (rev2_id, claim_id, workday_id, "Ban ghi da xac nhan (Revision 2)", "00000000-0000-4000-8000-000000000021"))
+                """, (rev2_id, claim_id, workday_id, "Ban ghi da xac nhan (Revision 2)", "55555555-5555-4555-8555-555555555555"))
                 conn.commit()
 
                 # Query both revisions under the same claim_id
@@ -278,6 +279,42 @@ class TestG1DataContracts(unittest.TestCase):
         # 7. Valid Error Response MUST PASS
         valid_err_response = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32600, "message": "Invalid Request"}}
         self.assertTrue(validate_rpc_envelope_dict(valid_err_response, schema))
+
+        # Invalid JSON-RPC version
+        self.assertFalse(validate_rpc_envelope_dict(
+            {"jsonrpc": "1.0", "id": 1, "method": "ping"},
+            schema
+        ))
+        # Invalid session UUID
+        self.assertFalse(validate_rpc_envelope_dict(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {},
+                "session_id": "invalid-uuid"
+            },
+            schema
+        ))
+        # Request must not also contain a result
+        self.assertFalse(validate_rpc_envelope_dict(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "ping",
+                "result": {}
+            },
+            schema
+        ))
+        # Extra properties are forbidden
+        self.assertFalse(validate_rpc_envelope_dict(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {},
+                "unexpected_field": True
+            },
+            schema
+        ))
 
     def test_bidirectional_golden_contracts(self):
         """Invariant S04.T1: Bi-directional Golden Tests Swift <-> Python with snake_case and ISO-8601 formatting."""

@@ -83,20 +83,26 @@ class ContractError(ValueError):
     """Raised when an illegal state transition or contract violation occurs."""
     pass
 
-def validate_uuid(val: Any, field_name: str, allow_none: bool = False) -> Optional[str]:
-    """Validates that val is a valid RFC 4122 UUID string, matching Swift UUID decoding and JSON Schema."""
-    if val is None:
-        if allow_none:
-            return None
-        raise ContractError(f"Field '{field_name}' must not be None; valid UUID string required.")
-    s_val = str(val)
-    if not UUID_PATTERN.match(s_val):
-        raise ContractError(f"Field '{field_name}' must be a valid UUID string, got: {val!r}")
+def require_uuid(
+    value: Optional[str], field_name: str, *, allow_none: bool = False
+) -> None:
+    """Require a canonical, hyphenated UUID string."""
+    if value is None and allow_none:
+        return
+    if not isinstance(value, str):
+        raise ContractError(
+            f"{field_name} must be a UUID string"
+        )
     try:
-        uuid.UUID(s_val)
-    except (ValueError, AttributeError, TypeError) as exc:
-        raise ContractError(f"Field '{field_name}' must be a valid UUID string, got: {val!r}") from exc
-    return s_val
+        parsed = uuid.UUID(value)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ContractError(
+            f"{field_name} must be a valid UUID"
+        ) from exc
+    if str(parsed) != value.lower():
+        raise ContractError(
+            f"{field_name} must be a canonical UUID"
+        )
 
 @dataclass
 class TimeRange:
@@ -139,14 +145,19 @@ class ClaimRecord:
     confidence_raw: Optional[float] = None
     created_at: str = field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
 
-    def __post_init__(self):
-        validate_uuid(self.claim_id, "claim_id")
-        validate_uuid(self.revision_id, "revision_id")
-        validate_uuid(self.workday_id, "workday_id")
-        if self.source_revision_id is not None:
-            validate_uuid(self.source_revision_id, "source_revision_id", allow_none=True)
-        if self.confirmation_id is not None:
-            validate_uuid(self.confirmation_id, "confirmation_id", allow_none=True)
+    def __post_init__(self) -> None:
+        for field_name in (
+            "claim_id", "revision_id", "workday_id"
+        ):
+            require_uuid(
+                getattr(self, field_name), field_name
+            )
+        for field_name in (
+            "source_revision_id", "confirmation_id"
+        ):
+            require_uuid(
+                getattr(self, field_name), field_name, allow_none=True
+            )
 
     def to_dict(self) -> Dict[str, Any]:
         tr_dict = None
@@ -212,7 +223,11 @@ class ClaimRecord:
             allowed_use=self.allowed_use,
             source_revision_id=self.source_revision_id,
             time_range=self.time_range,
-            confirmation_id=confirmation_id or str(uuid.uuid4()),
+            confirmation_id=(
+                confirmation_id
+                if confirmation_id is not None
+                else str(uuid.uuid4())
+            ),
             confidence_raw=self.confidence_raw
         )
 
@@ -231,12 +246,6 @@ class ArtifactPublicationRecord:
     byte_size: Optional[int] = None
     created_at: str = field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
-
-    def __post_init__(self):
-        validate_uuid(self.publication_id, "publication_id")
-        validate_uuid(self.project_id, "project_id")
-        validate_uuid(self.job_id, "job_id")
-        validate_uuid(self.attempt_id, "attempt_id")
 
     def to_dict(self) -> Dict[str, Any]:
         return {

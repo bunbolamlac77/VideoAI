@@ -2,13 +2,19 @@ name: AIVideo Core CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test-and-lint:
+    name: G0 and G1 Regression
     runs-on: macos-26
+    timeout-minutes: 25
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -18,32 +24,52 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Python Dependencies
+      - name: Verify Runner Environment
+        run: |
+          uname -m
+          python3 --version
+          swift --version
+
+      - name: Install Test Dependencies
         run: |
           python3 -m pip install --upgrade pip
-          if [ -f workers/pyproject.toml ]; then
-            python3 -m pip install huggingface-hub jsonschema
-          fi
+          python3 -m pip install \
+            "huggingface-hub" \
+            "jsonschema>=4.23,<5"
 
-      - name: Verify Contract Schema & JSON Integrity
+      - name: Validate JSON Contracts and Schemas
         run: |
-          python3 -c "import json, glob; [json.load(open(f)) for f in glob.glob('contracts/**/*.json', recursive=True)]; print('All contracts are valid JSON.')"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from jsonschema import Draft202012Validator
 
-      - name: Run Python Framing & Resilience Tests
-        run: |
-          python3 -m unittest tests/test_framing_resilience.py
+          paths = sorted(Path("contracts").rglob("*.json"))
+          assert paths, "No JSON contracts found"
 
-      - name: Verify Preflight Integrity Tool
-        run: |
-          python3 -m unittest tests/test_model_setup.py
+          for path in paths:
+              with path.open(encoding="utf-8") as f:
+                  data = json.load(f)
+              if "schemas" in path.parts:
+                  Draft202012Validator.check_schema(data)
 
-      - name: Verify No Large Binaries in Git
+          print(f"PASS: {len(paths)} JSON files validated")
+          PY
+
+      - name: Run G0 IPC Framing and Resilience Tests
         run: |
-          find . -name "*.safetensors" -o -name "*.bin" -o -name "*.gguf" | grep -v ".git" | wc -l | grep "^ *0$"
+          python3 -m unittest -v \
+            tests/test_framing_resilience.py
+
+      - name: Run G0 Model Setup Tests
+        run: |
+          python3 -m unittest -v \
+            tests/test_model_setup.py
 
       - name: Run G1 Python Contract Tests
         run: |
-          python3 -m unittest tests/test_g1_contracts.py
+          python3 -m unittest -v \
+            tests/test_g1_contracts.py
 
       - name: Run G1 Swift Contract Tests
         run: |
@@ -54,3 +80,20 @@ jobs:
             tests/test_g1_contracts.swift \
             -o build/tests/test_g1_contracts
           ./build/tests/test_g1_contracts
+
+      - name: Verify No Model Binaries Tracked by Git
+        run: |
+          if git ls-files | grep -E '\.(safetensors|bin|gguf)$'; then
+            echo "ERROR: Model binary found in Git"
+            exit 1
+          fi
+          echo "PASS: No model binaries tracked"
+
+      - name: Upload Test Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aivideo-ci-evidence
+          path: build/reports/
+          if-no-files-found: ignore
+          retention-days: 7
