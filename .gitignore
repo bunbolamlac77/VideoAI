@@ -1,0 +1,100 @@
+# ==============================================================================
+# AIVideo v3.1 — Git Ignore Configuration
+# Rule: Prevent committing model weights, private media, caches, build outputs
+# ==============================================================================
+
+# OS & Editor
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+*.swp
+*~
+.idea/
+.vscode/
+
+# Build Outputs (Swift & Xcode)
+.build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcresult/
+
+# Python & Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Model Weights (Offline artifacts - must be downloaded/pinned locally)
+*.bin
+*.safetensors
+*.onnx
+*.gguf
+*.pt
+*.pth
+weights/
+models/
+model_cache/
+
+# User Private Media & Snapshots (Protect user privacy)
+# Fixtures should only contain synthetic metadata/manifests unless explicitly whitelisted
+media/
+snapshots/
+raw_source/
+captures/
+renders/
+*.mov
+*.mp4
+*.avi
+*.mkv
+*.heic
+*.jpg
+*.jpeg
+*.png
+*.wav
+*.m4a
+
+# DaVinci Resolve Local & Render Caches
+CacheClip/
+.gallery/
+*.gallery/
+*.drp.bak
+
+# Logs & Run-time Storage
+*.log
+*.trace
+logs/
+.env
+*.env
+*.secret
+
+# Allow markdown, documentation and manifests inside fixtures
+!fixtures/**/manifest.json
+!fixtures/**/*.md
+!fixtures/**/*.json
+!fixtures/**/*.txt
