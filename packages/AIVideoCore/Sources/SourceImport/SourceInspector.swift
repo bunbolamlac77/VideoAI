@@ -2,7 +2,7 @@
 // SourceInspector.swift — Read-Only Source Scanner & Preflight Inspector for Gate G1 S05
 //
 // Reads files strictly in read-only mode, preserves security-scoped access,
-// captures robust FileIdentity, and classifies errors specifically.
+// captures robust FileIdentity with nanosecond precision, and classifies errors specifically.
 //
 
 import Darwin
@@ -11,47 +11,80 @@ import Foundation
 public struct SourceInspector: Sendable {
     public init() {}
 
-    /// Inspect a source URL with optional security-scoped bookmark
-    public static func inspect(url: URL, bookmarkData: Data? = nil) throws -> PreflightReport {
-        var targetURL = url
-        var isSecurityScoped = false
+    /// Keep security scope active for an entire synchronous operation.
+    public static func withSourceAccess<T>(
+        url: URL,
+        bookmarkData: Data? = nil,
+        _ body: (URL) throws -> T
+    ) throws -> T {
+        var resolved = url
 
-        // 1. Resolve security-scoped bookmark if provided
-        if let bookmarkData = bookmarkData {
-            var isStale = false
+        if let bookmarkData {
+            var stale = false
+
             do {
-                let resolved = try URL(
+                resolved = try URL(
                     resolvingBookmarkData: bookmarkData,
                     options: .withSecurityScope,
                     relativeTo: nil,
-                    bookmarkDataIsStale: &isStale
+                    bookmarkDataIsStale: &stale
                 )
-                if isStale {
-                    throw SourceImportError.permissionDenied(
-                        path: url.path,
-                        message: "Quyền truy cập file đã cũ (stale bookmark). Vui lòng chọn lại file."
-                    )
-                }
-                targetURL = resolved
-                isSecurityScoped = true
             } catch {
                 throw SourceImportError.permissionDenied(
                     path: url.path,
-                    message: "Không thể giải mã security-scoped bookmark: \(error.localizedDescription)"
+                    message: "Cannot resolve bookmark: \(error.localizedDescription)"
                 )
             }
+
+            if stale {
+                throw SourceImportError.permissionDenied(
+                    path: url.path,
+                    message: "Stale bookmark. Select the file again."
+                )
+            }
+
+            guard resolved.startAccessingSecurityScopedResource() else {
+                throw SourceImportError.permissionDenied(
+                    path: resolved.path,
+                    message: "Cannot activate security-scoped access"
+                )
+            }
+
+            defer {
+                resolved.stopAccessingSecurityScopedResource()
+            }
+
+            return try body(resolved)
         }
 
-        // 2. Start security-scoped access if applicable
-        if isSecurityScoped || targetURL.path.hasPrefix("/Volumes/") {
-            let accessed = targetURL.startAccessingSecurityScopedResource()
-            if accessed {
-                defer { targetURL.stopAccessingSecurityScopedResource() }
-                return try inspectFileInternal(url: targetURL)
+        // NSOpenPanel may provide an implicit scope.
+        // For unsandboxed tests, false is not necessarily an error.
+        let started = resolved.startAccessingSecurityScopedResource()
+
+        defer {
+            if started {
+                resolved.stopAccessingSecurityScopedResource()
             }
         }
 
-        return try inspectFileInternal(url: targetURL)
+        return try body(resolved)
+    }
+
+    public static func inspect(
+        url: URL,
+        bookmarkData: Data? = nil
+    ) throws -> PreflightReport {
+        try withSourceAccess(
+            url: url,
+            bookmarkData: bookmarkData
+        ) { resolved in
+            try inspectResolvedURL(resolved)
+        }
+    }
+
+    // Caller must keep the security scope active.
+    static func inspectResolvedURL(_ url: URL) throws -> PreflightReport {
+        try inspectFileInternal(url: url)
     }
 
     private static func inspectFileInternal(url: URL) throws -> PreflightReport {
@@ -105,8 +138,18 @@ public struct SourceInspector: Sendable {
             inode: UInt64(st.st_ino),
             device: UInt64(st.st_dev),
             byteSize: size,
-            modifiedAt: Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec)),
-            permissions: UInt16(st.st_mode & 0o777)
+            modifiedAt: Date(
+                timeIntervalSince1970:
+                    TimeInterval(st.st_mtimespec.tv_sec) +
+                    TimeInterval(st.st_mtimespec.tv_nsec) / 1_000_000_000
+            ),
+            permissions: UInt16(st.st_mode & 0o777),
+            modifiedTimeNanoseconds:
+                Int64(st.st_mtimespec.tv_sec) * 1_000_000_000 +
+                Int64(st.st_mtimespec.tv_nsec),
+            statusChangedTimeNanoseconds:
+                Int64(st.st_ctimespec.tv_sec) * 1_000_000_000 +
+                Int64(st.st_ctimespec.tv_nsec)
         )
 
         let logicalName = url.lastPathComponent

@@ -85,6 +85,40 @@ jobs:
             -o build/tests/test_g1_contracts
           ./build/tests/test_g1_contracts
 
+      - name: Run G1 S05 Source Import Tests
+        shell: bash
+        run: |
+          mkdir -p build/tests build/reports
+          set -o pipefail
+
+          S05_SOURCES=(
+            packages/AIVideoCore/Sources/Models/DomainModels.swift
+            packages/AIVideoCore/Sources/Models/DataContracts.swift
+            packages/AIVideoCore/Sources/SourceImport/SourceImportModels.swift
+            packages/AIVideoCore/Sources/SourceImport/APFSCapability.swift
+            packages/AIVideoCore/Sources/SourceImport/DiskBudgetPlanner.swift
+            packages/AIVideoCore/Sources/SourceImport/SourceInspector.swift
+            packages/AIVideoCore/Sources/SourceImport/SnapshotVerifier.swift
+            packages/AIVideoCore/Sources/SourceImport/SourceAcquisition.swift
+            packages/AIVideoCore/Sources/SourceImport/SourceManifestStore.swift
+          )
+
+          swiftc -swift-version 6 -parse-as-library \
+            "${S05_SOURCES[@]}" \
+            tests/test_s05_source_import.swift \
+            -o build/tests/test_s05_source_import
+
+          ./build/tests/test_s05_source_import \
+            2>&1 | tee build/reports/s05-regression.log
+
+          swiftc -swift-version 6 -parse-as-library \
+            "${S05_SOURCES[@]}" \
+            tests/test_s05_hardening.swift \
+            -o build/tests/test_s05_hardening
+
+          ./build/tests/test_s05_hardening \
+            2>&1 | tee build/reports/s05-hardening.log
+
       - name: Verify No Model Binaries Tracked by Git
         run: |
           if git ls-files | grep -E '\.(safetensors|bin|gguf)$'; then

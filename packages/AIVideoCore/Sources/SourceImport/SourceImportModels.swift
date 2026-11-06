@@ -36,12 +36,18 @@ public struct FileIdentity: Codable, Sendable, Equatable {
     public let modifiedAt: Date
     public let permissions: UInt16
 
+    // Optional to preserve compatibility with older manifests.
+    public let modifiedTimeNanoseconds: Int64?
+    public let statusChangedTimeNanoseconds: Int64?
+
     public enum CodingKeys: String, CodingKey {
         case inode
         case device
         case byteSize = "byte_size"
         case modifiedAt = "modified_at"
         case permissions
+        case modifiedTimeNanoseconds = "modified_time_ns"
+        case statusChangedTimeNanoseconds = "status_changed_time_ns"
     }
 
     public init(
@@ -49,36 +55,63 @@ public struct FileIdentity: Codable, Sendable, Equatable {
         device: UInt64,
         byteSize: Int64,
         modifiedAt: Date,
-        permissions: UInt16
+        permissions: UInt16,
+        modifiedTimeNanoseconds: Int64? = nil,
+        statusChangedTimeNanoseconds: Int64? = nil
     ) {
         self.inode = inode
         self.device = device
         self.byteSize = byteSize
         self.modifiedAt = modifiedAt
         self.permissions = permissions
+        self.modifiedTimeNanoseconds = modifiedTimeNanoseconds
+        self.statusChangedTimeNanoseconds = statusChangedTimeNanoseconds
     }
 
     public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.inode = try container.decode(UInt64.self, forKey: .inode)
-        self.device = try container.decode(UInt64.self, forKey: .device)
-        self.byteSize = try container.decode(Int64.self, forKey: .byteSize)
-        self.permissions = try container.decode(UInt16.self, forKey: .permissions)
+        let c = try decoder.container(keyedBy: CodingKeys.self)
 
-        let dateStr = try container.decode(String.self, forKey: .modifiedAt)
-        guard let parsedDate = DataContractDateFormatters.date(from: dateStr) else {
-            throw DecodingError.dataCorruptedError(forKey: .modifiedAt, in: container, debugDescription: "Invalid ISO-8601 date: \(dateStr)")
+        inode = try c.decode(UInt64.self, forKey: .inode)
+        device = try c.decode(UInt64.self, forKey: .device)
+        byteSize = try c.decode(Int64.self, forKey: .byteSize)
+        permissions = try c.decode(UInt16.self, forKey: .permissions)
+
+        modifiedTimeNanoseconds = try c.decodeIfPresent(
+            Int64.self, forKey: .modifiedTimeNanoseconds
+        )
+
+        statusChangedTimeNanoseconds = try c.decodeIfPresent(
+            Int64.self, forKey: .statusChangedTimeNanoseconds
+        )
+
+        let dateString = try c.decode(String.self, forKey: .modifiedAt)
+        guard let date = DataContractDateFormatters.date(from: dateString) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .modifiedAt,
+                in: c,
+                debugDescription: "Invalid ISO-8601 date"
+            )
         }
-        self.modifiedAt = parsedDate
+        modifiedAt = date
     }
 
     public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(inode, forKey: .inode)
-        try container.encode(device, forKey: .device)
-        try container.encode(byteSize, forKey: .byteSize)
-        try container.encode(permissions, forKey: .permissions)
-        try container.encode(DataContractDateFormatters.string(from: modifiedAt), forKey: .modifiedAt)
+        var c = encoder.container(keyedBy: CodingKeys.self)
+
+        try c.encode(inode, forKey: .inode)
+        try c.encode(device, forKey: .device)
+        try c.encode(byteSize, forKey: .byteSize)
+        try c.encode(permissions, forKey: .permissions)
+        try c.encode(
+            DataContractDateFormatters.string(from: modifiedAt),
+            forKey: .modifiedAt
+        )
+        try c.encodeIfPresent(
+            modifiedTimeNanoseconds, forKey: .modifiedTimeNanoseconds
+        )
+        try c.encodeIfPresent(
+            statusChangedTimeNanoseconds, forKey: .statusChangedTimeNanoseconds
+        )
     }
 }
 

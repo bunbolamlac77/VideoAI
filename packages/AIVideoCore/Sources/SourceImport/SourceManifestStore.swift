@@ -1,10 +1,3 @@
-//
-// SourceManifestStore.swift — Versioned Manifest & Content Identity Store for Gate G1 S05
-//
-// Manages immutable source revisions, content deduplication, provenance history,
-// safe atomic persistence, and orphan staging recovery.
-//
-
 import Darwin
 import Foundation
 
@@ -40,144 +33,311 @@ public struct SourceManifestData: Codable, Sendable {
 
 public actor SourceManifestStore {
     public let projectRoot: URL
-    private let manifestRelativePath = "manifests/sources_manifest.v1.json"
+
+    private let manifestRelativePath =
+        "manifests/sources_manifest.v1.json"
+
     private var data: SourceManifestData
 
     public init(projectRoot: URL) throws {
         self.projectRoot = projectRoot
-        let manifestURL = projectRoot.appendingPathComponent("manifests/sources_manifest.v1.json")
+
+        let manifestURL = projectRoot.appendingPathComponent(
+            "manifests/sources_manifest.v1.json"
+        )
+
         if FileManager.default.fileExists(atPath: manifestURL.path) {
-            let jsonData = try Data(contentsOf: manifestURL)
-            let decoder = JSONDecoder()
-            self.data = try decoder.decode(SourceManifestData.self, from: jsonData)
+            let bytes = try Data(contentsOf: manifestURL)
+            self.data = try JSONDecoder().decode(
+                SourceManifestData.self,
+                from: bytes
+            )
         } else {
             self.data = SourceManifestData()
         }
     }
 
-    /// Register a logical asset
-    public func registerAsset(_ asset: SourceAsset) throws {
-        data.assets[asset.mediaId] = asset
-        try saveManifest()
-    }
+    /// Register asset and revision in ONE atomic manifest update.
+    public func registerImport(
+        asset: SourceAsset,
+        revision: SourceRevision
+    ) throws {
+        guard asset.mediaId == revision.mediaId else {
+            throw SourceImportError.ioError(
+                message: "Asset/revision mediaId mismatch"
+            )
+        }
 
-    /// Register a new source revision for an asset
-    public func registerRevision(_ revision: SourceRevision) throws {
-        let mediaId = revision.mediaId
-        data.revisions[revision.sourceRevisionId] = revision
+        var next = data
 
-        // Append to history list for this mediaId (preserves all previous revisions)
-        if var list = data.revisionsByMediaId[mediaId] {
-            list.append(revision.sourceRevisionId)
-            data.revisionsByMediaId[mediaId] = list
+        if let existing = next.assets[asset.mediaId] {
+            guard existing.originalPath == asset.originalPath,
+                  existing.logicalName == asset.logicalName,
+                  existing.candidateKind == asset.candidateKind else {
+                throw SourceImportError.ioError(
+                    message: "Conflicting provenance for existing mediaId"
+                )
+            }
         } else {
-            data.revisionsByMediaId[mediaId] = [revision.sourceRevisionId]
+            next.assets[asset.mediaId] = asset
         }
 
-        // Map content hash if not already registered
-        if data.revisionsByContentHash[revision.contentSha256] == nil {
-            data.revisionsByContentHash[revision.contentSha256] = revision.sourceRevisionId
-        }
+        try insertRevision(revision, into: &next)
 
-        try saveManifest()
+        try persist(next)
+        data = next
     }
 
-    /// Retrieve asset by mediaId
+    /// Compatibility API for existing S05 tests.
+    public func registerAsset(_ asset: SourceAsset) throws {
+        var next = data
+        next.assets[asset.mediaId] = asset
+
+        try persist(next)
+        data = next
+    }
+
+    /// Compatibility API for existing S05 tests.
+    public func registerRevision(_ revision: SourceRevision) throws {
+        guard data.assets[revision.mediaId] != nil else {
+            throw SourceImportError.ioError(
+                message: "Cannot register revision without asset"
+            )
+        }
+
+        var next = data
+        try insertRevision(revision, into: &next)
+
+        try persist(next)
+        data = next
+    }
+
+    private func insertRevision(
+        _ revision: SourceRevision,
+        into next: inout SourceManifestData
+    ) throws {
+        if let previous = next.revisions[revision.sourceRevisionId] {
+            guard previous == revision else {
+                throw SourceImportError.ioError(
+                    message: "Revision UUID collision"
+                )
+            }
+
+            // Safe retry. Do not duplicate revision history.
+            return
+        }
+
+        next.revisions[revision.sourceRevisionId] = revision
+
+        next.revisionsByMediaId[
+            revision.mediaId,
+            default: []
+        ].append(revision.sourceRevisionId)
+
+        if next.revisionsByContentHash[revision.contentSha256] == nil {
+            next.revisionsByContentHash[
+                revision.contentSha256
+            ] = revision.sourceRevisionId
+        }
+    }
+
     public func getAsset(mediaId: UUID) -> SourceAsset? {
-        return data.assets[mediaId]
+        data.assets[mediaId]
     }
 
-    /// Retrieve all assets
     public func getAllAssets() -> [SourceAsset] {
-        return Array(data.assets.values)
+        Array(data.assets.values)
     }
 
-    /// Retrieve revision by sourceRevisionId
-    public func getRevision(sourceRevisionId: UUID) -> SourceRevision? {
-        return data.revisions[sourceRevisionId]
+    public func getRevision(
+        sourceRevisionId: UUID
+    ) -> SourceRevision? {
+        data.revisions[sourceRevisionId]
     }
 
-    /// Retrieve complete revision history for a mediaId in chronological order
-    public func getRevisions(for mediaId: UUID) -> [SourceRevision] {
-        guard let idList = data.revisionsByMediaId[mediaId] else { return [] }
-        return idList.compactMap { data.revisions[$0] }
+    public func getRevisions(
+        for mediaId: UUID
+    ) -> [SourceRevision] {
+        (data.revisionsByMediaId[mediaId] ?? [])
+            .compactMap { data.revisions[$0] }
     }
 
-    /// Retrieve latest revision for a mediaId
-    public func getLatestRevision(for mediaId: UUID) -> SourceRevision? {
-        guard let lastId = data.revisionsByMediaId[mediaId]?.last else { return nil }
-        return data.revisions[lastId]
+    public func getLatestRevision(
+        for mediaId: UUID
+    ) -> SourceRevision? {
+        guard let id = data.revisionsByMediaId[mediaId]?.last else {
+            return nil
+        }
+
+        return data.revisions[id]
     }
 
-    /// Find an existing revision by exact content SHA-256 (for deduplication)
-    public func findRevision(byContentSha256 sha256: String) -> SourceRevision? {
-        guard let revId = data.revisionsByContentHash[sha256] else { return nil }
-        return data.revisions[revId]
+    public func findRevision(
+        byContentSha256 sha256: String
+    ) -> SourceRevision? {
+        guard let id = data.revisionsByContentHash[sha256] else {
+            return nil
+        }
+
+        return data.revisions[id]
     }
 
-    /// Find asset by original file path
-    public func findAsset(byOriginalPath path: String) -> SourceAsset? {
-        return data.assets.values.first { $0.originalPath == path }
+    public func findAsset(
+        byOriginalPath path: String
+    ) -> SourceAsset? {
+        data.assets.values.first {
+            $0.originalPath == path
+        }
     }
 
-    /// Reconcile and safely clean orphan files in staging directory
-    /// Guaranteed NEVER to touch committed blobs in blobs/
     @discardableResult
     public func reconcileOrphanStaging() throws -> [String] {
-        let stagingDir = projectRoot.appendingPathComponent(SourceAcquisition.stagingSubdir)
+        let directory = projectRoot.appendingPathComponent(
+            SourceAcquisition.stagingSubdir
+        )
+
         let fm = FileManager.default
-        guard fm.fileExists(atPath: stagingDir.path) else { return [] }
 
-        let fileNames = try fm.contentsOfDirectory(atPath: stagingDir.path)
-        var cleaned: [String] = []
-
-        for name in fileNames {
-            if name.hasSuffix(".tmp") {
-                let fileURL = stagingDir.appendingPathComponent(name)
-                try? fm.removeItem(at: fileURL)
-                cleaned.append(fileURL.path)
-            }
+        guard fm.fileExists(atPath: directory.path) else {
+            return []
         }
-        return cleaned
+
+        var removed: [String] = []
+
+        for name in try fm.contentsOfDirectory(
+            atPath: directory.path
+        ) where name.hasSuffix(".tmp") {
+            let url = directory.appendingPathComponent(name)
+
+            try fm.removeItem(at: url)
+            removed.append(url.path)
+        }
+
+        return removed
     }
 
-    /// Atomically persist manifest to disk (tmp file -> fsync -> rename)
-    private func saveManifest() throws {
-        let manifestsDir = projectRoot.appendingPathComponent("manifests")
-        try FileManager.default.createDirectory(at: manifestsDir, withIntermediateDirectories: true)
+    /// Persist a complete manifest snapshot.
+    private func persist(_ next: SourceManifestData) throws {
+        let fm = FileManager.default
 
-        let targetURL = projectRoot.appendingPathComponent(manifestRelativePath)
-        let tmpURL = projectRoot.appendingPathComponent("manifests/sources_manifest.v1.tmp")
+        let dir = projectRoot.appendingPathComponent(
+            "manifests",
+            isDirectory: true
+        )
+
+        try fm.createDirectory(
+            at: dir,
+            withIntermediateDirectories: true
+        )
+
+        let target = projectRoot.appendingPathComponent(
+            manifestRelativePath
+        )
+
+        let tmp = dir.appendingPathComponent(
+            ".manifest_\(UUID().uuidString).tmp"
+        )
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let jsonData = try encoder.encode(data)
 
-        // Write to temporary file
-        let fd = open(tmpURL.path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR)
+        let json = try encoder.encode(next)
+
+        var fd = open(
+            tmp.path,
+            O_WRONLY | O_CREAT | O_EXCL,
+            S_IRUSR | S_IWUSR
+        )
+
         guard fd >= 0 else {
-            let err = errno
-            throw SourceImportError.ioError(message: "Không thể tạo tệp manifest tạm (\(err))")
+            throw SourceImportError.ioError(
+                message: "Create temporary manifest failed: errno \(errno)"
+            )
         }
 
-        let written = jsonData.withUnsafeBytes { ptr in
-            write(fd, ptr.baseAddress, jsonData.count)
-        }
-        guard written == jsonData.count else {
-            close(fd)
-            let err = errno
-            throw SourceImportError.ioError(message: "Ghi tệp manifest tạm không trọn vẹn (\(err))")
+        var renamed = false
+
+        defer {
+            if fd >= 0 {
+                _ = close(fd)
+            }
+
+            if !renamed {
+                try? fm.removeItem(at: tmp)
+            }
         }
 
-        // Flush bytes to disk
-        fsync(fd)
-        close(fd)
+        try json.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else {
+                throw SourceImportError.ioError(
+                    message: "Empty manifest JSON buffer"
+                )
+            }
 
-        // Atomic rename
-        let renameResult = rename(tmpURL.path, targetURL.path)
-        guard renameResult == 0 else {
-            let err = errno
-            throw SourceImportError.ioError(message: "Atomic rename manifest thất bại (\(err))")
+            var offset = 0
+
+            while offset < raw.count {
+                let n = Darwin.write(
+                    fd,
+                    base.advanced(by: offset),
+                    raw.count - offset
+                )
+
+                if n < 0 && errno == EINTR {
+                    continue
+                }
+
+                guard n > 0 else {
+                    throw SourceImportError.ioError(
+                        message: "Write manifest failed: errno \(errno)"
+                    )
+                }
+
+                offset += n
+            }
+        }
+
+        guard fsync(fd) == 0 else {
+            throw SourceImportError.ioError(
+                message: "fsync manifest failed: errno \(errno)"
+            )
+        }
+
+        let closeResult = close(fd)
+        fd = -1
+
+        guard closeResult == 0 else {
+            throw SourceImportError.ioError(
+                message: "close manifest failed: errno \(errno)"
+            )
+        }
+
+        // This rename atomically REPLACES the manifest on purpose.
+        // Do not use this operation for immutable content blobs.
+        guard rename(tmp.path, target.path) == 0 else {
+            throw SourceImportError.ioError(
+                message: "Atomic manifest rename failed: errno \(errno)"
+            )
+        }
+
+        renamed = true
+
+        // Disk manifest now contains next, even if directory sync fails.
+        data = next
+
+        let dirFD = open(dir.path, O_RDONLY)
+
+        guard dirFD >= 0 else {
+            throw SourceImportError.ioError(
+                message: "Open manifest directory failed: errno \(errno)"
+            )
+        }
+        defer { _ = close(dirFD) }
+
+        guard fsync(dirFD) == 0 else {
+            throw SourceImportError.ioError(
+                message: "fsync manifest directory failed: errno \(errno)"
+            )
         }
     }
 }

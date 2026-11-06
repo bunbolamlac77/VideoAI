@@ -1,10 +1,4 @@
-//
-// SourceAcquisition.swift — Safe Source Acquisition Pipeline (APFS Clone + Fallback Copy) for Gate G1 S05
-//
-// Enforces source stability checks, disk budget verification, atomic staging,
-// deduplication, and immutable sealing. Never modifies or deletes originals.
-//
-
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -18,7 +12,11 @@ public struct AcquisitionResult: Sendable, Equatable {
     public let sealedRef: SealedSourceRef
     public let isDeduplicated: Bool
 
-    public init(revision: SourceRevision, sealedRef: SealedSourceRef, isDeduplicated: Bool) {
+    public init(
+        revision: SourceRevision,
+        sealedRef: SealedSourceRef,
+        isDeduplicated: Bool
+    ) {
         self.revision = revision
         self.sealedRef = sealedRef
         self.isDeduplicated = isDeduplicated
@@ -28,11 +26,10 @@ public struct AcquisitionResult: Sendable, Equatable {
 public struct SourceAcquisition: Sendable {
     public static let stagingSubdir = "staging/sources"
     public static let blobsSubdir = "blobs"
-    public static let copyChunkSize = 1024 * 1024 // 1 MiB chunks
+    public static let copyChunkSize = 1024 * 1024
 
     public init() {}
 
-    /// Perform safe acquisition of a source file into the project's immutable snapshot repository
     public static func acquire(
         sourceURL: URL,
         mediaId: UUID,
@@ -42,158 +39,259 @@ public struct SourceAcquisition: Sendable {
         simulatedAvailableBytes: Int64? = nil,
         faultInjection: AcquisitionFaultInjection? = nil
     ) throws -> AcquisitionResult {
-        // 1. Preflight source inspection and capture authoritative initial FileIdentity
-        let preflight = try SourceInspector.inspect(url: sourceURL, bookmarkData: bookmarkData)
-        let initialIdentity = preflight.fileIdentity
-
-        // 2. Determine acquisition capability (APFS clone vs full copy fallback)
-        let method: AcquisitionMethod
-        if let preferred = preferredMethod {
-            method = preferred
-        } else {
-            let canClone = APFSCapability.canClone(from: sourceURL, to: projectRoot)
-            method = canClone ? .apfsClone : .fullCopy
+        try SourceInspector.withSourceAccess(
+            url: sourceURL,
+            bookmarkData: bookmarkData
+        ) { resolvedURL in
+            try acquireResolved(
+                sourceURL: resolvedURL,
+                mediaId: mediaId,
+                projectRoot: projectRoot,
+                preferredMethod: preferredMethod,
+                simulatedAvailableBytes: simulatedAvailableBytes,
+                faultInjection: faultInjection
+            )
         }
+    }
 
-        // 3. Verify disk budget before touching filesystem
+    private static func acquireResolved(
+        sourceURL: URL,
+        mediaId: UUID,
+        projectRoot: URL,
+        preferredMethod: AcquisitionMethod?,
+        simulatedAvailableBytes: Int64?,
+        faultInjection: AcquisitionFaultInjection?
+    ) throws -> AcquisitionResult {
+        let preflight = try SourceInspector.inspectResolvedURL(sourceURL)
+        let initial = preflight.fileIdentity
+
+        // One descriptor for copying, checking identity and hashing.
+        let sourceFD = open(sourceURL.path, O_RDONLY)
+        guard sourceFD >= 0 else {
+            throw SourceImportError.ioError(
+                message: "Open source failed: errno \(errno)"
+            )
+        }
+        defer { _ = close(sourceFD) }
+
+        try verifySourceStability(
+            sourceFD: sourceFD,
+            sourceURL: sourceURL,
+            initialIdentity: initial
+        )
+
+        let method = preferredMethod ?? (
+            APFSCapability.canClone(
+                from: sourceURL,
+                to: projectRoot
+            ) ? .apfsClone : .fullCopy
+        )
+
         _ = try DiskBudgetPlanner.planBudget(
-            fileSize: initialIdentity.byteSize,
+            fileSize: initial.byteSize,
             method: method,
             destinationURL: projectRoot,
             simulatedAvailableBytes: simulatedAvailableBytes
         )
 
-        // 4. Create staging directory on target filesystem
-        let stagingDir = projectRoot.appendingPathComponent(stagingSubdir, isDirectory: true)
-        try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        let stagingDir = projectRoot.appendingPathComponent(
+            stagingSubdir,
+            isDirectory: true
+        )
 
-        let stagingFileName = "\(UUID().uuidString).tmp"
-        let stagingURL = stagingDir.appendingPathComponent(stagingFileName)
+        try fm.createDirectory(
+            at: stagingDir,
+            withIntermediateDirectories: true
+        )
 
-        // Ensure staging file is cleaned up if acquisition fails prematurely
-        var stagingCommitted = false
+        let stagingURL = stagingDir.appendingPathComponent(
+            "\(UUID().uuidString).tmp"
+        )
+
         defer {
-            if !stagingCommitted && faultInjection != .simulateInterruptedCopy(bytesToWrite: 0) {
-                // If fault injection simulated interrupted copy, preserve file for crash recovery test
-                if case .simulateInterruptedCopy = faultInjection {
-                    // keep file intact
-                } else {
-                    try? FileManager.default.removeItem(at: stagingURL)
-                }
+            if case .simulateInterruptedCopy = faultInjection {
+                // Preserve staging for the crash-recovery test.
+            } else {
+                try? fm.removeItem(at: stagingURL)
             }
         }
 
-        // 5. Acquire bytes into staging location
+        // Acquire source bytes.
         var actualMethod = method
+
         if method == .apfsClone {
             do {
-                try APFSCapability.clone(from: sourceURL, to: stagingURL)
-            } catch {
-                // If clone failed unexpectedly (e.g. cross-volume or filesystem limitation), fallback to copy
-                try? FileManager.default.removeItem(at: stagingURL)
-                actualMethod = .fullCopy
-                try performFullCopy(
+                try APFSCapability.clone(
                     from: sourceURL,
+                    to: stagingURL
+                )
+            } catch SourceImportError.insufficientDiskSpace {
+                throw SourceImportError.insufficientDiskSpace(
+                    requiredBytes: initial.byteSize,
+                    availableBytes: 0,
+                    reserveBytes: DiskBudgetPlanner.defaultSystemReserveBytes
+                )
+            } catch {
+                // Clone is an optimization, not a requirement.
+                try? fm.removeItem(at: stagingURL)
+
+                actualMethod = .fullCopy
+
+                // A clone budget is insufficient for full-copy fallback.
+                _ = try DiskBudgetPlanner.planBudget(
+                    fileSize: initial.byteSize,
+                    method: .fullCopy,
+                    destinationURL: projectRoot,
+                    simulatedAvailableBytes: simulatedAvailableBytes
+                )
+
+                try performFullCopy(
+                    sourceFD: sourceFD,
                     to: stagingURL,
-                    expectedSize: initialIdentity.byteSize,
+                    expectedSize: initial.byteSize,
                     faultInjection: faultInjection
                 )
             }
         } else {
             try performFullCopy(
-                from: sourceURL,
+                sourceFD: sourceFD,
                 to: stagingURL,
-                expectedSize: initialIdentity.byteSize,
+                expectedSize: initial.byteSize,
                 faultInjection: faultInjection
             )
         }
 
-        // 6. Stability verification: check that original file has not mutated during acquisition
         if faultInjection == .simulateSourceMutationBeforeSeal {
             throw SourceImportError.sourceMutatedDuringAcquisition(
                 path: sourceURL.path,
-                reason: "Simulated mutation: mtime changed during acquisition"
+                reason: "Injected mutation for regression test"
             )
         }
 
-        try verifySourceStability(sourceURL: sourceURL, initialIdentity: initialIdentity)
+        // Check identity before reading the digests.
+        try verifySourceStability(
+            sourceFD: sourceFD,
+            sourceURL: sourceURL,
+            initialIdentity: initial
+        )
 
-        // 7. Verify snapshot & calculate streaming SHA-256
-        let contentSha256 = try SnapshotVerifier.computeSha256(for: stagingURL)
+        let snapshotHash = try SnapshotVerifier.computeSha256(
+            for: stagingURL
+        )
 
-        // Verify staging file size
+        let sourceHash = try computeSourceSha256(sourceFD)
+
+        // Check again after both hashes are calculated.
+        try verifySourceStability(
+            sourceFD: sourceFD,
+            sourceURL: sourceURL,
+            initialIdentity: initial
+        )
+
+        guard sourceHash == snapshotHash else {
+            throw SourceImportError.sourceMutatedDuringAcquisition(
+                path: sourceURL.path,
+                reason: "Source and snapshot SHA-256 differ"
+            )
+        }
+
         var stagingStat = stat()
         guard stat(stagingURL.path, &stagingStat) == 0 else {
-            let err = errno
-            throw SourceImportError.ioError(message: "stat staging failed (\(err))")
-        }
-        let stagingSize = Int64(stagingStat.st_size)
-        guard stagingSize == initialIdentity.byteSize else {
-            throw SourceImportError.corruptedSnapshot(
-                path: stagingURL.path,
-                reason: "Dung lượng staging (\(stagingSize)) không khớp nguồn (\(initialIdentity.byteSize))"
+            throw SourceImportError.ioError(
+                message: "stat staging failed: errno \(errno)"
             )
         }
 
-        // 8. Deduplication & Atomic Promotion to Immutable Blob
-        let hashPrefix = String(contentSha256.prefix(2))
-        let relativeBlobPath = "\(blobsSubdir)/\(hashPrefix)/\(contentSha256).blob"
-        let sealedURL = try SnapshotVerifier.resolveSafePath(relativePath: relativeBlobPath, projectRoot: projectRoot)
-
-        var isDeduplicated = false
-        if FileManager.default.fileExists(atPath: sealedURL.path) {
-            // Deduplicated blob already exists! Verify existing blob hash before reusing
-            let existingHash = try SnapshotVerifier.computeSha256(for: sealedURL)
-            if existingHash == contentSha256 {
-                // Valid deduplication: remove staging file and reuse existing blob
-                try? FileManager.default.removeItem(at: stagingURL)
-                isDeduplicated = true
-            } else {
-                throw SourceImportError.corruptedSnapshot(
-                    path: sealedURL.path,
-                    reason: "Blob hiện có bị sai lệch băm SHA-256"
-                )
-            }
-        } else {
-            // New blob: create parent directory, atomic rename, and set read-only permissions
-            let blobDir = sealedURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: blobDir, withIntermediateDirectories: true)
-
-            // Atomic rename from staging to final immutable location
-            let renameResult = rename(stagingURL.path, sealedURL.path)
-            guard renameResult == 0 else {
-                let err = errno
-                throw SourceImportError.ioError(message: "Atomic rename failed (\(err)): \(String(cString: strerror(err)))")
-            }
-
-            // Lock permissions to read-only (0444)
-            chmod(sealedURL.path, S_IRUSR | S_IRGRP | S_IROTH)
+        guard Int64(stagingStat.st_size) == initial.byteSize else {
+            throw SourceImportError.corruptedSnapshot(
+                path: stagingURL.path,
+                reason: "Staging size differs from source size"
+            )
         }
 
-        stagingCommitted = true
+        // Content-addressed immutable blob path.
+        let relativePath =
+            "\(blobsSubdir)/\(snapshotHash.prefix(2))/\(snapshotHash).blob"
 
-        let sourceRevisionId = UUID()
+        let sealedURL = try SnapshotVerifier.resolveSafePath(
+            relativePath: relativePath,
+            projectRoot: projectRoot
+        )
+
+        let blobDir = sealedURL.deletingLastPathComponent()
+
+        try fm.createDirectory(
+            at: blobDir,
+            withIntermediateDirectories: true
+        )
+
+        // Verify again after creating the destination directory.
+        _ = try SnapshotVerifier.resolveSafePath(
+            relativePath: relativePath,
+            projectRoot: projectRoot
+        )
+
+        // Set read-only and synchronize BEFORE publication.
+        try sealAndSyncStaging(stagingURL)
+
+        // This operation will never overwrite an existing blob.
+        let promotion = renamex_np(
+            stagingURL.path,
+            sealedURL.path,
+            UInt32(RENAME_EXCL)
+        )
+
+        let isDeduplicated: Bool
+
+        if promotion == 0 {
+            isDeduplicated = false
+            try fsyncDirectory(blobDir)
+
+        } else if errno == EEXIST {
+            // Another import may have published this hash concurrently.
+            let existingHash = try SnapshotVerifier.computeSha256(
+                for: sealedURL
+            )
+
+            guard existingHash == snapshotHash else {
+                throw SourceImportError.existingBlobConflict(
+                    path: sealedURL.path
+                )
+            }
+
+            try fm.removeItem(at: stagingURL)
+            isDeduplicated = true
+
+        } else {
+            throw SourceImportError.ioError(
+                message: "Exclusive blob promotion failed: errno \(errno)"
+            )
+        }
+
+        // Only construct a verified reference after promotion.
+        let revisionID = UUID()
         let now = Date()
 
         let revision = SourceRevision(
-            sourceRevisionId: sourceRevisionId,
+            sourceRevisionId: revisionID,
             mediaId: mediaId,
-            contentSha256: contentSha256,
-            byteSize: initialIdentity.byteSize,
-            snapshotRelativePath: relativeBlobPath,
+            contentSha256: snapshotHash,
+            byteSize: initial.byteSize,
+            snapshotRelativePath: relativePath,
             acquisitionMethod: actualMethod,
             verifiedAt: now,
             verificationStatus: .verified,
-            fileIdentity: initialIdentity,
+            fileIdentity: initial,
             policyVersion: "1.0"
         )
 
         let sealedRef = SealedSourceRef(
-            sourceRevisionId: sourceRevisionId,
+            sourceRevisionId: revisionID,
             mediaId: mediaId,
-            contentSha256: contentSha256,
-            byteSize: initialIdentity.byteSize,
-            snapshotRelativePath: relativeBlobPath,
+            contentSha256: snapshotHash,
+            byteSize: initial.byteSize,
+            snapshotRelativePath: relativePath,
             verifiedAt: now,
             isSealed: true
         )
@@ -205,118 +303,300 @@ public struct SourceAcquisition: Sendable {
         )
     }
 
-    /// Full-copy fallback implementation with chunked streaming and fault injection
+    private static func sealAndSyncStaging(_ url: URL) throws {
+        let fd = open(url.path, O_RDWR)
+
+        guard fd >= 0 else {
+            throw SourceImportError.ioError(
+                message: "Open staging for sealing failed: errno \(errno)"
+            )
+        }
+        defer { _ = close(fd) }
+
+        guard fchmod(
+            fd,
+            S_IRUSR | S_IRGRP | S_IROTH
+        ) == 0 else {
+            throw SourceImportError.ioError(
+                message: "fchmod staging failed: errno \(errno)"
+            )
+        }
+
+        guard fsync(fd) == 0 else {
+            throw SourceImportError.ioError(
+                message: "fsync staging failed: errno \(errno)"
+            )
+        }
+    }
+
+    private static func fsyncDirectory(_ dir: URL) throws {
+        let dirFD = open(dir.path, O_RDONLY)
+
+        guard dirFD >= 0 else {
+            throw SourceImportError.ioError(
+                message: "Open blob directory failed: errno \(errno)"
+            )
+        }
+        defer { _ = close(dirFD) }
+
+        guard fsync(dirFD) == 0 else {
+            throw SourceImportError.ioError(
+                message: "fsync blob directory failed: errno \(errno)"
+            )
+        }
+    }
+
     private static func performFullCopy(
-        from sourceURL: URL,
+        sourceFD: Int32,
         to stagingURL: URL,
         expectedSize: Int64,
         faultInjection: AcquisitionFaultInjection?
     ) throws {
-        let srcFd = open(sourceURL.standardizedFileURL.path, O_RDONLY)
-        guard srcFd >= 0 else {
-            let err = errno
-            throw SourceImportError.ioError(message: "Không thể mở file nguồn để sao chép (errno \(err))")
-        }
-        defer { close(srcFd) }
+        var dstFD = open(
+            stagingURL.path,
+            O_WRONLY | O_CREAT | O_EXCL,
+            S_IRUSR | S_IWUSR
+        )
 
-        // Create staging file exclusively
-        let dstFd = open(stagingURL.standardizedFileURL.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
-        guard dstFd >= 0 else {
-            let err = errno
-            throw SourceImportError.ioError(message: "Không thể tạo file staging (errno \(err))")
+        guard dstFD >= 0 else {
+            throw SourceImportError.ioError(
+                message: "Create staging failed: errno \(errno)"
+            )
         }
-        defer { close(dstFd) }
+        defer {
+            if dstFD >= 0 {
+                _ = close(dstFD)
+            }
+        }
 
-        var buffer = [UInt8](repeating: 0, count: copyChunkSize)
-        var totalWritten: Int64 = 0
+        guard lseek(sourceFD, 0, SEEK_SET) >= 0 else {
+            throw SourceImportError.ioError(
+                message: "Seek source failed: errno \(errno)"
+            )
+        }
+
+        var buffer = [UInt8](
+            repeating: 0,
+            count: copyChunkSize
+        )
+        var total: Int64 = 0
 
         while true {
-            let bytesRead = read(srcFd, &buffer, copyChunkSize)
-            if bytesRead < 0 {
-                let err = errno
-                throw SourceImportError.ioError(message: "Lỗi đọc file nguồn khi copy (errno \(err))")
+            let count = read(
+                sourceFD,
+                &buffer,
+                buffer.count
+            )
+
+            if count < 0 && errno == EINTR {
+                continue
             }
-            if bytesRead == 0 {
+
+            guard count >= 0 else {
+                throw SourceImportError.ioError(
+                    message: "Read source failed: errno \(errno)"
+                )
+            }
+
+            if count == 0 {
                 break
             }
 
-            // Check fault injection for simulated interruption
-            if let fault = faultInjection, case .simulateInterruptedCopy(let limit) = fault {
-                if totalWritten + Int64(bytesRead) >= Int64(limit) {
-                    let toWrite = max(0, limit - Int(totalWritten))
-                    if toWrite > 0 {
-                        _ = buffer.withUnsafeBytes { ptr in
-                            Darwin.write(dstFd, ptr.baseAddress!, toWrite)
-                        }
-                    }
-                    throw SourceImportError.ioError(message: "Fault Injection: Tiến trình bị ngắt đột ngột khi đang copy")
+            if let faultInjection,
+               case .simulateInterruptedCopy(let limit) = faultInjection,
+               total + Int64(count) >= Int64(limit) {
+
+                let partial = max(0, limit - Int(total))
+
+                if partial > 0 {
+                    try writeAll(
+                        dstFD,
+                        bytes: buffer,
+                        count: partial,
+                        expectedSize: expectedSize,
+                        alreadyWritten: total
+                    )
                 }
+
+                throw SourceImportError.ioError(
+                    message: "Injected interrupted copy"
+                )
             }
 
-            var writtenSoFar = 0
-            while writtenSoFar < bytesRead {
-                let remaining = bytesRead - writtenSoFar
-                let written = buffer.withUnsafeBytes { rawPtr -> Int in
-                    guard let base = rawPtr.baseAddress else { return -1 }
-                    return Darwin.write(dstFd, base.advanced(by: writtenSoFar), remaining)
-                }
-                if written < 0 {
-                    let err = errno
-                    if err == ENOSPC {
-                        throw SourceImportError.insufficientDiskSpace(
-                            requiredBytes: expectedSize,
-                            availableBytes: totalWritten,
-                            reserveBytes: 0
-                        )
-                    }
-                    throw SourceImportError.ioError(message: "Lỗi ghi file staging (errno \(err))")
-                }
-                writtenSoFar += written
-            }
-            totalWritten += Int64(bytesRead)
+            try writeAll(
+                dstFD,
+                bytes: buffer,
+                count: count,
+                expectedSize: expectedSize,
+                alreadyWritten: total
+            )
+
+            total += Int64(count)
         }
 
-        // Fsync to guarantee bytes are flushed to disk
-        fsync(dstFd)
-    }
-
-    /// Verify that the original source file on disk has not been altered during copy
-    private static func verifySourceStability(sourceURL: URL, initialIdentity: FileIdentity) throws {
-        var currentStat = stat()
-        let path = sourceURL.standardizedFileURL.path
-        guard stat(path, &currentStat) == 0 else {
+        guard total == expectedSize else {
             throw SourceImportError.sourceMutatedDuringAcquisition(
-                path: path,
-                reason: "Tệp nguồn bị di chuyển hoặc xóa trong lúc acquisition"
+                path: stagingURL.path,
+                reason: "Source size changed during copy"
             )
         }
 
-        if UInt64(currentStat.st_ino) != initialIdentity.inode ||
-            UInt64(currentStat.st_dev) != initialIdentity.device {
-            throw SourceImportError.sourceMutatedDuringAcquisition(
-                path: path,
-                reason: "Tệp nguồn bị hoán đổi (inode hoặc dev thay đổi)"
+        guard fsync(dstFD) == 0 else {
+            throw SourceImportError.ioError(
+                message: "fsync staging failed: errno \(errno)"
             )
         }
 
-        if Int64(currentStat.st_size) != initialIdentity.byteSize {
-            throw SourceImportError.sourceMutatedDuringAcquisition(
-                path: path,
-                reason: "Dung lượng tệp nguồn thay đổi trong lúc copy (\(initialIdentity.byteSize) -> \(currentStat.st_size))"
-            )
-        }
+        let closeResult = close(dstFD)
+        dstFD = -1
 
-        let currentSec = currentStat.st_mtimespec.tv_sec
-        let initialSec = Int(initialIdentity.modifiedAt.timeIntervalSince1970)
-        if abs(currentSec - initialSec) > 1 {
-            throw SourceImportError.sourceMutatedDuringAcquisition(
-                path: path,
-                reason: "Thời gian chỉnh sửa (mtime) của tệp nguồn bị thay đổi trong lúc copy"
+        guard closeResult == 0 else {
+            throw SourceImportError.ioError(
+                message: "close staging failed: errno \(errno)"
             )
         }
     }
 
-    /// Perform resilient batch import where failures on one file do not break independent files
+    private static func writeAll(
+        _ fd: Int32,
+        bytes: [UInt8],
+        count: Int,
+        expectedSize: Int64,
+        alreadyWritten: Int64
+    ) throws {
+        try bytes.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else {
+                throw SourceImportError.ioError(
+                    message: "Empty copy buffer"
+                )
+            }
+
+            var position = 0
+
+            while position < count {
+                let n = Darwin.write(
+                    fd,
+                    base.advanced(by: position),
+                    count - position
+                )
+
+                if n < 0 && errno == EINTR {
+                    continue
+                }
+
+                if n < 0 && errno == ENOSPC {
+                    throw SourceImportError.insufficientDiskSpace(
+                        requiredBytes: expectedSize,
+                        availableBytes: alreadyWritten + Int64(position),
+                        reserveBytes: 0
+                    )
+                }
+
+                guard n > 0 else {
+                    throw SourceImportError.ioError(
+                        message: "Write staging failed: errno \(errno)"
+                    )
+                }
+
+                position += n
+            }
+        }
+    }
+
+    private static func computeSourceSha256(
+        _ fd: Int32
+    ) throws -> String {
+        var sha = SHA256()
+        var buffer = [UInt8](
+            repeating: 0,
+            count: copyChunkSize
+        )
+        var offset: Int64 = 0
+
+        while true {
+            let n = pread(
+                fd,
+                &buffer,
+                buffer.count,
+                off_t(offset)
+            )
+
+            if n < 0 && errno == EINTR {
+                continue
+            }
+
+            guard n >= 0 else {
+                throw SourceImportError.ioError(
+                    message: "Hash source read failed: errno \(errno)"
+                )
+            }
+
+            if n == 0 {
+                break
+            }
+
+            sha.update(data: Data(buffer[0..<n]))
+            offset += Int64(n)
+        }
+
+        return sha.finalize()
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    // Internal to permit deterministic mutation tests.
+    static func verifySourceStability(
+        sourceFD: Int32,
+        sourceURL: URL,
+        initialIdentity: FileIdentity
+    ) throws {
+        var fdStat = stat()
+        var pathStat = stat()
+
+        guard fstat(sourceFD, &fdStat) == 0,
+              stat(sourceURL.path, &pathStat) == 0 else {
+            throw SourceImportError.sourceMutatedDuringAcquisition(
+                path: sourceURL.path,
+                reason: "Source disappeared or fstat/stat failed"
+            )
+        }
+
+        func isSame(_ st: stat) -> Bool {
+            guard UInt64(st.st_ino) == initialIdentity.inode,
+                  UInt64(st.st_dev) == initialIdentity.device,
+                  Int64(st.st_size) == initialIdentity.byteSize else {
+                return false
+            }
+
+            let mtime =
+                Int64(st.st_mtimespec.tv_sec) * 1_000_000_000 +
+                Int64(st.st_mtimespec.tv_nsec)
+
+            let ctime =
+                Int64(st.st_ctimespec.tv_sec) * 1_000_000_000 +
+                Int64(st.st_ctimespec.tv_nsec)
+
+            if let previous = initialIdentity.modifiedTimeNanoseconds,
+               previous != mtime {
+                return false
+            }
+
+            if let previous = initialIdentity.statusChangedTimeNanoseconds,
+               previous != ctime {
+                return false
+            }
+
+            return true
+        }
+
+        guard isSame(fdStat), isSame(pathStat) else {
+            throw SourceImportError.sourceMutatedDuringAcquisition(
+                path: sourceURL.path,
+                reason: "Source inode, size, mtime(ns) or ctime(ns) changed"
+            )
+        }
+    }
+
     public static func acquireBatch(
         sources: [(url: URL, mediaId: UUID, bookmark: Data?)],
         projectRoot: URL,
@@ -324,33 +604,65 @@ public struct SourceAcquisition: Sendable {
         preferredMethod: AcquisitionMethod? = nil
     ) async -> BatchImportReport {
         var results: [BatchImportItemResult] = []
+
         for item in sources {
             do {
-                let res = try acquire(
+                let acquired = try acquire(
                     sourceURL: item.url,
                     mediaId: item.mediaId,
                     projectRoot: projectRoot,
                     bookmarkData: item.bookmark,
                     preferredMethod: preferredMethod
                 )
+
                 if let store = manifestStore {
                     let asset = SourceAsset(
                         mediaId: item.mediaId,
                         logicalName: item.url.lastPathComponent,
                         originalPath: item.url.path,
-                        candidateKind: MediaCandidateKind.from(pathExtension: item.url.pathExtension),
+                        candidateKind: MediaCandidateKind.from(
+                            pathExtension: item.url.pathExtension
+                        ),
                         securityScopedBookmark: item.bookmark
                     )
-                    try? await store.registerAsset(asset)
-                    try? await store.registerRevision(res.revision)
+
+                    // Never swallow a manifest persistence error.
+                    try await store.registerImport(
+                        asset: asset,
+                        revision: acquired.revision
+                    )
                 }
-                results.append(BatchImportItemResult(url: item.url, mediaId: item.mediaId, result: .success(res)))
-            } catch let err as SourceImportError {
-                results.append(BatchImportItemResult(url: item.url, mediaId: item.mediaId, result: .failure(err)))
+
+                results.append(
+                    BatchImportItemResult(
+                        url: item.url,
+                        mediaId: item.mediaId,
+                        result: .success(acquired)
+                    )
+                )
+
+            } catch let error as SourceImportError {
+                results.append(
+                    BatchImportItemResult(
+                        url: item.url,
+                        mediaId: item.mediaId,
+                        result: .failure(error)
+                    )
+                )
+
             } catch {
-                results.append(BatchImportItemResult(url: item.url, mediaId: item.mediaId, result: .failure(.ioError(message: error.localizedDescription))))
+                results.append(
+                    BatchImportItemResult(
+                        url: item.url,
+                        mediaId: item.mediaId,
+                        result: .failure(
+                            .ioError(message: error.localizedDescription)
+                        )
+                    )
+                )
             }
         }
+
         return BatchImportReport(items: results)
     }
 }
@@ -360,7 +672,11 @@ public struct BatchImportItemResult: Sendable {
     public let mediaId: UUID
     public let result: Result<AcquisitionResult, SourceImportError>
 
-    public init(url: URL, mediaId: UUID, result: Result<AcquisitionResult, SourceImportError>) {
+    public init(
+        url: URL,
+        mediaId: UUID,
+        result: Result<AcquisitionResult, SourceImportError>
+    ) {
         self.url = url
         self.mediaId = mediaId
         self.result = result
@@ -375,10 +691,20 @@ public struct BatchImportReport: Sendable {
     }
 
     public var succeededCount: Int {
-        items.filter { if case .success = $0.result { return true }; return false }.count
+        items.filter {
+            if case .success = $0.result {
+                return true
+            }
+            return false
+        }.count
     }
 
     public var failedCount: Int {
-        items.filter { if case .failure = $0.result { return true }; return false }.count
+        items.filter {
+            if case .failure = $0.result {
+                return true
+            }
+            return false
+        }.count
     }
 }

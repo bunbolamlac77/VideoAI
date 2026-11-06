@@ -44,38 +44,57 @@ public struct SnapshotVerifier: Sendable {
     }
 
     /// Validates that a relative path does not escape the project root (prevents path traversal and symlink escape)
-    public static func resolveSafePath(relativePath: String, projectRoot: URL) throws -> URL {
-        // Reject path traversal markers
-        if relativePath.hasPrefix("/") || relativePath.contains("..") {
-            throw SourceImportError.pathTraversalDetected(path: relativePath)
+    public static func resolveSafePath(
+        relativePath: String,
+        projectRoot: URL
+    ) throws -> URL {
+        let segments = relativePath.split(
+            separator: "/",
+            omittingEmptySubsequences: false
+        )
+
+        guard !relativePath.isEmpty,
+              !relativePath.hasPrefix("/"),
+              !segments.contains(where: {
+                  $0.isEmpty || $0 == "." || $0 == ".."
+              }) else {
+            throw SourceImportError.pathTraversalDetected(
+                path: relativePath
+            )
         }
 
-        let fullURL = projectRoot.appendingPathComponent(relativePath).standardizedFileURL
+        let root = projectRoot.standardizedFileURL
+            .resolvingSymlinksInPath()
 
-        func normalizePrivate(_ path: String) -> String {
-            if path.hasPrefix("/private/") {
-                return "/" + String(path.dropFirst(9))
-            }
-            return path
+        let target = root.appendingPathComponent(
+            relativePath
+        ).standardizedFileURL
+
+        let parent = target.deletingLastPathComponent()
+            .resolvingSymlinksInPath()
+
+        let prefix = root.path.hasSuffix("/")
+            ? root.path
+            : root.path + "/"
+
+        // Check parent even if the target does not exist yet.
+        guard parent.path == root.path ||
+              parent.path.hasPrefix(prefix) else {
+            throw SourceImportError.pathTraversalDetected(
+                path: parent.path
+            )
         }
 
-        let standardizedRoot = normalizePrivate(projectRoot.standardizedFileURL.path)
-        let fullPath = normalizePrivate(fullURL.path)
+        let finalResolved = target.resolvingSymlinksInPath()
 
-        guard fullPath.hasPrefix(standardizedRoot + "/") || fullPath == standardizedRoot else {
-            throw SourceImportError.pathTraversalDetected(path: fullURL.path)
+        guard finalResolved.path == root.path ||
+              finalResolved.path.hasPrefix(prefix) else {
+            throw SourceImportError.pathTraversalDetected(
+                path: finalResolved.path
+            )
         }
 
-        // Check symlink escape if file exists
-        if FileManager.default.fileExists(atPath: fullURL.path) {
-            let resolvedPath = normalizePrivate(fullURL.resolvingSymlinksInPath().path)
-            let resolvedRoot = normalizePrivate(projectRoot.resolvingSymlinksInPath().path)
-            guard resolvedPath.hasPrefix(resolvedRoot + "/") || resolvedPath == resolvedRoot else {
-                throw SourceImportError.pathTraversalDetected(path: "Symlink thoát khỏi project root: \(resolvedPath)")
-            }
-        }
-
-        return fullURL
+        return target
     }
 }
 
@@ -87,6 +106,13 @@ public struct AuthoritativeSourceReader: Sendable {
     /// Authoritative verification: verifies that the sealed snapshot exists, matches byteSize,
     /// matches contentSha256, and resides safely within projectRoot.
     public static func verifySnapshot(ref: SealedSourceRef, projectRoot: URL) throws -> URL {
+        guard ref.isSealed else {
+            throw SourceImportError.corruptedSnapshot(
+                path: ref.snapshotRelativePath,
+                reason: "Unsealed source reference"
+            )
+        }
+
         let snapshotURL = try SnapshotVerifier.resolveSafePath(
             relativePath: ref.snapshotRelativePath,
             projectRoot: projectRoot
@@ -118,6 +144,43 @@ public struct AuthoritativeSourceReader: Sendable {
         }
 
         return snapshotURL
+    }
+
+    /// Stream large media without loading the entire file into RAM.
+    ///
+    /// Do not publish authoritative outputs before this method
+    /// returns without throwing.
+    public static func forEachVerifiedChunk(
+        ref: SealedSourceRef,
+        projectRoot: URL,
+        chunkSize: Int = SnapshotVerifier.defaultChunkSize,
+        consume: (Data) throws -> Void
+    ) throws {
+        guard chunkSize > 0 else {
+            throw SourceImportError.ioError(
+                message: "chunkSize must be positive"
+            )
+        }
+
+        let verifiedURL = try verifySnapshot(
+            ref: ref,
+            projectRoot: projectRoot
+        )
+
+        let handle = try FileHandle(forReadingFrom: verifiedURL)
+        defer { try? handle.close() }
+
+        while let bytes = try handle.read(
+            upToCount: chunkSize
+        ), !bytes.isEmpty {
+            try consume(bytes)
+        }
+
+        // Revalidate to detect changes during streaming.
+        _ = try verifySnapshot(
+            ref: ref,
+            projectRoot: projectRoot
+        )
     }
 
     /// Read full data of snapshot after authoritative verification
