@@ -1,13 +1,13 @@
 {
-  "requirement_id" : "UI-16",
-  "timestamp" : "2026-11-06T08:01:12Z",
-  "bundled_contracts_path" : "\/Users\/phuthanh\/APP_CaNhan\/AIVideo\/apps\/macos\/build\/AIVideo.app\/Contents\/Resources\/contracts\/g0_model.lock.json",
   "unicode_path_tested" : "\/tmp\/AIVideo_Test_Tư_Liệu_Đà_Lạt_2026_Đèo_Prenn\/đoạn_phim_gốc_sắc_nét_4k.mp4",
-  "testcase_id" : "S02.T1",
-  "app_path" : "\/Users\/phuthanh\/APP_CaNhan\/AIVideo\/apps\/macos\/build\/AIVideo.app",
   "model_status" : "available_unloaded",
-  "external_volume_path_tested" : "\/tmp\/external_volume_mount_simulation_AIVideo\/tư_liệu_ổ_cứng_ngoài.mp4",
-  "status" : "PASS",
   "launch_environment" : "Finder \/ LaunchServices clean environment (no terminal PATH dependencies)",
-  "details" : "Verified .app bundle launches worker, resolves contracts\/g0_model.lock.json from Contents\/Resources\/contracts, and probes media on Vietnamese Unicode and simulated external drive paths without terminal PATH dependencies."
+  "details" : "Verified .app bundle launches worker, resolves contracts\/g0_model.lock.json from Contents\/Resources\/contracts, and probes media on Vietnamese Unicode and simulated external drive paths without terminal PATH dependencies.",
+  "testcase_id" : "S02.T1",
+  "status" : "PASS",
+  "external_volume_path_tested" : "\/tmp\/external_volume_mount_simulation_AIVideo\/tư_liệu_ổ_cứng_ngoài.mp4",
+  "app_path" : "\/Users\/phuthanh\/APP_CaNhan\/AIVideo\/apps\/macos\/build\/AIVideo.app",
+  "timestamp" : "2026-11-06T08:09:02Z",
+  "requirement_id" : "UI-16",
+  "bundled_contracts_path" : "\/Users\/phuthanh\/APP_CaNhan\/AIVideo\/apps\/macos\/build\/AIVideo.app\/Contents\/Resources\/contracts\/g0_model.lock.json"
 }
