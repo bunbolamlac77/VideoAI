@@ -8,7 +8,7 @@ on:
 
 jobs:
   test-and-lint:
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -22,7 +22,7 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           if [ -f workers/pyproject.toml ]; then
-            python3 -m pip install huggingface-hub
+            python3 -m pip install huggingface-hub jsonschema
           fi
 
       - name: Verify Contract Schema & JSON Integrity
@@ -40,3 +40,17 @@ jobs:
       - name: Verify No Large Binaries in Git
         run: |
           find . -name "*.safetensors" -o -name "*.bin" -o -name "*.gguf" | grep -v ".git" | wc -l | grep "^ *0$"
+
+      - name: Run G1 Python Contract Tests
+        run: |
+          python3 -m unittest tests/test_g1_contracts.py
+
+      - name: Run G1 Swift Contract Tests
+        run: |
+          mkdir -p build/tests build/reports
+          swiftc -swift-version 6 -parse-as-library \
+            packages/AIVideoCore/Sources/Models/DomainModels.swift \
+            packages/AIVideoCore/Sources/Models/DataContracts.swift \
+            tests/test_g1_contracts.swift \
+            -o build/tests/test_g1_contracts
+          ./build/tests/test_g1_contracts

@@ -8,6 +8,9 @@ from typing import Optional, Dict, Any
 from dataclasses import dataclass, field
 import datetime
 import uuid
+import re
+
+UUID_PATTERN = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 class Origin(str, Enum):
     USER = "user"
@@ -76,9 +79,24 @@ class JobStatus(str, Enum):
         }
         return next_state in allowed.get(self, set())
 
-class ContractError(Exception):
+class ContractError(ValueError):
     """Raised when an illegal state transition or contract violation occurs."""
     pass
+
+def validate_uuid(val: Any, field_name: str, allow_none: bool = False) -> Optional[str]:
+    """Validates that val is a valid RFC 4122 UUID string, matching Swift UUID decoding and JSON Schema."""
+    if val is None:
+        if allow_none:
+            return None
+        raise ContractError(f"Field '{field_name}' must not be None; valid UUID string required.")
+    s_val = str(val)
+    if not UUID_PATTERN.match(s_val):
+        raise ContractError(f"Field '{field_name}' must be a valid UUID string, got: {val!r}")
+    try:
+        uuid.UUID(s_val)
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ContractError(f"Field '{field_name}' must be a valid UUID string, got: {val!r}") from exc
+    return s_val
 
 @dataclass
 class TimeRange:
@@ -120,6 +138,15 @@ class ClaimRecord:
     confirmation_id: Optional[str] = None
     confidence_raw: Optional[float] = None
     created_at: str = field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
+
+    def __post_init__(self):
+        validate_uuid(self.claim_id, "claim_id")
+        validate_uuid(self.revision_id, "revision_id")
+        validate_uuid(self.workday_id, "workday_id")
+        if self.source_revision_id is not None:
+            validate_uuid(self.source_revision_id, "source_revision_id", allow_none=True)
+        if self.confirmation_id is not None:
+            validate_uuid(self.confirmation_id, "confirmation_id", allow_none=True)
 
     def to_dict(self) -> Dict[str, Any]:
         tr_dict = None
@@ -204,6 +231,12 @@ class ArtifactPublicationRecord:
     byte_size: Optional[int] = None
     created_at: str = field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat())
+
+    def __post_init__(self):
+        validate_uuid(self.publication_id, "publication_id")
+        validate_uuid(self.project_id, "project_id")
+        validate_uuid(self.job_id, "job_id")
+        validate_uuid(self.attempt_id, "attempt_id")
 
     def to_dict(self) -> Dict[str, Any]:
         return {

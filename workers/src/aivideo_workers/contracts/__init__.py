@@ -9,7 +9,8 @@ from .data_contracts import (
     TimeRange,
     ClaimRecord,
     ArtifactPublicationRecord,
-    ContractError
+    ContractError,
+    validate_uuid
 )
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     "TimeRange",
     "ClaimRecord",
     "ArtifactPublicationRecord",
-    "ContractError"
+    "ContractError",
+    "validate_uuid"
 ]

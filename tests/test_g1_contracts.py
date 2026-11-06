@@ -16,6 +16,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from jsonschema import Draft202012Validator
 
 sys.path.insert(0, os.path.abspath("workers/src"))
 from aivideo_workers.contracts import (
@@ -37,35 +38,15 @@ ISO8601_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:
 
 def validate_rpc_envelope_dict(envelope: dict, schema: dict) -> bool:
     """
-    Validates envelope against rpc_envelope_schema.json constraints:
+    Validates envelope against rpc_envelope_schema.json using Draft202012Validator:
     - Root must have jsonrpc == "2.0"
     - Must match exactly one of: Request, Notification, SuccessResponse, ErrorResponse
     - Cannot have disallowed extra fields
     """
     if not isinstance(envelope, dict):
         return False
-    if envelope.get("jsonrpc") != "2.0":
-        return False
-
-    allowed_top_keys = {
-        "jsonrpc", "id", "method", "params", "result", "error",
-        "session_id", "fencing_token", "expected_revision"
-    }
-    if not set(envelope.keys()).issubset(allowed_top_keys):
-        return False
-
-    has_id = "id" in envelope
-    has_method = "method" in envelope and isinstance(envelope["method"], str) and len(envelope["method"]) > 0
-    has_result = "result" in envelope
-    has_error = "error" in envelope and isinstance(envelope["error"], dict)
-
-    is_request = has_method and has_id and not has_result and not has_error
-    is_notification = has_method and not has_id and not has_result and not has_error
-    is_success_resp = has_result and has_id and not has_method and not has_error and "params" not in envelope
-    is_error_resp = has_error and has_id and not has_method and not has_result and "params" not in envelope
-
-    matches = sum([1 for m in [is_request, is_notification, is_success_resp, is_error_resp] if m])
-    return matches == 1
+    validator = Draft202012Validator(schema)
+    return validator.is_valid(envelope)
 
 class TestG1DataContracts(unittest.TestCase):
     def test_s04_t2_user_confirmed_preserves_origin_and_epistemic(self):
@@ -79,18 +60,51 @@ class TestG1DataContracts(unittest.TestCase):
             support_status=SupportStatus.INSUFFICIENT,
             allowed_use=AllowedUse.EXCLUDE
         )
-        confirmed = claim.confirm_user_fact(confirmation_id="conf-123")
+        conf_id = "00000000-0000-4000-8000-000000000123"
+        confirmed = claim.confirm_user_fact(confirmation_id=conf_id)
         self.assertEqual(confirmed.origin, Origin.USER, "Origin MUST NOT change to visual_model or derived")
         self.assertEqual(confirmed.epistemic_status, EpistemicStatus.REPORTED, "Epistemic MUST NOT become observed")
         self.assertEqual(confirmed.review_status, ReviewStatus.CONFIRMED)
         self.assertNotEqual(confirmed.revision_id, claim.revision_id, "Revision ID must increment on confirmation")
+        self.assertEqual(confirmed.confirmation_id, conf_id)
+
+    def test_uuid_validation_strictness(self):
+        """Invariant: ClaimRecord and ArtifactPublicationRecord reject invalid UUIDs."""
+        claim = ClaimRecord(
+            workday_id="00000000-0000-4000-8000-000000000001",
+            text="Test UUID validation",
+            origin=Origin.USER,
+            epistemic_status=EpistemicStatus.REPORTED
+        )
+        # Non-UUID confirmation_id should raise ContractError
+        with self.assertRaises(ContractError):
+            claim.confirm_user_fact(confirmation_id="conf-123")
+
+        # Invalid workday_id should raise ContractError
+        with self.assertRaises(ContractError):
+            ClaimRecord(
+                workday_id="invalid-uuid",
+                text="Test invalid workday",
+                origin=Origin.USER,
+                epistemic_status=EpistemicStatus.REPORTED
+            )
+
+        # Invalid ArtifactPublicationRecord UUID should raise ContractError
+        with self.assertRaises(ContractError):
+            ArtifactPublicationRecord(
+                project_id="bad-project-id",
+                job_id="00000000-0000-4000-8000-000000000002",
+                attempt_id="00000000-0000-4000-8000-000000000003",
+                fencing_token=1,
+                artifact_type="proxy_video"
+            )
 
     def test_artifact_publication_state_transitions(self):
         """Invariant S04.3: Artifact transitions PREPARED -> MATERIALIZED -> VERIFIED -> COMMITTED."""
         pub = ArtifactPublicationRecord(
-            project_id="proj-1",
-            job_id="job-1",
-            attempt_id="att-1",
+            project_id="00000000-0000-4000-8000-000000000001",
+            job_id="00000000-0000-4000-8000-000000000002",
+            attempt_id="00000000-0000-4000-8000-000000000003",
             fencing_token=1,
             artifact_type="proxy_video"
         )
@@ -195,7 +209,7 @@ class TestG1DataContracts(unittest.TestCase):
                         revision_id, claim_id, workday_id, text, origin, epistemic_status,
                         review_status, support_status, allowed_use, confirmation_id
                     ) VALUES (?, ?, ?, ?, 'user', 'reported', 'confirmed', 'supported', 'direct_claim', ?);
-                """, (rev2_id, claim_id, workday_id, "Ban ghi da xac nhan (Revision 2)", "conf-uuid-1"))
+                """, (rev2_id, claim_id, workday_id, "Ban ghi da xac nhan (Revision 2)", "00000000-0000-4000-8000-000000000021"))
                 conn.commit()
 
                 # Query both revisions under the same claim_id
