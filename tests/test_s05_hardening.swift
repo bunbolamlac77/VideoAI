@@ -46,6 +46,15 @@ struct S05HardeningTests {
                 "fixtures/g0_spike_assets/test_clip_10s_24fps.mp4"
         ).standardizedFileURL
 
+        if !fm.fileExists(atPath: fixture.path) {
+            try? fm.createDirectory(at: fixture.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            p.arguments = ["python3", "-c", "import sys; sys.path.insert(0, 'workers/src'); from aivideo_workers.resolve_adapter import create_synthetic_test_assets; create_synthetic_test_assets('fixtures/g0_spike_assets')"]
+            try? p.run()
+            p.waitUntilExit()
+        }
+
         precondition(
             fm.fileExists(atPath: fixture.path),
             "Missing checked-in MP4 fixture"

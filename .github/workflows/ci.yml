@@ -87,6 +87,12 @@ jobs:
             -o build/tests/test_g1_contracts
           ./build/tests/test_g1_contracts
 
+      - name: Generate Synthetic Test Media
+        shell: bash
+        run: |
+          mkdir -p fixtures/g0_spike_assets
+          PYTHONPATH=workers/src python3 -c "from aivideo_workers.resolve_adapter import create_synthetic_test_assets; create_synthetic_test_assets('fixtures/g0_spike_assets')"
+
       - name: Run G1 S05 Source Import Tests
         shell: bash
         run: |

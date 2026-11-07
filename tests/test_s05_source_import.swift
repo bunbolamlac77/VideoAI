@@ -74,6 +74,14 @@ struct TestS05SourceImport {
         }
 
         let realVideoFixture = URL(fileURLWithPath: "fixtures/g0_spike_assets/test_clip_10s_24fps.mp4").standardizedFileURL
+        if !fm.fileExists(atPath: realVideoFixture.path) {
+            try? fm.createDirectory(at: realVideoFixture.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            p.arguments = ["python3", "-c", "import sys; sys.path.insert(0, 'workers/src'); from aivideo_workers.resolve_adapter import create_synthetic_test_assets; create_synthetic_test_assets('fixtures/g0_spike_assets')"]
+            try? p.run()
+            p.waitUntilExit()
+        }
         assert(fm.fileExists(atPath: realVideoFixture.path), "Real video fixture must exist at \(realVideoFixture.path)")
 
         var passCount = 0
