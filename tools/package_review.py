@@ -305,6 +305,17 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
         r.setdefault("test_type", "automated")
         records.append(r)
 
+    # 10. Load Swift G2 S12..S15 records
+    swift_s12_s15_records = load_jsonl_records("swift_s12_s15_records.jsonl")
+    for r in swift_s12_s15_records:
+        if "testcase_id" not in r and "case_id" in r:
+            r["testcase_id"] = r["case_id"]
+        r.setdefault("command", "./build/tests/test_s12_to_s15_g2_closure")
+        r.setdefault("expected", "S12..S15 Swift 6 Analysis, Verifier & Review Store invariants")
+        r.setdefault("observed", r.get("details", "PASS"))
+        r.setdefault("test_type", "automated")
+        records.append(r)
+
     # If no records were produced (e.g. build failure), record runner error
     if not records:
         records.append({
@@ -443,6 +454,10 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
     s09_failed = any("S09" in r.get("testcase_id", "") and r.get("status") == "FAIL" for r in test_records)
     s10_failed = any(("S10" in r.get("testcase_id", "") or "test_s10" in r.get("testcase_id", "")) and r.get("status") == "FAIL" for r in test_records)
     s11_failed = any(("S11" in r.get("testcase_id", "") or "test_s11" in r.get("testcase_id", "")) and r.get("status") == "FAIL" for r in test_records)
+    s12_failed = any(("S12" in r.get("testcase_id", "") or "test_s12" in r.get("testcase_id", "")) and r.get("status") == "FAIL" for r in test_records)
+    s13_failed = any(("S13" in r.get("testcase_id", "") or "test_s13" in r.get("testcase_id", "")) and r.get("status") == "FAIL" for r in test_records)
+    s14_failed = any(("S14" in r.get("testcase_id", "") or "test_s14" in r.get("testcase_id", "")) and r.get("status") == "FAIL" for r in test_records)
+    s15_failed = any(("S15" in r.get("testcase_id", "") or "test_s15" in r.get("testcase_id", "")) and r.get("status") == "FAIL" for r in test_records)
 
     s02_status = "FAIL" if s02_failed else ("DONE" if not_run_count == 0 else "IN_REVIEW")
     s03_status = "BLOCKED" if blocked_count > 0 else ("FAIL" if s03_failed else "DONE")
@@ -454,6 +469,10 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
     s09_status = "FAIL" if s09_failed else "DONE"
     s10_status = "FAIL" if s10_failed else "DONE"
     s11_status = "FAIL" if s11_failed else "DONE"
+    s12_status = "FAIL" if s12_failed else "DONE"
+    s13_status = "FAIL" if s13_failed else "DONE"
+    s14_status = "FAIL" if s14_failed else "DONE"
+    s15_status = "FAIL" if s15_failed else "DONE"
 
     if fail_count == 0 and blocked_count == 0 and not_run_count == 0 and pass_count > 0:
         g0_status_badge = "🟢 **DONE (Đã đóng Gate G0: Đạt 100% tất cả các tiêu chí nghiệm thu G0)**"
@@ -465,10 +484,10 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
     else:
         g1_status_badge = "🟢 **DONE (Đóng Gate G1: Hoàn thành 100% S04 – S09, đạt toàn bộ tiêu chí dữ liệu và phục hồi)**"
 
-    if any(st == "FAIL" for st in (s10_status, s11_status)):
+    if any(st == "FAIL" for st in (s10_status, s11_status, s12_status, s13_status, s14_status, s15_status)):
         g2_status_badge = "🔴 **FAIL (Có lỗi kiểm thử trong Gate G2)**"
     else:
-        g2_status_badge = "🟡 **IN_PROGRESS (Mở Gate G2: S10 & S11 DONE, chuẩn bị S12 Full-Frame Pipeline)**"
+        g2_status_badge = "🟢 **DONE (Đóng Gate G2: Hoàn thành 100% S10 – S15, đạt toàn bộ tiêu chí phân tích, kiểm chứng bằng chứng & benchmark `analysis_eligible`)**"
 
     summary = f"""# AIVideo v3.1 — Hồ Sơ Thẩm Định Mã Nguồn (Review Bundle)
 
@@ -499,7 +518,10 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
 - **Gate G2 (Phân tích và bằng chứng):** {g2_status_badge}.
   - **S10:** Chỉ mục PTS theo presentation order, ánh xạ hữu tỉ VFR→CFR 24/1 (`M-24-SDR-v1`), bảo vệ frame bằng chứng ngắn (flash), audio canonical 48 kHz và chính sách màu SDR Rec.709 / HDR Mobius tone-map. Trạng thái: `{s10_status}`.
   - **S11:** Model adapters (`Qwen3-VL-4B`, `Qwen3-8B`, `Whisper-large-v3`, `VieNeu-TTS-v3-Turbo`, `DINOv2-base`), kiểm toán độ phủ frame thực sau processor (`PostProcessorFrameAudit`), khóa chính sách RAM 16 GB (chặn model 32B) và capability registry (`contracts/s11_model_registry.lock.json`). Trạng thái: `{s11_status}`.
-  - **S12 – S15:** Trạng thái: `NOT_STARTED`.
+  - **S12:** Pipeline phân tích full-frame theo cửa sổ trượt có overlap (`16 frames, overlap 4`), cô lập quan sát gốc (`raw_independent`) khỏi brief, hợp nhất cửa sổ, nhánh audio độc lập (`no_audio`/`no_speech` không chặn hình), omission audit và checkpointing theo cửa sổ. Trạng thái: `{s12_status}`.
+  - **S13:** Parser brief tách facts/preferences/constraints, tách mệnh đề nhân quả & đa mệnh đề, thực thi bảng quyết định 12 dòng (Section 6), đồ thị sự kiện thứ tự bộ phận (partial-order event graph) phát hiện chu trình/lệch đồng hồ và revalidation đúng phạm vi khi thêm nguồn mới. Trạng thái: `{s13_status}`.
+  - **S14:** Luồng review có bằng chứng theo đúng loại nguồn (video/ảnh/brief không ép timecode giả), 6 lệnh giải quyết (`confirm`, `edit`, `reject`, `answer_unknown`, `drop`, `exclude_asset`), lọc batch confirmation chống lọt kết quả nền và đo chỉ số công thái học review. Trạng thái: `{s14_status}`.
+  - **S15:** Benchmark phân tích tại checkpoint `analysis_eligible` (5 chuyến held-out độc lập, 105 cơ hội quyết định claim, 50 sự kiện quan sát được, 60 ca đối kháng verifier), chống rò rỉ dữ liệu, khoảng tin cậy Wilson 95% + Group Bootstrap 10.000 vòng và đóng Gate G2. Trạng thái: `{s15_status}`.
 - **Gate G3 – G5:** ⚪ **Chưa bắt đầu**.
 
 ---

@@ -404,6 +404,37 @@ public actor ProjectStore {
         CREATE INDEX IF NOT EXISTS idx_approvals_target ON approvals(target_revision_id);
         CREATE INDEX IF NOT EXISTS idx_job_attempts_job ON job_attempts(job_id);
         CREATE INDEX IF NOT EXISTS idx_artifact_publications_project ON artifact_publications(project_id, state);
+
+        CREATE TABLE IF NOT EXISTS coverage_records (
+            coverage_id TEXT PRIMARY KEY NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+            source_revision_id TEXT NOT NULL,
+            runtime_profile_id TEXT NOT NULL,
+            input_fingerprint TEXT NOT NULL,
+            total_declared_frames INTEGER NOT NULL,
+            valid_decoded_frames INTEGER NOT NULL,
+            unique_processed_frames INTEGER NOT NULL,
+            frame_input_coverage REAL NOT NULL,
+            audio_branch_state TEXT NOT NULL,
+            detailed_pass_status TEXT NOT NULL,
+            semantic_certified INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS review_items (
+            review_item_id TEXT PRIMARY KEY NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+            workday_id TEXT NOT NULL REFERENCES workdays(workday_id) ON DELETE RESTRICT,
+            target_claim_revision_id TEXT,
+            evidence_scope_revision_id TEXT NOT NULL,
+            evidence_kind TEXT NOT NULL,
+            is_critical INTEGER NOT NULL DEFAULT 1,
+            question_text TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            resolution_action TEXT,
+            resulting_allowed_use TEXT,
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
         """
         try Self.execute(db: db, sql: schema)
     }
@@ -1576,6 +1607,131 @@ public actor ProjectStore {
             list.append(ApprovalRecord(approvalId: aId, projectId: pId, approvalType: aType, targetRevisionId: tRev, isSuperseded: sup, approvedBy: by, approvedAt: at))
         }
         return list
+    }
+
+    // MARK: - Gate G2 (S12..S14): Coverage Ledger, Batch Fact Confirmation & Targeted Review Items
+
+    public func saveCoverageRecord(_ rec: CoverageLedgerRecord) throws {
+        try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = """
+            INSERT OR REPLACE INTO coverage_records
+            (coverage_id, project_id, source_revision_id, runtime_profile_id, input_fingerprint,
+             total_declared_frames, valid_decoded_frames, unique_processed_frames, frame_input_coverage,
+             audio_branch_state, detailed_pass_status, semantic_certified)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, rec.coverageId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, rec.projectId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, rec.sourceRevisionId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 4, rec.runtimeProfileId, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 5, rec.inputFingerprint, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 6, Int32(rec.totalDeclaredFrames))
+            sqlite3_bind_int(stmt, 7, Int32(rec.validDecodedFrameCount))
+            sqlite3_bind_int(stmt, 8, Int32(rec.uniqueProcessedFrameIds.count))
+            sqlite3_bind_double(stmt, 9, rec.frameInputCoverage)
+            sqlite3_bind_text(stmt, 10, rec.audioBranchState.rawValue, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 11, rec.detailedPassStatus, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 12, rec.semanticUnderstandingCertified ? 1 : 0)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+        }
+    }
+
+    public func saveReviewItem(_ item: TargetedReviewRecord) throws {
+        try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = """
+            INSERT OR REPLACE INTO review_items
+            (review_item_id, project_id, workday_id, target_claim_revision_id, evidence_scope_revision_id,
+             evidence_kind, is_critical, question_text, status, resolution_action, resulting_allowed_use)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, item.reviewItemId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, item.projectId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, item.workdayId.uuidString, -1, SQLITE_TRANSIENT)
+            if let tRev = item.targetClaimRevisionId {
+                sqlite3_bind_text(stmt, 4, tRev.uuidString, -1, SQLITE_TRANSIENT)
+            } else {
+                sqlite3_bind_null(stmt, 4)
+            }
+            sqlite3_bind_text(stmt, 5, item.evidenceScopeRevisionId, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 6, item.evidenceKind.rawValue, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 7, item.isCritical ? 1 : 0)
+            sqlite3_bind_text(stmt, 8, item.questionText, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 9, item.status, -1, SQLITE_TRANSIENT)
+            if let act = item.resolutionAction {
+                sqlite3_bind_text(stmt, 10, act.rawValue, -1, SQLITE_TRANSIENT)
+            } else {
+                sqlite3_bind_null(stmt, 10)
+            }
+            if let use = item.resultingAllowedUse {
+                sqlite3_bind_text(stmt, 11, use.rawValue, -1, SQLITE_TRANSIENT)
+            } else {
+                sqlite3_bind_null(stmt, 11)
+            }
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+        }
+    }
+
+    public func listReviewItems(workdayId: UUID) throws -> [TargetedReviewRecord] {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        let sql = """
+        SELECT review_item_id, project_id, workday_id, target_claim_revision_id, evidence_scope_revision_id,
+               evidence_kind, is_critical, question_text, status, resolution_action, resulting_allowed_use
+        FROM review_items
+        WHERE workday_id = ?
+        ORDER BY updated_at ASC;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, workdayId.uuidString, -1, SQLITE_TRANSIENT)
+        var items: [TargetedReviewRecord] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let rId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0)))!
+            let pId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
+            let wId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 2)))!
+            let tRev = sqlite3_column_type(stmt, 3) != SQLITE_NULL ? UUID(uuidString: String(cString: sqlite3_column_text(stmt, 3))) : nil
+            let scopeRev = String(cString: sqlite3_column_text(stmt, 4))
+            let kind = ReviewEvidenceKind(rawValue: String(cString: sqlite3_column_text(stmt, 5))) ?? .briefSpan
+            let crit = sqlite3_column_int(stmt, 6) != 0
+            let qText = String(cString: sqlite3_column_text(stmt, 7))
+            let status = String(cString: sqlite3_column_text(stmt, 8))
+            let resAct = sqlite3_column_type(stmt, 9) != SQLITE_NULL ? ReviewResolutionAction(rawValue: String(cString: sqlite3_column_text(stmt, 9))) : nil
+            let resUse = sqlite3_column_type(stmt, 10) != SQLITE_NULL ? AllowedUse(rawValue: String(cString: sqlite3_column_text(stmt, 10))) : nil
+            if let rec = try? TargetedReviewRecord(
+                reviewItemId: rId,
+                projectId: pId,
+                workdayId: wId,
+                targetClaimRevisionId: tRev,
+                evidenceScopeRevisionId: scopeRev,
+                evidenceKind: kind,
+                isCritical: crit,
+                questionText: qText,
+                status: status,
+                resolutionAction: resAct,
+                resultingAllowedUse: resUse
+            ) {
+                items.append(rec)
+            }
+        }
+        return items
     }
 }
 

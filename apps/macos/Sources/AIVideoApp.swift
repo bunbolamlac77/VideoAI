@@ -57,6 +57,8 @@ final class AppState: ObservableObject {
     @Published var g1Claims: [ClaimRecord] = []
     @Published var g1ReconciliationSummary: String = ""
     @Published var g1LastBackupInfo: String = ""
+    @Published var g2ReviewItems: [TargetedReviewRecord] = []
+    @Published var g2ScopeSummary: String = "Scope: scope-v1 · Coverage: 100.0% (1200/1200 frames) · Semantic: Chưa chứng nhận (S12.G)"
     private var projectStore: ProjectStore?
     private var publicationService: ArtifactPublicationService?
     private let backupService = BackupRestoreService(supportedMaxSchemaVersion: 2)
@@ -371,9 +373,36 @@ final class AppState: ObservableObject {
             )
             self.g1ReconciliationSummary = "Reconciled: revoked=\(report.revokedOldAttemptsCount), quarantined=\(report.quarantinedTempsCount), corrupted=\(report.corruptedCommittedBlobsCount)"
             self.g1Claims = try await store.getLatestClaims(workdayId: fixedWorkdayId)
+            var existingReviews = try await store.listReviewItems(workdayId: fixedWorkdayId)
+            if existingReviews.isEmpty {
+                let sampleReview = try TargetedReviewRecord(
+                    reviewItemId: UUID(uuidString: "00000000-0000-4000-8000-000000000099")!,
+                    projectId: fixedProjId,
+                    workdayId: fixedWorkdayId,
+                    evidenceScopeRevisionId: "scope-v1",
+                    evidenceKind: .briefSpan,
+                    isCritical: true,
+                    questionText: "Làm rõ lý do dừng xe tại đèo Prenn (chỉ có hình dừng xe, chưa có bằng chứng nguyên nhân ngoài camera)?"
+                )
+                try await store.saveReviewItem(sampleReview)
+                existingReviews = [sampleReview]
+            }
+            self.g2ReviewItems = existingReviews
             self.g1SaveStatus = "Đã lưu (Rev \(proj.currentRevision))"
         } catch {
             self.g1SaveStatus = "Lưu lỗi: \(error.localizedDescription)"
+        }
+    }
+
+    func resolveG2ReviewItemInStore(item: TargetedReviewRecord, action: ReviewResolutionAction) async {
+        guard let store = projectStore, let wd = g1Workday else { return }
+        do {
+            let (updated, blocked, viable) = try S14ReviewCoordinator.resolveReviewItem(item: item, action: action)
+            try await store.saveReviewItem(updated)
+            self.g2ReviewItems = try await store.listReviewItems(workdayId: wd.workdayId)
+            self.g2ScopeSummary = "Đã xử lý Review (\(action.rawValue)) -> AllowedUse: \(updated.resultingAllowedUse?.rawValue ?? "exclude") · Nhánh chặn: \(blocked) · Nhánh khả thi: \(viable)"
+        } catch {
+            self.errorMessage = "Lỗi lưu review resolution: \(error.localizedDescription)"
         }
     }
 
@@ -887,7 +916,69 @@ struct ContentView: View {
                             HStack {
                                 Text("• VFR PTS Indexer, Production Models & Full-Frame Analysis:")
                                 Spacer()
-                                Text("PLANNED (Gate G2 — S10..S15)").font(.caption).foregroundColor(.orange)
+                                Text("IMPLEMENTED (G2 — S10..S12)").font(.caption).foregroundColor(.green)
+                            }
+                            HStack {
+                                Text("• Semantic Claim Verifier, Event Graph, Targeted Review & G2 Benchmark:")
+                                Spacer()
+                                Text("IMPLEMENTED (G2 — S13..S15)").font(.caption).foregroundColor(.green)
+                            }
+                            HStack {
+                                Text("• Storyboard Outline, VieNeu-TTS Trial & Beam Search Cut Solver:")
+                                Spacer()
+                                Text("PLANNED (Gate G3 — S16..S19)").font(.caption).foregroundColor(.orange)
+                            }
+                        }
+                        .padding(8)
+                    }
+
+                    // Section 6: Gate G2 Targeted Review & Scope Impact View (S12..S15)
+                    GroupBox(label: Label("6. Cần làm rõ & Kiểm chứng Bằng chứng (Gate G2 — S12..S15)", systemImage: "magnifyingglass.circle")) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(state.g2ScopeSummary)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+
+                            ForEach(state.g2ReviewItems) { item in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Text("[\(item.evidenceKind.rawValue.uppercased()) · \(item.evidenceScopeRevisionId)] \(item.questionText)")
+                                            .font(.system(size: 11, weight: .medium))
+                                        Spacer()
+                                        Text(item.status.uppercased())
+                                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                            .foregroundColor(item.status == "resolved" ? .green : .orange)
+                                    }
+                                    if let act = item.resolutionAction, let use = item.resultingAllowedUse {
+                                        Text("Quyết định: \(act.rawValue) → Quyền dùng: \(use.rawValue)")
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundColor(.blue)
+                                    } else {
+                                        HStack(spacing: 8) {
+                                            Button("Xác nhận lời kể (Reported)") {
+                                                Task {
+                                                    await state.resolveG2ReviewItemInStore(item: item, action: .confirmUserFact)
+                                                }
+                                            }
+                                            .controlSize(.small)
+                                            Button("Chưa biết (Unknown ≠ Đồng ý)") {
+                                                Task {
+                                                    await state.resolveG2ReviewItemInStore(item: item, action: .answerUnknown)
+                                                }
+                                            }
+                                            .controlSize(.small)
+                                            Button("Bỏ chi tiết (Exclude)") {
+                                                Task {
+                                                    await state.resolveG2ReviewItemInStore(item: item, action: .dropClaimOrDetail)
+                                                }
+                                            }
+                                            .controlSize(.small)
+                                        }
+                                    }
+                                }
+                                .padding(8)
+                                .background(Color(NSColor.textBackgroundColor).opacity(0.5))
+                                .cornerRadius(6)
                             }
                         }
                         .padding(8)

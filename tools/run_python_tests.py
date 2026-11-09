@@ -29,6 +29,14 @@ def requirement_id(test_id: str) -> str:
         return "MEDIA-01"
     if "test_s11_model_adapters" in test_id:
         return "AI-01"
+    if "test_s12_full_frame_pipeline" in test_id:
+        return "AI-01"
+    if "test_s13_semantic_verifier" in test_id:
+        return "AI-03"
+    if "test_s14_review_workflow" in test_id:
+        return "AI-09"
+    if "test_s15_g2_benchmark" in test_id:
+        return "AI-05"
     return "JOB-04"
 
 
