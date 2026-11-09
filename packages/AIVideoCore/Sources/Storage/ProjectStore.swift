@@ -14,6 +14,13 @@ public enum ProjectStoreError: Error, LocalizedError, Sendable, Equatable {
     case revisionConflict(expected: Int, actual: Int)
     case busyTimeout
     case integrityViolation(String)
+    case staleFencingToken(expected: Int, actual: Int)
+    case invalidAuthority(String)
+    case jobNotFound(UUID)
+    case attemptNotFound(UUID)
+    case publicationNotFound(UUID)
+    case resourceExhausted(String)
+    case schemaIncompatible(expected: Int, actual: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -26,6 +33,13 @@ public enum ProjectStoreError: Error, LocalizedError, Sendable, Equatable {
         case .revisionConflict(let exp, let act): return "Revision Conflict: expected \(exp), got \(act)"
         case .busyTimeout: return "Database Busy Timeout"
         case .integrityViolation(let m): return "Integrity Violation: \(m)"
+        case .staleFencingToken(let exp, let act): return "Stale Fencing Token: expected \(exp), got \(act)"
+        case .invalidAuthority(let m): return "Invalid Authority: \(m)"
+        case .jobNotFound(let id): return "Job Not Found: \(id)"
+        case .attemptNotFound(let id): return "Attempt Not Found: \(id)"
+        case .publicationNotFound(let id): return "Publication Not Found: \(id)"
+        case .resourceExhausted(let m): return "Resource Exhausted: \(m)"
+        case .schemaIncompatible(let exp, let act): return "Schema Incompatible: expected \(exp), got \(act)"
         }
     }
 }
@@ -119,6 +133,67 @@ public struct ApprovalRecord: Codable, Sendable, Identifiable, Equatable {
         self.isSuperseded = isSuperseded
         self.approvedBy = approvedBy
         self.approvedAt = approvedAt
+    }
+}
+
+public struct JobRecord: Codable, Sendable, Identifiable, Equatable {
+    public var id: UUID { jobId }
+    public let jobId: UUID
+    public let projectId: UUID
+    public let jobType: String
+    public let inputFingerprint: String
+    public let status: JobStatus
+    public let createdAt: Date
+    public let completedAt: Date?
+
+    public init(
+        jobId: UUID = UUID(),
+        projectId: UUID,
+        jobType: String,
+        inputFingerprint: String,
+        status: JobStatus = .queued,
+        createdAt: Date = Date(),
+        completedAt: Date? = nil
+    ) {
+        self.jobId = jobId
+        self.projectId = projectId
+        self.jobType = jobType
+        self.inputFingerprint = inputFingerprint
+        self.status = status
+        self.createdAt = createdAt
+        self.completedAt = completedAt
+    }
+}
+
+public struct JobAttemptRecord: Codable, Sendable, Identifiable, Equatable {
+    public var id: UUID { attemptId }
+    public let attemptId: UUID
+    public let jobId: UUID
+    public let fencingToken: Int
+    public let workerSessionId: String
+    public let status: String
+    public let publishRevoked: Bool
+    public let startedAt: Date
+    public let finishedAt: Date?
+
+    public init(
+        attemptId: UUID = UUID(),
+        jobId: UUID,
+        fencingToken: Int,
+        workerSessionId: String,
+        status: String = "RUNNING",
+        publishRevoked: Bool = false,
+        startedAt: Date = Date(),
+        finishedAt: Date? = nil
+    ) {
+        self.attemptId = attemptId
+        self.jobId = jobId
+        self.fencingToken = fencingToken
+        self.workerSessionId = workerSessionId
+        self.status = status
+        self.publishRevoked = publishRevoked
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
     }
 }
 
@@ -270,9 +345,65 @@ public actor ProjectStore {
             committed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
         );
 
+        CREATE TABLE IF NOT EXISTS jobs (
+            job_id TEXT PRIMARY KEY NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+            job_type TEXT NOT NULL,
+            input_fingerprint TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL CHECK(status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED')),
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            completed_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS job_attempts (
+            attempt_id TEXT PRIMARY KEY NOT NULL,
+            job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+            fencing_token INTEGER NOT NULL,
+            worker_session_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('PREPARED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED')),
+            publish_revoked INTEGER NOT NULL DEFAULT 0,
+            started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            finished_at TEXT,
+            UNIQUE(job_id, fencing_token)
+        );
+
+        CREATE TABLE IF NOT EXISTS artifact_publications (
+            publication_id TEXT PRIMARY KEY NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+            job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE RESTRICT,
+            attempt_id TEXT NOT NULL REFERENCES job_attempts(attempt_id) ON DELETE RESTRICT,
+            fencing_token INTEGER NOT NULL,
+            artifact_type TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('PREPARED', 'MATERIALIZED', 'VERIFIED', 'COMMITTED')),
+            temp_path TEXT,
+            canonical_path TEXT,
+            sha256_hash TEXT,
+            byte_size INTEGER,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS artifact_pins (
+            pin_id TEXT PRIMARY KEY NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+            publication_id TEXT NOT NULL REFERENCES artifact_publications(publication_id) ON DELETE RESTRICT,
+            reason TEXT NOT NULL,
+            pinned_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY NOT NULL,
+            migration_id TEXT NOT NULL,
+            code_checksum TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('IN_PROGRESS', 'COMPLETED', 'FAILED')),
+            applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
         CREATE INDEX IF NOT EXISTS idx_claims_workday ON claims(workday_id);
         CREATE INDEX IF NOT EXISTS idx_claims_claim_id ON claims(claim_id);
         CREATE INDEX IF NOT EXISTS idx_approvals_target ON approvals(target_revision_id);
+        CREATE INDEX IF NOT EXISTS idx_job_attempts_job ON job_attempts(job_id);
+        CREATE INDEX IF NOT EXISTS idx_artifact_publications_project ON artifact_publications(project_id, state);
         """
         try Self.execute(db: db, sql: schema)
     }
@@ -741,6 +872,710 @@ public actor ProjectStore {
         if sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_PASSIVE, &log, &ckpt) != SQLITE_OK {
             throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
         }
+    }
+
+    // MARK: - S07: Jobs, Attempts & Fencing Token Enforcement
+
+    public func enqueueJob(
+        jobId: UUID = UUID(),
+        projectId: UUID,
+        jobType: String,
+        inputFingerprint: String
+    ) throws -> JobRecord {
+        return try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = "INSERT INTO jobs (job_id, project_id, job_type, input_fingerprint, status) VALUES (?, ?, ?, ?, 'QUEUED');"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, projectId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, jobType, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 4, inputFingerprint, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            return JobRecord(jobId: jobId, projectId: projectId, jobType: jobType, inputFingerprint: inputFingerprint, status: .queued)
+        }
+    }
+
+    public func getJob(id: UUID) throws -> JobRecord? {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        let sql = "SELECT job_id, project_id, job_type, input_fingerprint, status, created_at, completed_at FROM jobs WHERE job_id = ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, id.uuidString, -1, SQLITE_TRANSIENT)
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            let jId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0)))!
+            let pId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
+            let jType = String(cString: sqlite3_column_text(stmt, 2))
+            let fp = String(cString: sqlite3_column_text(stmt, 3))
+            let st = JobStatus(rawValue: String(cString: sqlite3_column_text(stmt, 4))) ?? .queued
+            let created = DataContractDateFormatters.date(from: String(cString: sqlite3_column_text(stmt, 5))) ?? Date()
+            var completed: Date? = nil
+            if sqlite3_column_type(stmt, 6) != SQLITE_NULL {
+                completed = DataContractDateFormatters.date(from: String(cString: sqlite3_column_text(stmt, 6)))
+            }
+            return JobRecord(jobId: jId, projectId: pId, jobType: jType, inputFingerprint: fp, status: st, createdAt: created, completedAt: completed)
+        }
+        return nil
+    }
+
+    /// Allocates a new attempt for a job, atomically revoking publish rights on any previous attempts
+    /// and monotonically incrementing the fencing token across the store.
+    public func allocateAttempt(
+        attemptId: UUID = UUID(),
+        jobId: UUID,
+        workerSessionId: String
+    ) throws -> JobAttemptRecord {
+        return try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+
+            // 1. Revoke publish rights and cancel any active attempts for this job
+            let revokeSql = """
+            UPDATE job_attempts
+            SET publish_revoked = 1,
+                status = CASE WHEN status IN ('PREPARED', 'RUNNING') THEN 'CANCELLED' ELSE status END,
+                finished_at = CASE WHEN status IN ('PREPARED', 'RUNNING') THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now') ELSE finished_at END
+            WHERE job_id = ? AND publish_revoked = 0;
+            """
+            var revStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, revokeSql, -1, &revStmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(revStmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
+                _ = sqlite3_step(revStmt)
+                sqlite3_finalize(revStmt)
+            }
+
+            // 2. Compute next global monotonic fencing token
+            var nextFence = 1
+            let maxSql = "SELECT COALESCE(MAX(fencing_token), 0) FROM job_attempts;"
+            var maxStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, maxSql, -1, &maxStmt, nil) == SQLITE_OK {
+                if sqlite3_step(maxStmt) == SQLITE_ROW {
+                    nextFence = Int(sqlite3_column_int(maxStmt, 0)) + 1
+                }
+                sqlite3_finalize(maxStmt)
+            }
+
+            // 3. Insert new attempt and transition job to RUNNING
+            let insSql = """
+            INSERT INTO job_attempts (attempt_id, job_id, fencing_token, worker_session_id, status, publish_revoked)
+            VALUES (?, ?, ?, ?, 'RUNNING', 0);
+            """
+            var insStmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, insSql, -1, &insStmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(insStmt) }
+            sqlite3_bind_text(insStmt, 1, attemptId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(insStmt, 2, jobId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(insStmt, 3, Int32(nextFence))
+            sqlite3_bind_text(insStmt, 4, workerSessionId, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(insStmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+
+            let upJobSql = "UPDATE jobs SET status = 'RUNNING' WHERE job_id = ?;"
+            var upJobStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, upJobSql, -1, &upJobStmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(upJobStmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
+                _ = sqlite3_step(upJobStmt)
+                sqlite3_finalize(upJobStmt)
+            }
+
+            return JobAttemptRecord(
+                attemptId: attemptId,
+                jobId: jobId,
+                fencingToken: nextFence,
+                workerSessionId: workerSessionId,
+                status: "RUNNING",
+                publishRevoked: false
+            )
+        }
+    }
+
+    /// Explicitly revokes publish permission BEFORE stopping worker (Section 5.1 rule 5)
+    public func revokeAttemptPublishPermission(attemptId: UUID, markCancelled: Bool = true) throws {
+        try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = markCancelled
+                ? "UPDATE job_attempts SET publish_revoked = 1, status = 'CANCELLED', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE attempt_id = ?;"
+                : "UPDATE job_attempts SET publish_revoked = 1 WHERE attempt_id = ?;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, attemptId.uuidString, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+        }
+    }
+
+    /// Validates inside current connection whether an attempt holds active publish authority
+    private func verifyAttemptAuthorityInternal(
+        jobId: UUID,
+        attemptId: UUID,
+        fencingToken: Int,
+        activeSessionId: String? = nil
+    ) throws {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+
+        let sql = """
+        SELECT fencing_token, worker_session_id, status, publish_revoked,
+               (SELECT MAX(fencing_token) FROM job_attempts WHERE job_id = ?) as max_fence
+        FROM job_attempts
+        WHERE attempt_id = ? AND job_id = ?;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, attemptId.uuidString, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 3, jobId.uuidString, -1, SQLITE_TRANSIENT)
+
+        guard sqlite3_step(stmt) == SQLITE_ROW else {
+            throw ProjectStoreError.attemptNotFound(attemptId)
+        }
+
+        let storedFence = Int(sqlite3_column_int(stmt, 0))
+        let storedSession = String(cString: sqlite3_column_text(stmt, 1))
+        let status = String(cString: sqlite3_column_text(stmt, 2))
+        let revoked = sqlite3_column_int(stmt, 3) != 0
+        let maxFence = Int(sqlite3_column_int(stmt, 4))
+
+        if fencingToken != storedFence || storedFence < maxFence {
+            throw ProjectStoreError.staleFencingToken(expected: maxFence, actual: fencingToken)
+        }
+        if revoked || status == "CANCELLED" || status == "FAILED" {
+            throw ProjectStoreError.invalidAuthority("Attempt \(attemptId) publish permission was revoked (status=\(status))")
+        }
+        if let activeSession = activeSessionId, activeSession != storedSession {
+            throw ProjectStoreError.invalidAuthority("Session mismatch: attempt session \(storedSession) != active \(activeSession)")
+        }
+    }
+
+    public func verifyAttemptAuthority(
+        jobId: UUID,
+        attemptId: UUID,
+        fencingToken: Int,
+        activeSessionId: String? = nil
+    ) throws {
+        try verifyAttemptAuthorityInternal(jobId: jobId, attemptId: attemptId, fencingToken: fencingToken, activeSessionId: activeSessionId)
+    }
+
+    // MARK: - S08: Artifact Publication State Machine & Startup Reconciler Support
+
+    public func createPublicationIntent(
+        publicationId: UUID = UUID(),
+        projectId: UUID,
+        jobId: UUID,
+        attemptId: UUID,
+        fencingToken: Int,
+        artifactType: String,
+        tempPath: String? = nil
+    ) throws -> ArtifactPublicationRecord {
+        return try withTransaction {
+            try verifyAttemptAuthorityInternal(jobId: jobId, attemptId: attemptId, fencingToken: fencingToken)
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+
+            let sql = """
+            INSERT INTO artifact_publications (
+                publication_id, project_id, job_id, attempt_id, fencing_token,
+                artifact_type, state, temp_path
+            ) VALUES (?, ?, ?, ?, ?, ?, 'PREPARED', ?);
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, publicationId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, projectId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, jobId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 4, attemptId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 5, Int32(fencingToken))
+            sqlite3_bind_text(stmt, 6, artifactType, -1, SQLITE_TRANSIENT)
+            if let tp = tempPath {
+                sqlite3_bind_text(stmt, 7, tp, -1, SQLITE_TRANSIENT)
+            } else {
+                sqlite3_bind_null(stmt, 7)
+            }
+
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+
+            return ArtifactPublicationRecord(
+                publicationId: publicationId,
+                projectId: projectId,
+                jobId: jobId,
+                attemptId: attemptId,
+                fencingToken: fencingToken,
+                artifactType: artifactType,
+                state: .prepared,
+                tempPath: tempPath
+            )
+        }
+    }
+
+    public func updatePublicationMaterialized(
+        publicationId: UUID,
+        jobId: UUID,
+        attemptId: UUID,
+        fencingToken: Int,
+        tempPath: String
+    ) throws -> ArtifactPublicationRecord {
+        return try withTransaction {
+            try verifyAttemptAuthorityInternal(jobId: jobId, attemptId: attemptId, fencingToken: fencingToken)
+            guard var pub = try getPublicationInternal(id: publicationId) else {
+                throw ProjectStoreError.publicationNotFound(publicationId)
+            }
+            try pub.transitionToMaterialized(tempPath: tempPath)
+
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = "UPDATE artifact_publications SET state = 'MATERIALIZED', temp_path = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE publication_id = ?;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, tempPath, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, publicationId.uuidString, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            return pub
+        }
+    }
+
+    public func updatePublicationVerified(
+        publicationId: UUID,
+        jobId: UUID,
+        attemptId: UUID,
+        fencingToken: Int,
+        sha256: String,
+        byteSize: Int
+    ) throws -> ArtifactPublicationRecord {
+        return try withTransaction {
+            try verifyAttemptAuthorityInternal(jobId: jobId, attemptId: attemptId, fencingToken: fencingToken)
+            guard var pub = try getPublicationInternal(id: publicationId) else {
+                throw ProjectStoreError.publicationNotFound(publicationId)
+            }
+            try pub.transitionToVerified(sha256: sha256, size: byteSize)
+
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = "UPDATE artifact_publications SET state = 'VERIFIED', sha256_hash = ?, byte_size = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE publication_id = ?;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, sha256, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 2, Int32(byteSize))
+            sqlite3_bind_text(stmt, 3, publicationId.uuidString, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            return pub
+        }
+    }
+
+    /// Canonical Commit (Section 6.2 Step 6): Re-verifies attempt fencing token, verifies file exists at canonicalPath,
+    /// commits publication as COMMITTED, marks attempt & job SUCCEEDED, and writes idempotency journal in ONE transaction.
+    public func commitPublication(
+        publicationId: UUID,
+        jobId: UUID,
+        attemptId: UUID,
+        fencingToken: Int,
+        canonicalPath: String,
+        completeJob: Bool = true,
+        idempotencyKey: String? = nil
+    ) throws -> ArtifactPublicationRecord {
+        return try withTransaction {
+            try verifyAttemptAuthorityInternal(jobId: jobId, attemptId: attemptId, fencingToken: fencingToken)
+            guard var pub = try getPublicationInternal(id: publicationId) else {
+                throw ProjectStoreError.publicationNotFound(publicationId)
+            }
+
+            // Verify canonical file exists on disk before committing DB
+            guard FileManager.default.fileExists(atPath: canonicalPath) else {
+                throw ProjectStoreError.integrityViolation("Cannot commit publication \(publicationId): canonical file missing at \(canonicalPath)")
+            }
+
+            try pub.transitionToCommitted(canonicalPath: canonicalPath)
+
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = "UPDATE artifact_publications SET state = 'COMMITTED', canonical_path = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE publication_id = ?;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, canonicalPath, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, publicationId.uuidString, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+
+            if completeJob {
+                let attSql = "UPDATE job_attempts SET status = 'SUCCEEDED', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE attempt_id = ?;"
+                var attStmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, attSql, -1, &attStmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(attStmt, 1, attemptId.uuidString, -1, SQLITE_TRANSIENT)
+                    _ = sqlite3_step(attStmt)
+                    sqlite3_finalize(attStmt)
+                }
+
+                let jobSql = "UPDATE jobs SET status = 'SUCCEEDED', completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE job_id = ?;"
+                var jobStmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, jobSql, -1, &jobStmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(jobStmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
+                    _ = sqlite3_step(jobStmt)
+                    sqlite3_finalize(jobStmt)
+                }
+            }
+
+            if let ikey = idempotencyKey {
+                let idempSql = "INSERT OR REPLACE INTO idempotency_journal (operation_id, project_id, fencing_token, result_payload) VALUES (?, ?, ?, ?);"
+                var idempStmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, idempSql, -1, &idempStmt, nil) == SQLITE_OK {
+                    if let encoded = try? JSONEncoder().encode(pub),
+                       let payloadStr = String(data: encoded, encoding: .utf8) {
+                        sqlite3_bind_text(idempStmt, 1, ikey, -1, SQLITE_TRANSIENT)
+                        sqlite3_bind_text(idempStmt, 2, pub.projectId.uuidString, -1, SQLITE_TRANSIENT)
+                        sqlite3_bind_int(idempStmt, 3, Int32(fencingToken))
+                        sqlite3_bind_text(idempStmt, 4, payloadStr, -1, SQLITE_TRANSIENT)
+                        _ = sqlite3_step(idempStmt)
+                    }
+                    sqlite3_finalize(idempStmt)
+                }
+            }
+
+            return pub
+        }
+    }
+
+    private func getPublicationInternal(id: UUID) throws -> ArtifactPublicationRecord? {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        let sql = """
+        SELECT publication_id, project_id, job_id, attempt_id, fencing_token,
+               artifact_type, state, temp_path, canonical_path, sha256_hash,
+               byte_size, created_at, updated_at
+        FROM artifact_publications WHERE publication_id = ?;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, id.uuidString, -1, SQLITE_TRANSIENT)
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            return parsePublicationRow(stmt)
+        }
+        return nil
+    }
+
+    private func parsePublicationRow(_ stmt: OpaquePointer?) -> ArtifactPublicationRecord {
+        let pubId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0)))!
+        let projId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
+        let jobId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 2)))!
+        let attId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 3)))!
+        let fence = Int(sqlite3_column_int(stmt, 4))
+        let aType = String(cString: sqlite3_column_text(stmt, 5))
+        let state = ArtifactPublicationState(rawValue: String(cString: sqlite3_column_text(stmt, 6))) ?? .prepared
+        let tempPath = sqlite3_column_type(stmt, 7) != SQLITE_NULL ? String(cString: sqlite3_column_text(stmt, 7)) : nil
+        let canonPath = sqlite3_column_type(stmt, 8) != SQLITE_NULL ? String(cString: sqlite3_column_text(stmt, 8)) : nil
+        let sha = sqlite3_column_type(stmt, 9) != SQLITE_NULL ? String(cString: sqlite3_column_text(stmt, 9)) : nil
+        let bSize = sqlite3_column_type(stmt, 10) != SQLITE_NULL ? Int(sqlite3_column_int(stmt, 10)) : nil
+        let created = DataContractDateFormatters.date(from: String(cString: sqlite3_column_text(stmt, 11))) ?? Date()
+        let updated = DataContractDateFormatters.date(from: String(cString: sqlite3_column_text(stmt, 12))) ?? Date()
+
+        return ArtifactPublicationRecord(
+            publicationId: pubId,
+            projectId: projId,
+            jobId: jobId,
+            attemptId: attId,
+            fencingToken: fence,
+            artifactType: aType,
+            state: state,
+            tempPath: tempPath,
+            canonicalPath: canonPath,
+            sha256Hash: sha,
+            byteSize: bSize,
+            createdAt: created,
+            updatedAt: updated
+        )
+    }
+
+    public func getPublication(id: UUID) throws -> ArtifactPublicationRecord? {
+        return try getPublicationInternal(id: id)
+    }
+
+    public func listPublications(projectId: UUID) throws -> [ArtifactPublicationRecord] {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        let sql = """
+        SELECT publication_id, project_id, job_id, attempt_id, fencing_token,
+               artifact_type, state, temp_path, canonical_path, sha256_hash,
+               byte_size, created_at, updated_at
+        FROM artifact_publications WHERE project_id = ? ORDER BY rowid ASC;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, projectId.uuidString, -1, SQLITE_TRANSIENT)
+        var list: [ArtifactPublicationRecord] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            list.append(parsePublicationRow(stmt))
+        }
+        return list
+    }
+
+    public func pinArtifact(pinId: UUID = UUID(), projectId: UUID, publicationId: UUID, reason: String) throws {
+        try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = "INSERT INTO artifact_pins (pin_id, project_id, publication_id, reason) VALUES (?, ?, ?, ?);"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, pinId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, projectId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, publicationId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 4, reason, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+        }
+    }
+
+    public func isArtifactPinned(publicationId: UUID) throws -> Bool {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        let sql = "SELECT COUNT(*) FROM artifact_pins WHERE publication_id = ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, publicationId.uuidString, -1, SQLITE_TRANSIENT)
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            return sqlite3_column_int(stmt, 0) > 0
+        }
+        return false
+    }
+
+    public func listPinnedPublicationIds(projectId: UUID) throws -> Set<UUID> {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        let sql = "SELECT DISTINCT publication_id FROM artifact_pins WHERE project_id = ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, projectId.uuidString, -1, SQLITE_TRANSIENT)
+        var ids = Set<UUID>()
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let uid = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0))) {
+                ids.insert(uid)
+            }
+        }
+        return ids
+    }
+
+    /// Revokes all active attempts from old worker sessions upon app startup/reopen (Section 7.1 Step 2)
+    public func revokeAllOldSessionAttempts(newSessionId: String) throws -> Int {
+        return try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = """
+            UPDATE job_attempts
+            SET publish_revoked = 1,
+                status = CASE WHEN status IN ('PREPARED', 'RUNNING') THEN 'CANCELLED' ELSE status END,
+                finished_at = CASE WHEN status IN ('PREPARED', 'RUNNING') THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now') ELSE finished_at END
+            WHERE worker_session_id != ? AND publish_revoked = 0;
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, newSessionId, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            return Int(sqlite3_changes(db))
+        }
+    }
+
+    /// Reconciles job completion if all required publications are already COMMITTED on disk (Section 7.1 table row 7)
+    public func repairJobCompletionFromCommittedPublications(jobId: UUID) throws -> Bool {
+        return try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = "SELECT COUNT(*) FROM artifact_publications WHERE job_id = ? AND state = 'COMMITTED';"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
+            var committedCount = 0
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                committedCount = Int(sqlite3_column_int(stmt, 0))
+            }
+            if committedCount > 0 {
+                let upSql = "UPDATE jobs SET status = 'SUCCEEDED', completed_at = COALESCE(completed_at, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) WHERE job_id = ? AND status != 'SUCCEEDED';"
+                var upStmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, upSql, -1, &upStmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(upStmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
+                    _ = sqlite3_step(upStmt)
+                    let changed = sqlite3_changes(db) > 0
+                    sqlite3_finalize(upStmt)
+                    return changed
+                }
+            }
+            return false
+        }
+    }
+
+    // MARK: - S09: Online SQLite Backup API, Integrity Check & Schema Migration
+
+    /// Performs consistent online SQLite backup using sqlite3_backup_init / step / finish
+    /// inside an actor-isolated barrier so no concurrent canonical writes interleave (Section 10.2).
+    public func performOnlineSQLiteBackup(to destinationDBURL: URL) throws {
+        guard let sourceDB = db else { throw ProjectStoreError.executionFailed("Source database closed") }
+
+        var destDB: OpaquePointer?
+        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
+        if sqlite3_open_v2(destinationDBURL.path, &destDB, flags, nil) != SQLITE_OK {
+            let msg = destDB != nil ? String(cString: sqlite3_errmsg(destDB)) : "Open failed"
+            sqlite3_close_v2(destDB)
+            throw ProjectStoreError.databaseOpenFailed(msg)
+        }
+        defer { sqlite3_close_v2(destDB) }
+
+        guard let backup = sqlite3_backup_init(destDB, "main", sourceDB, "main") else {
+            let msg = String(cString: sqlite3_errmsg(destDB))
+            throw ProjectStoreError.executionFailed("sqlite3_backup_init failed: \(msg)")
+        }
+
+        let rc = sqlite3_backup_step(backup, -1)
+        _ = sqlite3_backup_finish(backup)
+
+        if rc != SQLITE_DONE {
+            throw ProjectStoreError.executionFailed("sqlite3_backup_step failed with code \(rc)")
+        }
+    }
+
+    public func verifyDatabaseIntegrity() throws -> Bool {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+
+        // 1. PRAGMA integrity_check
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA integrity_check;", -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed("Failed to prepare integrity_check")
+        }
+        defer { sqlite3_finalize(stmt) }
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            let res = String(cString: sqlite3_column_text(stmt, 0))
+            if res.lowercased() != "ok" {
+                throw ProjectStoreError.integrityViolation("integrity_check failed: \(res)")
+            }
+        }
+
+        // 2. PRAGMA foreign_key_check
+        var fkStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA foreign_key_check;", -1, &fkStmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed("Failed to prepare foreign_key_check")
+        }
+        defer { sqlite3_finalize(fkStmt) }
+        if sqlite3_step(fkStmt) == SQLITE_ROW {
+            let tbl = String(cString: sqlite3_column_text(fkStmt, 0))
+            throw ProjectStoreError.integrityViolation("foreign_key_check violation on table \(tbl)")
+        }
+
+        return true
+    }
+
+    public func getSchemaVersion() throws -> Int {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed("Failed to query user_version")
+        }
+        defer { sqlite3_finalize(stmt) }
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            return Int(sqlite3_column_int(stmt, 0))
+        }
+        return 0
+    }
+
+    public func setSchemaVersion(_ version: Int) throws {
+        try execute(sql: "PRAGMA user_version = \(version);")
+    }
+
+    public func applyMigration(
+        targetVersion: Int,
+        migrationId: String,
+        codeChecksum: String,
+        sqlStatements: String
+    ) throws {
+        try withTransaction {
+            let current = try getSchemaVersion()
+            if current > targetVersion {
+                throw ProjectStoreError.schemaIncompatible(expected: targetVersion, actual: current)
+            }
+            if current == targetVersion {
+                return
+            }
+            try execute(sql: sqlStatements)
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let jSql = "INSERT OR REPLACE INTO schema_migrations (version, migration_id, code_checksum, status) VALUES (?, ?, ?, 'COMPLETED');"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, jSql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int(stmt, 1, Int32(targetVersion))
+            sqlite3_bind_text(stmt, 2, migrationId, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, codeChecksum, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            try setSchemaVersion(targetVersion)
+        }
+    }
+
+    public func listApprovals(projectId: UUID) throws -> [ApprovalRecord] {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        let sql = "SELECT approval_id, project_id, approval_type, target_revision_id, is_superseded, approved_by, approved_at FROM approvals WHERE project_id = ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, projectId.uuidString, -1, SQLITE_TRANSIENT)
+        var list: [ApprovalRecord] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let aId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0)))!
+            let pId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
+            let aType = String(cString: sqlite3_column_text(stmt, 2))
+            let tRev = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 3)))!
+            let sup = sqlite3_column_int(stmt, 4) != 0
+            let by = String(cString: sqlite3_column_text(stmt, 5))
+            let at = DataContractDateFormatters.date(from: String(cString: sqlite3_column_text(stmt, 6))) ?? Date()
+            list.append(ApprovalRecord(approvalId: aId, projectId: pId, approvalType: aType, targetRevisionId: tRev, isSuperseded: sup, approvedBy: by, approvedAt: at))
+        }
+        return list
     }
 }
 

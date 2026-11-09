@@ -89,7 +89,7 @@ swiftc -sdk "$SDK_PATH" \
 
 ./build/tests/test_g1_contracts
 
-echo "=== [6/6] Running Swift Gate G1 S06 ProjectStore Unit Tests ==="
+echo "=== [6/9] Running Swift Gate G1 S06 ProjectStore Unit Tests ==="
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
@@ -100,5 +100,45 @@ swiftc -sdk "$SDK_PATH" \
   -o build/tests/test_s06_project_store
 
 ./build/tests/test_s06_project_store
+
+echo "=== [7/9] Running Swift Gate G1 S07 Scheduler & Governor Unit Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  packages/AIVideoCore/Sources/Scheduler/ResourceGovernor.swift \
+  tests/test_s07_scheduler_fencing.swift \
+  -o build/tests/test_s07_scheduler_fencing
+
+./build/tests/test_s07_scheduler_fencing
+
+echo "=== [8/9] Running Swift Gate G1 S08 Publication & Reconciler Unit Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  tests/test_s08_publication_reconciler.swift \
+  -o build/tests/test_s08_publication_reconciler
+
+./build/tests/test_s08_publication_reconciler
+
+echo "=== [9/9] Running Swift Gate G1 S09 Backup, Restore & Migration Unit Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  packages/AIVideoCore/Sources/Recovery/BackupRestoreService.swift \
+  tests/test_s09_backup_restore_migration.swift \
+  -o build/tests/test_s09_backup_restore_migration
+
+./build/tests/test_s09_backup_restore_migration
 
 echo "=== ALL REGRESSION TEST SUITES EXECUTED SUCCESSFULLY ==="
