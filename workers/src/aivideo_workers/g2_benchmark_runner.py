@@ -463,6 +463,8 @@ def run_g2_analysis_eligible_benchmark(
 
     return {
         "checkpoint_stage": "G2_analysis_eligible",
+        "evaluation_mode": "synthetic_decision_harness_fixture",
+        "production_video_inference_verified": False,
         "target_version": manifest.target_version,
         "frozen_manifest_sha256": manifest.compute_lock_sha256(),
         "independent_holdout_group_count": len(manifest.holdout_trip_group_ids),

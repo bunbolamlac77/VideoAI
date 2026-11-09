@@ -223,14 +223,14 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
     os.makedirs(report_dir, exist_ok=True)
 
     try:
-        proc = subprocess.run([test_script], capture_output=True, text=True, timeout=180)
+        proc = subprocess.run([test_script], capture_output=True, text=True, timeout=300)
         exit_code = proc.returncode
         stdout = proc.stdout
         stderr = proc.stderr
     except subprocess.TimeoutExpired:
         exit_code = -1
         stdout = ""
-        stderr = "Test script execution timed out after 180s"
+        stderr = "Test script execution timed out after 300s"
     except Exception as e:
         exit_code = -1
         stdout = ""
@@ -468,11 +468,11 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
     s08_status = "FAIL" if s08_failed else "DONE"
     s09_status = "FAIL" if s09_failed else "DONE"
     s10_status = "FAIL" if s10_failed else "DONE"
-    s11_status = "FAIL" if s11_failed else "DONE"
+    s11_status = "FAIL" if s11_failed else "IN_REVIEW (Adapter Contracts Verified; Production Models NOT_INSTALLED)"
     s12_status = "FAIL" if s12_failed else "DONE"
     s13_status = "FAIL" if s13_failed else "DONE"
     s14_status = "FAIL" if s14_failed else "DONE"
-    s15_status = "FAIL" if s15_failed else "DONE"
+    s15_status = "FAIL" if s15_failed else "IN_REVIEW (Harness & Anti-Leakage Verified on Synthetic Fixture; Pending Real Video Corpus)"
 
     if fail_count == 0 and blocked_count == 0 and not_run_count == 0 and pass_count > 0:
         g0_status_badge = "🟢 **DONE (Đã đóng Gate G0: Đạt 100% tất cả các tiêu chí nghiệm thu G0)**"
@@ -487,7 +487,7 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
     if any(st == "FAIL" for st in (s10_status, s11_status, s12_status, s13_status, s14_status, s15_status)):
         g2_status_badge = "🔴 **FAIL (Có lỗi kiểm thử trong Gate G2)**"
     else:
-        g2_status_badge = "🟢 **DONE (Đóng Gate G2: Hoàn thành 100% S10 – S15, đạt toàn bộ tiêu chí phân tích, kiểm chứng bằng chứng & benchmark `analysis_eligible`)**"
+        g2_status_badge = "🔵 **IN_REVIEW (Hoàn thành 100% mã nguồn, hợp đồng và kiểm thử logic S10 – S15; chờ cài đặt model sản phẩm S11 & chạy benchmark 5 chuyến video thật S15 trước khi đóng chính thức Gate G2)**"
 
     summary = f"""# AIVideo v3.1 — Hồ Sơ Thẩm Định Mã Nguồn (Review Bundle)
 

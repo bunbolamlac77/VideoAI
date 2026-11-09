@@ -35,6 +35,18 @@ def _make_pts_index(num_frames: int = 40) -> list[SourceFrameEntry]:
     ]
 
 
+def _default_test_window_inspector(win):
+    return {
+        "accepted_frame_ids": list(win.intended_frame_ids),
+        "action_or_scene_type": "scenic_or_motion",
+        "subject_track_id": "track-main",
+        "observation_text": f"Quan sát kiểm thử cửa sổ {win.window_index} (frames {win.start_frame_id}..{win.end_frame_id_exclusive - 1})",
+        "ocr_raw_tokens": [],
+        "ocr_is_uncertain": False,
+        "has_uncertainty_boundary": False,
+    }
+
+
 class TestS12FullFramePipeline(unittest.TestCase):
     def test_s12_t1_silent_clip_boundary_action_and_separate_coverage_vs_understanding(self) -> None:
         """
@@ -56,6 +68,7 @@ class TestS12FullFramePipeline(unittest.TestCase):
                 total_declared_source_frames=40,
                 checkpoint_path=ckpt_path,
                 has_audio_stream=False,  # Silent / no_audio clip
+                window_inspector_fn=_default_test_window_inspector,
             )
 
             self.assertEqual(audio_res.audio_state, "no_audio")
@@ -100,6 +113,7 @@ class TestS12FullFramePipeline(unittest.TestCase):
                 pts_index=pts_index,
                 total_declared_source_frames=40,
                 checkpoint_path=ckpt_path,
+                window_inspector_fn=_default_test_window_inspector,
                 stop_after_window_index=0,
             )
             self.assertEqual(ledger_partial.detailed_pass_status, "paused_checkpoint")
@@ -119,6 +133,7 @@ class TestS12FullFramePipeline(unittest.TestCase):
                     pts_index=pts_index,
                     total_declared_source_frames=40,
                     checkpoint_path=ckpt_path,
+                    window_inspector_fn=_default_test_window_inspector,
                 )
             self.assertEqual(ctx.exception.code, "CHECKPOINT_PROFILE_MISMATCH")
 
@@ -129,6 +144,7 @@ class TestS12FullFramePipeline(unittest.TestCase):
                 pts_index=pts_index,
                 total_declared_source_frames=40,
                 checkpoint_path=ckpt_path,
+                window_inspector_fn=_default_test_window_inspector,
             )
             self.assertEqual(ledger_final.detailed_pass_status, "completed")
             self.assertEqual(ledger_final.completed_window_indices, [0, 1, 2])
@@ -213,6 +229,20 @@ class TestS12FullFramePipeline(unittest.TestCase):
         self.assertEqual(pipeline.log_buffer_size, 5)
 
         with tempfile.TemporaryDirectory() as tmp:
+            # 0. Missing visual model / window_inspector_fn=None -> MUST block with 0 observations & 0.0 coverage!
+            ckpt_no_model = Path(tmp) / "s12_t4_no_model.json"
+            ledger_no_model, obs_no_model, _, _ = pipeline.run_or_resume_analysis(
+                source_revision_id="src-no-model-000",
+                source_sha256="0" * 64,
+                pts_index=pts_index,
+                total_declared_source_frames=32,
+                checkpoint_path=ckpt_no_model,
+                window_inspector_fn=None,
+            )
+            self.assertEqual(ledger_no_model.detailed_pass_status, "blocked_model_unavailable")
+            self.assertEqual(ledger_no_model.frame_input_coverage, 0.0)
+            self.assertEqual(len(obs_no_model), 0)
+
             # 1. Test corrupted decode frames kept in denominator
             ckpt_corrupt = Path(tmp) / "s12_t4_corrupt.json"
             ledger_corrupt, _, _, findings = pipeline.run_or_resume_analysis(
@@ -222,6 +252,7 @@ class TestS12FullFramePipeline(unittest.TestCase):
                 total_declared_source_frames=32,
                 corrupted_decode_frame_ids=[30, 31],
                 checkpoint_path=ckpt_corrupt,
+                window_inspector_fn=_default_test_window_inspector,
             )
             self.assertEqual(ledger_corrupt.detailed_pass_status, "partial_with_decode_errors")
             self.assertEqual(ledger_corrupt.frame_input_coverage, 30.0 / 32.0)
@@ -236,6 +267,7 @@ class TestS12FullFramePipeline(unittest.TestCase):
                 pts_index=pts_index,
                 total_declared_source_frames=32,
                 checkpoint_path=ckpt_blocked,
+                window_inspector_fn=_default_test_window_inspector,
                 simulated_ram_rss_bytes=15 * 1024 * 1024 * 1024,  # 15 GiB > 12 GiB limit
             )
             self.assertEqual(ledger_blocked.detailed_pass_status, "blocked_resource")

@@ -186,6 +186,16 @@ def execute_install(app_support_dir: str, python_runtime_path: Optional[str] = N
     print("AIVIDEO G0 MODEL SETUP — INSTALLATION (--install)")
     print("=======================================================")
 
+    # 1. Check if model already exists: always check tampering BEFORE arch/disk checks!
+    target_model_dir = os.path.join(app_support_dir, "Models", "g0-text", G0_MODEL_REVISION)
+    if os.path.lexists(target_model_dir):
+        if not verify_existing_pinned_install(target_model_dir):
+            print(
+                "BLOCKED: Existing model does not match "
+                "pinned manifest. No files were modified."
+            )
+            return 2
+
     env_info = check_system_environment()
     if not env_info["is_arm64"]:
         print(f"❌ ERROR: Architecture must be arm64 (Apple Silicon). Detected: {env_info['architecture']}")
@@ -210,11 +220,9 @@ def execute_install(app_support_dir: str, python_runtime_path: Optional[str] = N
         return 1
 
     try:
-        target_model_dir = os.path.join(app_support_dir, "Models", "g0-text", G0_MODEL_REVISION)
         staging_parent = os.path.join(app_support_dir, "Models", "g0-text")
         os.makedirs(staging_parent, exist_ok=True)
 
-        # 1. Check if model already exists
         if os.path.lexists(target_model_dir):
             if not verify_existing_pinned_install(target_model_dir):
                 print(

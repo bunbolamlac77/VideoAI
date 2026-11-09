@@ -13,7 +13,7 @@
 |---|---|---|---|---|
 | **G0** | Nền tảng chạy thật | S00 – S03 | 🟢 **DONE (Đóng Gate G0: S00–S03 PASS 100%, bao gồm S02.T1/T2 có bằng chứng)** | Build `.app` arm64, worker thật, file sandbox/bookmark, model local, offline, Resolve spike |
 | **G1** | Dữ liệu và phục hồi | S04 – S09 | 🟢 **DONE (Đóng Gate G1: Hoàn thành 100% S04 – S09, đạt toàn bộ tiêu chí dữ liệu, publication và phục hồi)** | Single-writer `ProjectStore`, snapshot bất biến, publication state machine, crash recovery |
-| **G2** | Phân tích và bằng chứng | S10 – S15 | 🟢 **DONE (Đóng Gate G2: Hoàn thành 100% S10 – S15, đạt toàn bộ tiêu chí phân tích, kiểm chứng bằng chứng & benchmark `analysis_eligible`)** | Media mapping, full-frame coverage, claim verifier, corpus benchmark |
+| **G2** | Phân tích và bằng chứng | S10 – S15 | 🔵 **IN_REVIEW (Hoàn thành 100% logic/contracts/unit tests S10–S15; chờ cài đặt model sản phẩm S11 & chạy benchmark 5 chuyến video thật S15 để đóng Gate G2)** | Media mapping, full-frame coverage, claim verifier, corpus benchmark |
 | **G3** | Kịch bản dựng được | S16 – S19 | ⚪ Chưa bắt đầu (Chuẩn bị S16 Storyboard & Script Outline) | Outline hợp lệ, TTS thật, beam search shot selection, script approval snapshot |
 | **G4** | Preview được duyệt | S20 – S21 | ⚪ Chưa bắt đầu | Managed timeline Resolve, QC preview tự động, preview approval |
 | **G5** | Final và phát hành | S22 – S26 | ⚪ Chưa bắt đầu | Final QC 2160x3840 24fps, nghiệm thu E0/E1, fault-injection, đóng gói release |
@@ -50,17 +50,17 @@
 
 ### G2 — Phân tích và bằng chứng
 - [x] **S10** — Media indexer, VFR frame mapping, tạo proxy và profile màu SDR Rec.709.  
-  *Biên bản:* [`reports/progress/S10.md`](reports/progress/S10.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Rational PTS indexer, ánh xạ VFR→CFR 24/1 `M-24-SDR-v1`, chặn mất frame bằng chứng ngắn, audio 48 kHz & màu SDR Rec.709/HDR Mobius, 100% PASS)
+  *Biên bản:* [`reports/progress/S10.md`](reports/progress/S10.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Rational PTS indexer, ánh xạ VFR→CFR 24/1 `M-24-SDR-v1`, sinh proxy CFR 24fps thật + SHA-256 mapping, bảo vệ frame bằng chứng ngắn, audio 48 kHz & màu SDR Rec.709/HDR Mobius, 100% PASS)
 - [x] **S11** — Model adapters (Qwen-VL, Whisper, VieNeu-TTS, DINOv2) và setup offline local.  
-  *Biên bản:* [`reports/progress/S11.md`](reports/progress/S11.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Offline preflight 5 adapters E0, Post-Processor frame truncation audit, khóa chính sách RAM 16 GB chặn 32B, Capability Registry & xác thực JSON tiếng Việt/TTS 1.0x, 100% PASS)
+  *Biên bản:* [`reports/progress/S11.md`](reports/progress/S11.md) · *Trạng thái:* `IN_REVIEW` (Hoàn thành adapter contracts, preflight offline, Post-Processor frame truncation audit, khóa chính sách RAM 16 GB chặn 32B & Capability Registry; model sản phẩm đang ở trạng thái `NOT_INSTALLED`)
 - [x] **S12** — Pipeline phân tích toàn frame (full-frame baseline), checkpointing và theo dõi độ phủ thực.  
-  *Biên bản:* [`reports/progress/S12.md`](reports/progress/S12.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Cửa sổ trượt 16f/overlap 4f, cô lập `raw_independent` khỏi brief, nhánh audio không chặn hình, omission audit & checkpointing nguyên tử, 100% PASS)
+  *Biên bản:* [`reports/progress/S12.md`](reports/progress/S12.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Cửa sổ trượt 16f/overlap 4f, chặn `blocked_model_unavailable` khi thiếu visual model không sinh observation/coverage giả, đo dung lượng SSD thật, cô lập `raw_independent` khỏi brief, nhánh audio không chặn hình & checkpointing nguyên tử, 100% PASS)
 - [x] **S13** — Xử lý brief/facts, trích xuất claims, xây dựng event graph và verifier độc lập.  
   *Biên bản:* [`reports/progress/S13.md`](reports/progress/S13.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Brief parser giữ span/time_precision, tách mệnh đề nhân quả & đa mệnh đề, bảng quyết định 12 dòng Mục 6, đồ thị sự kiện phát hiện chu trình & revalidation theo scope, 100% PASS)
 - [x] **S14** — Giao diện/luồng review có bằng chứng (evidence-backed review) và xử lý biến động tư liệu.  
-  *Biên bản:* [`reports/progress/S14.md`](reports/progress/S14.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Bằng chứng đúng loại không ép timecode giả, `answer_unknown` không thành đồng ý, cô lập nhánh bị chặn, lọc batch confirmation chống lọt kết quả nền & nối UI thật, 100% PASS)
+  *Biên bản:* [`reports/progress/S14.md`](reports/progress/S14.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Gỡ bỏ dữ liệu mẫu giả lập, hiển thị đủ 6 lệnh review thật nối với Worker RPC `g2.analyze_source` & `ProjectStore` SQLite, `answer_unknown` không thành đồng ý, cô lập nhánh bị chặn & lọc batch confirmation, 100% PASS)
 - [x] **S15** — Benchmark phân tích trên tập dữ liệu và đóng Gate G2.  
-  *Biên bản:* [`reports/progress/S15.md`](reports/progress/S15.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Khóa `G2-FROZEN-EVAL-v1` trên 5 chuyến held-out độc lập, precision=1.0, critical_false_accept=0, event_recall=0.96, verifier_FAR=0.0, chống rò rỉ dữ liệu & đóng Gate G2, 100% PASS)
+  *Biên bản:* [`reports/progress/S15.md`](reports/progress/S15.md) · *Trạng thái:* `IN_REVIEW` (Hoàn thành bộ máy thống kê Wilson 95% CI, Group Bootstrap 10.000 vòng, chống rò rỉ dữ liệu & kiểm thử logic trên fixture `G2-FROZEN-EVAL-v1`; chờ chạy trên 5 chuyến video thực địa sau khi cài model S11 để đóng chính thức Gate G2)
 
 ### G3 — Kịch bản dựng được
 - [ ] **S16** — Trình tạo outline kịch bản (1–3 phương án), gắn nguồn từng mệnh đề và khóa chỉnh sửa.  

@@ -1733,6 +1733,56 @@ public actor ProjectStore {
         }
         return items
     }
+
+    public func listCoverageRecords(projectId: UUID) throws -> [CoverageLedgerRecord] {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        let sql = """
+        SELECT coverage_id, project_id, source_revision_id, runtime_profile_id, input_fingerprint,
+               total_declared_frames, valid_decoded_frames, unique_processed_frames,
+               audio_branch_state, detailed_pass_status
+        FROM coverage_records
+        WHERE project_id = ?
+        ORDER BY updated_at DESC;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, projectId.uuidString, -1, SQLITE_TRANSIENT)
+        var records: [CoverageLedgerRecord] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let covId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0)))!
+            let pId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
+            let sRevId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 2)))!
+            let profId = String(cString: sqlite3_column_text(stmt, 3))
+            let fp = String(cString: sqlite3_column_text(stmt, 4))
+            let totalDecl = Int(sqlite3_column_int(stmt, 5))
+            let validDec = Int(sqlite3_column_int(stmt, 6))
+            let uniqueProcCount = Int(sqlite3_column_int(stmt, 7))
+            let audioSt = AudioBranchState(rawValue: String(cString: sqlite3_column_text(stmt, 8))) ?? .speechDetected
+            let passSt = String(cString: sqlite3_column_text(stmt, 9))
+            let uniqueIds = uniqueProcCount > 0 ? Array(0..<uniqueProcCount) : []
+            records.append(
+                CoverageLedgerRecord(
+                    coverageId: covId,
+                    projectId: pId,
+                    sourceRevisionId: sRevId,
+                    runtimeProfileId: profId,
+                    inputFingerprint: fp,
+                    totalDeclaredFrames: totalDecl,
+                    validDecodedFrameCount: validDec,
+                    uniqueProcessedFrameIds: uniqueIds,
+                    totalSubmittedWithOverlap: uniqueProcCount,
+                    audioBranchState: audioSt,
+                    completedWindows: 0,
+                    totalWindows: 1,
+                    detailedPassStatus: passSt
+                )
+            )
+        }
+        return records
+    }
 }
 
 // SQLITE_TRANSIENT helper:

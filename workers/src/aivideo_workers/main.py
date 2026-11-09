@@ -27,7 +27,11 @@ import threading
 import traceback
 from typing import Dict, Any, Optional, Set
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_FILE_DIR = os.path.dirname(os.path.abspath(__file__))
+_SRC_DIR = os.path.dirname(_FILE_DIR)
+for _p in (_FILE_DIR, _SRC_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 PROTOCOL_VERSION = "2.0"
 WORKER_VERSION = "0.2.1"
@@ -160,8 +164,10 @@ def handle_initialize(params: dict) -> dict:
         "capabilities": [
             "system.ping",
             "media.probe",
+            "media.index_and_proxy",
             "ai.model_status",
             "ai.local_infer_test",
+            "g2.analyze_source",
             "resolve.status",
             "resolve.spike_timeline"
         ]
@@ -285,13 +291,166 @@ def handle_resolve_spike(params: dict) -> dict:
     force_fresh = params.get("force_fresh_run", False)
     return resolve_adapter.run_g0_spike(output_drp_path=drp_path, force_fresh_run=force_fresh)
 
+
+def handle_media_index_and_proxy(params: dict) -> dict:
+    """S10 RPC: Probes presentation-order PTS index and generates CFR 24fps SDR Rec.709 proxy + conform map."""
+    from pathlib import Path
+    from aivideo_workers.media_indexer import generate_proxy_and_mapping, probe_and_index_real_video
+
+    file_path = params.get("file_path")
+    if not file_path:
+        raise ValueError("Missing required parameter: 'file_path'")
+    proxy_out = params.get("proxy_output_path")
+    source_rev_id = params.get("source_revision_id") or "rev-source-001"
+    if proxy_out:
+        art = generate_proxy_and_mapping(
+            source_video_path=Path(file_path),
+            proxy_output_path=Path(proxy_out),
+            source_revision_id=source_rev_id,
+            target_height=int(params.get("target_height", 540)),
+        )
+        return art.to_dict()
+    return probe_and_index_real_video(Path(file_path))
+
+
+def handle_g2_analyze_source(params: dict) -> dict:
+    """
+    S10..S14 End-to-End G2 Worker RPC (`g2.analyze_source`):
+    1. Probes real video file via ffprobe (`probe_and_index_real_video`).
+    2. Checks whether `P-VISION-DEV-v1` (`Qwen3-VL-4B-Instruct-4bit`) is installed offline on disk.
+    3. Runs `FullFrameAnalysisPipeline.run_or_resume_analysis` (returns `blocked_model_unavailable` with 0% coverage
+       and 0 fabricated observations when the visual model is not installed).
+    4. Parses optional user brief via `parse_user_brief` and evaluates claims via `evaluate_claim_decision_table` (S13).
+    """
+    from pathlib import Path
+    import tempfile
+    from aivideo_workers.media_indexer import SourceFrameEntry, probe_and_index_real_video
+    from aivideo_workers.pipeline_adapters import PipelineAdapterError, S11ModelRegistryAndAdapters
+    from aivideo_workers.full_frame_pipeline import BoundedPipelineConfig, FullFrameAnalysisPipeline
+    from aivideo_workers.semantic_verifier import (
+        decompose_causal_or_compound_statement,
+        evaluate_claim_support_and_use,
+        parse_raw_brief_to_drafts,
+    )
+
+    file_path = params.get("file_path")
+    if not file_path:
+        raise ValueError("Missing required parameter: 'file_path'")
+    src_path = Path(file_path)
+    if not src_path.is_file():
+        raise FileNotFoundError(f"Source file does not exist: {file_path}")
+
+    source_rev_id = str(params.get("source_revision_id") or "00000000-0000-4000-8000-000000000101")
+    workday_id = str(params.get("workday_id") or "00000000-0000-4000-8000-000000000002")
+    brief_text = str(params.get("brief_text") or "").strip()
+
+    probed = probe_and_index_real_video(src_path)
+    pts_entries = [
+        SourceFrameEntry(
+            frame_id=int(f["frame_id"]),
+            pts=int(f["pts"]),
+            duration_pts=int(f["duration_pts"]),
+            time_base_num=int(f["time_base_num"]),
+            time_base_den=int(f["time_base_den"]),
+            key_frame=bool(f.get("key_frame", False)),
+        )
+        for f in probed["pts_index"]
+    ]
+    src_sha256 = hashlib.sha256(src_path.read_bytes()).hexdigest()
+
+    # Check if S11 visual model adapter is installed offline
+    s11_reg = S11ModelRegistryAndAdapters()
+    vision_installed = False
+    try:
+        s11_reg.preflight_adapter_offline(
+            role="visual_analysis_primary",
+            required_files=["config.json", "model.safetensors"],
+        )
+        vision_installed = True
+    except PipelineAdapterError:
+        vision_installed = False
+
+    ckpt_dir = Path(params.get("checkpoint_dir") or tempfile.gettempdir())
+    ckpt_path = ckpt_dir / f"g2_ckpt_{source_rev_id[:8]}_{src_sha256[:8]}.json"
+
+    pipeline = FullFrameAnalysisPipeline(BoundedPipelineConfig())
+    # When vision_installed is False, window_inspector_fn is None -> returns blocked_model_unavailable!
+    ledger, raw_obs, audio_res, findings = pipeline.run_or_resume_analysis(
+        source_revision_id=source_rev_id,
+        source_sha256=src_sha256,
+        pts_index=pts_entries,
+        total_declared_source_frames=len(pts_entries),
+        checkpoint_path=ckpt_path,
+        has_audio_stream=True,
+        window_inspector_fn=None if not vision_installed else params.get("_inspector_fn"),
+    )
+
+    claims_out = []
+    reviews_out = []
+    if brief_text:
+        parsed_brief = parse_raw_brief_to_drafts(
+            brief_revision_id="brief-live-01",
+            workday_id=workday_id,
+            raw_brief_text=brief_text,
+        )
+        for idx, stmt in enumerate(parsed_brief):
+            if stmt.item_kind == "event_fact":
+                proposals = decompose_causal_or_compound_statement(
+                    compound_id=f"claim-live-{idx:02d}",
+                    workday_id=workday_id,
+                    raw_statement=stmt.raw_span_text,
+                    origin="user",
+                    epistemic_status="reported",
+                    review_status="unreviewed",
+                    is_critical=True,
+                )
+                for p in proposals:
+                    sup, dec = evaluate_claim_support_and_use(
+                        claim=p,
+                        evidence_edges=[],
+                        evidence_scope_revision_id=f"scope-{src_sha256[:8]}",
+                        narrative_type="reported_by_user",
+                    )
+                    claims_out.append({
+                        "claim_id": p.claim_id,
+                        "text": p.predicate_text,
+                        "origin": p.origin,
+                        "epistemic_status": p.epistemic_status,
+                        "review_status": p.review_status,
+                        "support_status": sup.support_status,
+                        "allowed_use": dec.allowed_use,
+                        "requires_targeted_review": dec.requires_targeted_review,
+                    })
+                    if dec.requires_targeted_review:
+                        reviews_out.append({
+                            "evidence_scope_revision_id": f"scope-{src_sha256[:8]}",
+                            "evidence_kind": "brief_span",
+                            "is_critical": p.is_critical,
+                            "question_text": f"Xác nhận thông tin từ brief: '{p.predicate_text}' (Visual model: {ledger.detailed_pass_status})?",
+                        })
+
+    return {
+        "source_revision_id": source_rev_id,
+        "source_sha256": src_sha256,
+        "vision_model_installed": vision_installed,
+        "coverage_ledger": ledger.to_dict(),
+        "raw_observations_count": len(raw_obs),
+        "audio_branch_state": audio_res.audio_state,
+        "omission_findings_count": len(findings),
+        "claims": claims_out,
+        "review_items": reviews_out,
+    }
+
+
 METHODS = {
     "initialize": handle_initialize,
     "system.ping": handle_ping,
     "media.probe": handle_media_probe,
+    "media.index_and_proxy": handle_media_index_and_proxy,
     "ai.model_status": handle_model_status,
     "ai.local_infer_test": handle_local_infer_test,
     "ai.local_model_infer": handle_local_infer_test,
+    "g2.analyze_source": handle_g2_analyze_source,
     "resolve.status": handle_resolve_status,
     "resolve.spike_timeline": handle_resolve_spike,
 }

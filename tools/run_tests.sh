@@ -162,7 +162,9 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DomainModels.swift \
   packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
   packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
   packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
   tests/test_s12_to_s15_g2_closure.swift \

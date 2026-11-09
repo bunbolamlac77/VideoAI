@@ -19,6 +19,7 @@ from workers.src.aivideo_workers.media_indexer import (
     compute_canonical_audio_mapping,
     convert_half_open_to_resolve_inclusive,
     evaluate_color_profile,
+    generate_proxy_and_mapping,
     probe_and_index_real_video,
     validate_and_build_pts_index,
 )
@@ -177,6 +178,50 @@ class TestS10MediaIndexer(unittest.TestCase):
         src_fid, src_pts = cmap.seek_source_from_timeline(5)
         self.assertEqual(src_fid, 15)
         self.assertEqual(src_pts, 15000)
+
+    def test_s10_3_real_proxy_generation_and_hash_mapping(self) -> None:
+        """S10.3: Generates a real CFR 24fps SDR proxy video and verifies source->proxy SHA-256 and PTS mapping."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src_video = Path(tmpdir) / "source_30fps.mp4"
+            proxy_video = Path(tmpdir) / "proxy_24fps.mp4"
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc=duration=1:size=640x360:rate=30",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=1",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    str(src_video),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=20,
+            )
+            proxy_artifact = generate_proxy_and_mapping(
+                source_video_path=src_video,
+                proxy_output_path=proxy_video,
+                source_revision_id="rev-s10-proxy-test",
+                target_height=180,
+            )
+            self.assertTrue(Path(proxy_artifact.proxy_path).is_file())
+            self.assertEqual(len(proxy_artifact.source_sha256), 64)
+            self.assertEqual(len(proxy_artifact.proxy_sha256), 64)
+            self.assertNotEqual(proxy_artifact.source_sha256, proxy_artifact.proxy_sha256)
+            self.assertEqual(proxy_artifact.proxy_height, 180)
+            self.assertEqual(proxy_artifact.conform_map.timeline_frame_count, 24)
+            src_fid, _ = proxy_artifact.conform_map.seek_source_from_timeline(0)
+            self.assertIn(src_fid, (0, 1))
 
 
 if __name__ == "__main__":

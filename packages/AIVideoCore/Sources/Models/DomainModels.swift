@@ -454,3 +454,90 @@ public struct ResolveSpikeResult: Codable, Sendable {
         case reconciliationStatus = "reconciliation_status"
     }
 }
+
+// MARK: - Gate G2 Source Analysis RPC DTOs
+
+public struct G2AnalyzeSourceParams: Codable, Sendable {
+    public let filePath: String
+    public let sourceRevisionId: String
+    public let workdayId: String
+    public let briefText: String
+
+    public enum CodingKeys: String, CodingKey {
+        case filePath = "file_path"
+        case sourceRevisionId = "source_revision_id"
+        case workdayId = "workday_id"
+        case briefText = "brief_text"
+    }
+
+    public init(filePath: String, sourceRevisionId: String, workdayId: String, briefText: String) {
+        self.filePath = filePath
+        self.sourceRevisionId = sourceRevisionId
+        self.workdayId = workdayId
+        self.briefText = briefText
+    }
+}
+
+public struct G2AnalyzeCoverageDTO: Codable, Sendable {
+    public let sourceRevisionId: String
+    public let runtimeProfileId: String
+    public let inputFingerprint: String
+    public let totalDeclaredSourceFrames: Int
+    public let validDecodedFrameIds: [Int]
+    public let corruptedDecodeFrameIds: [Int]
+    public let uniquePostProcessorFrameIds: [Int]
+    public let totalSubmittedFramesWithOverlap: Int
+    public let frameInputCoverage: Double
+    public let detailedPassStatus: String
+    public let semanticUnderstandingCertified: Bool
+
+    public enum CodingKeys: String, CodingKey {
+        case sourceRevisionId = "source_revision_id"
+        case runtimeProfileId = "runtime_profile_id"
+        case inputFingerprint = "input_fingerprint"
+        case totalDeclaredSourceFrames = "total_declared_source_frames"
+        case validDecodedFrameIds = "valid_decoded_frame_ids"
+        case corruptedDecodeFrameIds = "corrupted_decode_frame_ids"
+        case uniquePostProcessorFrameIds = "unique_post_processor_frame_ids"
+        case totalSubmittedFramesWithOverlap = "total_submitted_frames_with_overlap"
+        case frameInputCoverage = "frame_input_coverage"
+        case detailedPassStatus = "detailed_pass_status"
+        case semanticUnderstandingCertified = "semantic_understanding_certified"
+    }
+}
+
+public struct G2AnalyzeReviewItemDTO: Codable, Sendable {
+    public let evidenceScopeRevisionId: String
+    public let evidenceKind: String
+    public let isCritical: Bool
+    public let questionText: String
+
+    public enum CodingKeys: String, CodingKey {
+        case evidenceScopeRevisionId = "evidence_scope_revision_id"
+        case evidenceKind = "evidence_kind"
+        case isCritical = "is_critical"
+        case questionText = "question_text"
+    }
+}
+
+public struct G2AnalyzeSourceResult: Codable, Sendable {
+    public let sourceRevisionId: String
+    public let sourceSha256: String
+    public let visionModelInstalled: Bool
+    public let coverageLedger: G2AnalyzeCoverageDTO
+    public let rawObservationsCount: Int
+    public let audioBranchState: String
+    public let omissionFindingsCount: Int
+    public let reviewItems: [G2AnalyzeReviewItemDTO]
+
+    public enum CodingKeys: String, CodingKey {
+        case sourceRevisionId = "source_revision_id"
+        case sourceSha256 = "source_sha256"
+        case visionModelInstalled = "vision_model_installed"
+        case coverageLedger = "coverage_ledger"
+        case rawObservationsCount = "raw_observations_count"
+        case audioBranchState = "audio_branch_state"
+        case omissionFindingsCount = "omission_findings_count"
+        case reviewItems = "review_items"
+    }
+}

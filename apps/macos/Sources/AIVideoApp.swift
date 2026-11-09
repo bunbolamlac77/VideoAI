@@ -58,7 +58,8 @@ final class AppState: ObservableObject {
     @Published var g1ReconciliationSummary: String = ""
     @Published var g1LastBackupInfo: String = ""
     @Published var g2ReviewItems: [TargetedReviewRecord] = []
-    @Published var g2ScopeSummary: String = "Scope: scope-v1 · Coverage: 100.0% (1200/1200 frames) · Semantic: Chưa chứng nhận (S12.G)"
+    @Published var g2ScopeSummary: String = "Chưa có lượt phân tích G2 nào trong SQLite (Coverage: N/A)"
+    @Published var isRunningG2Analysis: Bool = false
     private var projectStore: ProjectStore?
     private var publicationService: ArtifactPublicationService?
     private let backupService = BackupRestoreService(supportedMaxSchemaVersion: 2)
@@ -373,21 +374,14 @@ final class AppState: ObservableObject {
             )
             self.g1ReconciliationSummary = "Reconciled: revoked=\(report.revokedOldAttemptsCount), quarantined=\(report.quarantinedTempsCount), corrupted=\(report.corruptedCommittedBlobsCount)"
             self.g1Claims = try await store.getLatestClaims(workdayId: fixedWorkdayId)
-            var existingReviews = try await store.listReviewItems(workdayId: fixedWorkdayId)
-            if existingReviews.isEmpty {
-                let sampleReview = try TargetedReviewRecord(
-                    reviewItemId: UUID(uuidString: "00000000-0000-4000-8000-000000000099")!,
-                    projectId: fixedProjId,
-                    workdayId: fixedWorkdayId,
-                    evidenceScopeRevisionId: "scope-v1",
-                    evidenceKind: .briefSpan,
-                    isCritical: true,
-                    questionText: "Làm rõ lý do dừng xe tại đèo Prenn (chỉ có hình dừng xe, chưa có bằng chứng nguyên nhân ngoài camera)?"
-                )
-                try await store.saveReviewItem(sampleReview)
-                existingReviews = [sampleReview]
+            self.g2ReviewItems = try await store.listReviewItems(workdayId: fixedWorkdayId)
+            let covRecords = try await store.listCoverageRecords(projectId: fixedProjId)
+            if let latestCov = covRecords.first {
+                let pct = String(format: "%.1f", latestCov.frameInputCoverage * 100.0)
+                self.g2ScopeSummary = "Status: \(latestCov.detailedPassStatus) · Coverage: \(pct)% (\(latestCov.uniqueProcessedFrameIds.count)/\(latestCov.totalDeclaredFrames) frames) · Semantic: Chưa chứng nhận"
+            } else {
+                self.g2ScopeSummary = "Chưa có bản ghi Coverage G2 trong SQLite · Review items: \(self.g2ReviewItems.count)"
             }
-            self.g2ReviewItems = existingReviews
             self.g1SaveStatus = "Đã lưu (Rev \(proj.currentRevision))"
         } catch {
             self.g1SaveStatus = "Lưu lỗi: \(error.localizedDescription)"
@@ -403,6 +397,63 @@ final class AppState: ObservableObject {
             self.g2ScopeSummary = "Đã xử lý Review (\(action.rawValue)) -> AllowedUse: \(updated.resultingAllowedUse?.rawValue ?? "exclude") · Nhánh chặn: \(blocked) · Nhánh khả thi: \(viable)"
         } catch {
             self.errorMessage = "Lỗi lưu review resolution: \(error.localizedDescription)"
+        }
+    }
+
+    func runG2AnalysisOnSelectedSource() async {
+        guard let store = projectStore, let proj = g1Project, let wd = g1Workday else { return }
+        guard !selectedFilePath.isEmpty else {
+            self.errorMessage = "Vui lòng chọn file video nguồn trước khi chạy phân tích G2."
+            return
+        }
+        self.isRunningG2Analysis = true
+        self.errorMessage = nil
+        defer { self.isRunningG2Analysis = false }
+
+        do {
+            let srcRevUUID = UUID()
+            let res = try await worker.analyzeG2Source(
+                filePath: selectedFilePath,
+                sourceRevisionId: srcRevUUID.uuidString,
+                workdayId: wd.workdayId.uuidString,
+                briefText: g1DraftFactText
+            )
+            let dto = res.coverageLedger
+            let covRec = CoverageLedgerRecord(
+                projectId: proj.projectId,
+                sourceRevisionId: srcRevUUID,
+                runtimeProfileId: dto.runtimeProfileId,
+                inputFingerprint: dto.inputFingerprint,
+                totalDeclaredFrames: dto.totalDeclaredSourceFrames,
+                validDecodedFrameCount: dto.validDecodedFrameIds.count,
+                corruptedDecodeFrameIds: dto.corruptedDecodeFrameIds,
+                uniqueProcessedFrameIds: dto.uniquePostProcessorFrameIds,
+                totalSubmittedWithOverlap: dto.totalSubmittedFramesWithOverlap,
+                audioBranchState: AudioBranchState(rawValue: res.audioBranchState) ?? .speechDetected,
+                completedWindows: dto.uniquePostProcessorFrameIds.isEmpty ? 0 : 1,
+                totalWindows: 1,
+                detailedPassStatus: dto.detailedPassStatus
+            )
+            try await store.saveCoverageRecord(covRec)
+
+            for rItem in res.reviewItems {
+                let kind = ReviewEvidenceKind(rawValue: rItem.evidenceKind) ?? .briefSpan
+                let rec = try TargetedReviewRecord(
+                    projectId: proj.projectId,
+                    workdayId: wd.workdayId,
+                    evidenceScopeRevisionId: rItem.evidenceScopeRevisionId,
+                    evidenceKind: kind,
+                    isCritical: rItem.isCritical,
+                    questionText: rItem.questionText
+                )
+                try await store.saveReviewItem(rec)
+            }
+
+            self.g2ReviewItems = try await store.listReviewItems(workdayId: wd.workdayId)
+            let pct = String(format: "%.1f", covRec.frameInputCoverage * 100.0)
+            self.g2ScopeSummary = "Status: \(covRec.detailedPassStatus) · Coverage: \(pct)% (\(covRec.uniqueProcessedFrameIds.count)/\(covRec.totalDeclaredFrames) frames) · Review items: \(self.g2ReviewItems.count)"
+        } catch {
+            self.errorMessage = "Phân tích G2 thất bại: \(error.localizedDescription)"
         }
     }
 
@@ -933,56 +984,7 @@ struct ContentView: View {
                     }
 
                     // Section 6: Gate G2 Targeted Review & Scope Impact View (S12..S15)
-                    GroupBox(label: Label("6. Cần làm rõ & Kiểm chứng Bằng chứng (Gate G2 — S12..S15)", systemImage: "magnifyingglass.circle")) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(state.g2ScopeSummary)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundColor(.secondary)
-
-                            ForEach(state.g2ReviewItems) { item in
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack {
-                                        Text("[\(item.evidenceKind.rawValue.uppercased()) · \(item.evidenceScopeRevisionId)] \(item.questionText)")
-                                            .font(.system(size: 11, weight: .medium))
-                                        Spacer()
-                                        Text(item.status.uppercased())
-                                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                            .foregroundColor(item.status == "resolved" ? .green : .orange)
-                                    }
-                                    if let act = item.resolutionAction, let use = item.resultingAllowedUse {
-                                        Text("Quyết định: \(act.rawValue) → Quyền dùng: \(use.rawValue)")
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundColor(.blue)
-                                    } else {
-                                        HStack(spacing: 8) {
-                                            Button("Xác nhận lời kể (Reported)") {
-                                                Task {
-                                                    await state.resolveG2ReviewItemInStore(item: item, action: .confirmUserFact)
-                                                }
-                                            }
-                                            .controlSize(.small)
-                                            Button("Chưa biết (Unknown ≠ Đồng ý)") {
-                                                Task {
-                                                    await state.resolveG2ReviewItemInStore(item: item, action: .answerUnknown)
-                                                }
-                                            }
-                                            .controlSize(.small)
-                                            Button("Bỏ chi tiết (Exclude)") {
-                                                Task {
-                                                    await state.resolveG2ReviewItemInStore(item: item, action: .dropClaimOrDetail)
-                                                }
-                                            }
-                                            .controlSize(.small)
-                                        }
-                                    }
-                                }
-                                .padding(8)
-                                .background(Color(NSColor.textBackgroundColor).opacity(0.5))
-                                .cornerRadius(6)
-                            }
-                        }
-                        .padding(8)
-                    }
+                    G2ReviewSectionView(state: state)
                 }
                 .padding(16)
             }
@@ -1001,5 +1003,83 @@ struct ContentView: View {
             .background(Color(NSColor.windowBackgroundColor))
         }
         .frame(minWidth: 700, minHeight: 650)
+    }
+}
+
+struct G2ReviewSectionView: View {
+    @ObservedObject var state: AppState
+
+    var body: some View {
+        GroupBox(label: Label("6. Cần làm rõ & Kiểm chứng Bằng chứng (Gate G2 — S12..S15)", systemImage: "magnifyingglass.circle")) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(state.g2ScopeSummary)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button("Chạy phân tích G2 trên video đã chọn") {
+                        Task {
+                            await state.runG2AnalysisOnSelectedSource()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(!state.isWorkerConnected || state.selectedFilePath.isEmpty || state.isRunningG2Analysis)
+                }
+
+                ForEach(state.g2ReviewItems) { item in
+                    G2ReviewItemRowView(state: state, item: item)
+                }
+            }
+            .padding(8)
+        }
+    }
+}
+
+struct G2ReviewItemRowView: View {
+    @ObservedObject var state: AppState
+    let item: TargetedReviewRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("[\(item.evidenceKind.rawValue.uppercased()) · \(item.evidenceScopeRevisionId)] \(item.questionText)")
+                    .font(.system(size: 11, weight: .medium))
+                Spacer()
+                Text(item.status.uppercased())
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(item.status == "resolved" ? .green : .orange)
+            }
+            if let act = item.resolutionAction, let use = item.resultingAllowedUse {
+                Text("Quyết định: \(act.rawValue) → Quyền dùng: \(use.rawValue)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.blue)
+            } else {
+                HStack(spacing: 6) {
+                    Button("1. Xác nhận") {
+                        Task { await state.resolveG2ReviewItemInStore(item: item, action: .confirmUserFact) }
+                    }
+                    Button("2. Sửa & nguồn") {
+                        Task { await state.resolveG2ReviewItemInStore(item: item, action: .editFactOrClaim) }
+                    }
+                    Button("3. Chưa biết") {
+                        Task { await state.resolveG2ReviewItemInStore(item: item, action: .answerUnknown) }
+                    }
+                    Button("4. Bác bỏ") {
+                        Task { await state.resolveG2ReviewItemInStore(item: item, action: .rejectAiObservation) }
+                    }
+                    Button("5. Bỏ chi tiết") {
+                        Task { await state.resolveG2ReviewItemInStore(item: item, action: .dropClaimOrDetail) }
+                    }
+                    Button("6. Loại tư liệu") {
+                        Task { await state.resolveG2ReviewItemInStore(item: item, action: .excludeAssetFromEdit) }
+                    }
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(8)
+        .background(Color(NSColor.textBackgroundColor).opacity(0.5))
+        .cornerRadius(6)
     }
 }

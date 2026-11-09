@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
+import shutil
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from .media_indexer import SourceFrameEntry
@@ -461,6 +462,7 @@ class FullFrameAnalysisPipeline:
 
         paused_by_resource = False
         paused_by_caller = False
+        blocked_model_unavailable = False
 
         for win in windows:
             if win.window_index in committed_windows:
@@ -473,17 +475,17 @@ class FullFrameAnalysisPipeline:
                     f"Window {win.window_index} frame count ({len(win.intended_frame_ids)}) exceeds max_in_memory_frame_queue ({self.config.max_in_memory_frame_queue}).",
                 )
 
-            # Check RAM & SSD resource pressure before processing window (S12.T4 & JOB-05)
+            # Check RAM & real SSD resource pressure before processing window (S12.T4 & JOB-05)
             mem_snap = measure_current_process_memory(
                 phase_name=f"s12_window_{win.window_index}",
                 budget_limit_bytes=self.config.ram_budget_limit_bytes,
             )
             effective_rss = simulated_ram_rss_bytes if simulated_ram_rss_bytes is not None else mem_snap.rss_bytes
-            effective_ssd = (
-                simulated_free_ssd_bytes
-                if simulated_free_ssd_bytes is not None
-                else self.config.min_free_ssd_bytes * 2
-            )
+            if simulated_free_ssd_bytes is not None:
+                effective_ssd = simulated_free_ssd_bytes
+            else:
+                checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                effective_ssd = int(shutil.disk_usage(checkpoint_path.parent).free)
 
             if effective_rss > self.config.ram_budget_limit_bytes or effective_ssd < self.config.min_free_ssd_bytes:
                 paused_by_resource = True
@@ -492,19 +494,16 @@ class FullFrameAnalysisPipeline:
                 )
                 break
 
-            # Execute brief-agnostic raw visual inspection on the window
-            if window_inspector_fn is not None:
-                insp = window_inspector_fn(win)
-            else:
-                insp = {
-                    "accepted_frame_ids": list(win.intended_frame_ids),
-                    "action_or_scene_type": "scenic_or_motion",
-                    "subject_track_id": "track-main",
-                    "observation_text": f"Quan sát cửa sổ {win.window_index} (frames {win.start_frame_id}..{win.end_frame_id_exclusive - 1})",
-                    "ocr_raw_tokens": [],
-                    "ocr_is_uncertain": False,
-                    "has_uncertainty_boundary": False,
-                }
+            # Execute brief-agnostic raw visual inspection on the window:
+            # NEVER fabricate default 'visual_model' observations or 100% coverage when no visual model / inspector is available!
+            if window_inspector_fn is None:
+                blocked_model_unavailable = True
+                self._append_log(
+                    f"Blocked at window {win.window_index}: visual model / window_inspector_fn is unavailable (refusing to fabricate observations)."
+                )
+                break
+
+            insp = window_inspector_fn(win)
 
             # Enforce S12.3 / AI-02: raw pass must never inject brief hypothesis
             if "guided_hypothesis_ref" in insp and insp["guided_hypothesis_ref"] is not None:
@@ -612,7 +611,9 @@ class FullFrameAnalysisPipeline:
         valid_input_cov = len(unique_sorted) / float(max(1, len(valid_decoded_ids)))
 
         all_windows_done = len(committed_windows) == len(windows)
-        if paused_by_resource:
+        if blocked_model_unavailable:
+            detailed_status = "blocked_model_unavailable"
+        elif paused_by_resource:
             detailed_status = "blocked_resource"
         elif paused_by_caller or not all_windows_done:
             detailed_status = "paused_checkpoint"

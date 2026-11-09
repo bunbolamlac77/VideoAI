@@ -237,6 +237,95 @@ struct TestS12ToS15G2Closure {
             record("S14_SWIFT_T1_REVIEW_STORE_AND_BATCH_FILTER", "AI-09/UI-08/UI-12", false, "Error: \(error)")
         }
 
+        // 4. S12_S14_E2E_WORKER_RPC_AND_SQLITE: Real video -> WorkerClient g2.analyze_source -> ProjectStore SQLite -> Review
+        do {
+            let fm = FileManager.default
+            let tmpDir = fm.temporaryDirectory.appendingPathComponent("s12_e2e_test_\(UUID().uuidString)")
+            try fm.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: tmpDir) }
+
+            let clipPath = tmpDir.appendingPathComponent("test_e2e_clip.mp4").path
+            let ffProc = Process()
+            ffProc.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
+            ffProc.arguments = [
+                "-nostdin", "-y", "-f", "lavfi", "-i", "color=c=green:s=320x240:r=24:d=1",
+                "-pix_fmt", "yuv420p", clipPath
+            ]
+            ffProc.standardInput = FileHandle.nullDevice
+            ffProc.standardOutput = FileHandle.nullDevice
+            ffProc.standardError = FileHandle.nullDevice
+            try ffProc.run()
+            ffProc.waitUntilExit()
+
+            let client = WorkerClient()
+            let pyPath = "/opt/homebrew/bin/python3.12"
+            _ = try await client.start(pythonPath: pyPath, scriptPath: "workers/src/aivideo_workers/main.py", timeoutSeconds: 8.0)
+
+            let srcRevUUID = UUID()
+            let wdUUID = UUID()
+            let rpcRes = try await client.analyzeG2Source(
+                filePath: clipPath,
+                sourceRevisionId: srcRevUUID.uuidString,
+                workdayId: wdUUID.uuidString,
+                briefText: "Dừng xe tại đèo Prenn vì GPS báo nhầm."
+            )
+            await client.terminate()
+
+            let dbURL = tmpDir.appendingPathComponent("e2e_store.sqlite")
+            let store = try ProjectStore(dbURL: dbURL)
+            let proj = try await store.createProject(name: "E2E G2 Project")
+            _ = try await store.createWorkday(id: wdUUID, projectId: proj.projectId, title: "Ngày E2E", date: "2026-11-09")
+
+            let covRec = CoverageLedgerRecord(
+                projectId: proj.projectId,
+                sourceRevisionId: srcRevUUID,
+                runtimeProfileId: rpcRes.coverageLedger.runtimeProfileId,
+                inputFingerprint: rpcRes.coverageLedger.inputFingerprint,
+                totalDeclaredFrames: rpcRes.coverageLedger.totalDeclaredSourceFrames,
+                validDecodedFrameCount: rpcRes.coverageLedger.validDecodedFrameIds.count,
+                corruptedDecodeFrameIds: rpcRes.coverageLedger.corruptedDecodeFrameIds,
+                uniqueProcessedFrameIds: rpcRes.coverageLedger.uniquePostProcessorFrameIds,
+                totalSubmittedWithOverlap: rpcRes.coverageLedger.totalSubmittedFramesWithOverlap,
+                completedWindows: 0,
+                totalWindows: 1,
+                detailedPassStatus: rpcRes.coverageLedger.detailedPassStatus
+            )
+            try await store.saveCoverageRecord(covRec)
+            let loadedCovs = try await store.listCoverageRecords(projectId: proj.projectId)
+
+            for rDto in rpcRes.reviewItems {
+                let rec = try TargetedReviewRecord(
+                    projectId: proj.projectId,
+                    workdayId: wdUUID,
+                    evidenceScopeRevisionId: rDto.evidenceScopeRevisionId,
+                    evidenceKind: ReviewEvidenceKind(rawValue: rDto.evidenceKind) ?? .briefSpan,
+                    isCritical: rDto.isCritical,
+                    questionText: rDto.questionText
+                )
+                try await store.saveReviewItem(rec)
+            }
+            let loadedReviews = try await store.listReviewItems(workdayId: wdUUID)
+            await store.close()
+
+            // Since visual model is not installed, status MUST be blocked_model_unavailable with 0% coverage & 0 fake observations,
+            // while brief decomposition creates real targeted review items persisted in SQLite!
+            let ok = rpcRes.coverageLedger.detailedPassStatus == "blocked_model_unavailable"
+                && rpcRes.coverageLedger.frameInputCoverage == 0.0
+                && rpcRes.rawObservationsCount == 0
+                && rpcRes.coverageLedger.totalDeclaredSourceFrames == 24
+                && loadedCovs.count == 1
+                && loadedCovs[0].detailedPassStatus == "blocked_model_unavailable"
+                && loadedReviews.count >= 2
+            record(
+                "S12_S14_SWIFT_E2E_WORKER_RPC_TO_SQLITE",
+                "AI-01/AI-03/AI-09",
+                ok,
+                "E2E video -> g2.analyze_source -> blocked_model_unavailable (0% coverage, 0 fake obs) & \(loadedReviews.count) review items persisted in SQLite"
+            )
+        } catch {
+            record("S12_S14_SWIFT_E2E_WORKER_RPC_TO_SQLITE", "AI-01/AI-03/AI-09", false, "Error: \(error)")
+        }
+
         // Write JSONL evidence
         if let outPath = ProcessInfo.processInfo.environment["TEST_RECORDS_OUT"] {
             var lines: [String] = []

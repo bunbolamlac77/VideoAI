@@ -505,6 +505,156 @@ def compute_canonical_audio_mapping(
     )
 
 
+@dataclass(frozen=True)
+class ProxyArtifactMapping:
+    """
+    S10.3: Proxy video artifact and deterministic frame/PTS/hash mapping between source and proxy.
+    Proxy is used strictly for responsive UI scrubbing/preview and never replaces source PTS for final cuts.
+    """
+
+    source_revision_id: str
+    source_path: str
+    source_sha256: str
+    proxy_path: str
+    proxy_sha256: str
+    proxy_width: int
+    proxy_height: int
+    proxy_fps_num: int
+    proxy_fps_den: int
+    audio_sample_rate_hz: int
+    color_transform_revision: str
+    conform_map: VFRToCFRConformMap
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "source_revision_id": self.source_revision_id,
+            "source_path": self.source_path,
+            "source_sha256": self.source_sha256,
+            "proxy_path": self.proxy_path,
+            "proxy_sha256": self.proxy_sha256,
+            "proxy_width": self.proxy_width,
+            "proxy_height": self.proxy_height,
+            "proxy_fps": f"{self.proxy_fps_num}/{self.proxy_fps_den}",
+            "audio_sample_rate_hz": self.audio_sample_rate_hz,
+            "color_transform_revision": self.color_transform_revision,
+            "conform_map": self.conform_map.to_dict(),
+        }
+
+
+def _compute_file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def generate_proxy_and_mapping(
+    source_video_path: str | Path,
+    proxy_output_path: str | Path,
+    source_revision_id: str = "rev-source-001",
+    target_height: int = 540,
+    critical_evidence_frame_ids: Optional[Sequence[int]] = None,
+) -> ProxyArtifactMapping:
+    """
+    S10.3: Generates a real CFR 24/1 SDR Rec.709 proxy video + 48 kHz audio (if audio present)
+    atomically via ffmpeg, computes SHA-256 of both source and proxy, and builds the exact
+    VFRToCFRConformMap linking every proxy/timeline frame back to (source_frame_id, source_pts).
+    """
+    src_path = Path(source_video_path).resolve()
+    out_path = Path(proxy_output_path).resolve()
+    if not src_path.is_file():
+        raise MediaMappingError(f"Source video does not exist: {src_path}")
+
+    probed = probe_and_index_real_video(src_path)
+    color_dec = probed["color_decision"]
+    if color_dec["status"] == "unsupported_needs_decision":
+        raise MediaMappingError(
+            f"Cannot generate proxy for source with unverified color metadata: {color_dec['reason']}"
+        )
+
+    crit_set = set(int(x) for x in (critical_evidence_frame_ids or []))
+    pts_entries: List[SourceFrameEntry] = []
+    for item in probed["pts_index"]:
+        fid = int(item["frame_id"])
+        pts_entries.append(
+            SourceFrameEntry(
+                frame_id=fid,
+                pts=int(item["pts"]),
+                duration_pts=int(item["duration_pts"]),
+                time_base_num=int(item["time_base_num"]),
+                time_base_den=int(item["time_base_den"]),
+                key_frame=bool(item.get("key_frame", False)),
+                has_critical_evidence=(fid in crit_set) or bool(item.get("has_critical_evidence", False)),
+                evidence_tag=item.get("evidence_tag"),
+            )
+        )
+
+    total_dur_sec = pts_entries[-1].end_sec - pts_entries[0].start_sec
+    timeline_frames = max(1, int(total_dur_sec * TIMELINE_FPS))
+    conform_map = build_vfr_to_cfr24_map(
+        pts_index=pts_entries,
+        source_revision_id=source_revision_id,
+        source_start_sec=pts_entries[0].start_sec,
+        timeline_frame_count=timeline_frames,
+        rotation_degrees=int(probed["rotation_degrees"]),
+        enforce_critical_evidence_preservation=True,
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    staging_path = out_path.with_suffix(".staging.mp4")
+
+    src_w = max(16, int(probed["width"]))
+    src_h = max(16, int(probed["height"]))
+    proxy_h = max(16, (target_height // 2) * 2)
+    proxy_w = max(16, (int(round(src_w * (proxy_h / float(src_h)))) // 2) * 2)
+
+    vf_chain = f"fps=24/1,scale={proxy_w}:{proxy_h},format=yuv420p"
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(src_path),
+        "-vf",
+        vf_chain,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-crf",
+        "28",
+        "-ar",
+        str(CANONICAL_AUDIO_SAMPLE_RATE),
+        "-ac",
+        "2",
+        "-c:a",
+        "aac",
+        str(staging_path),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+    if res.returncode != 0 or not staging_path.is_file() or staging_path.stat().st_size == 0:
+        if staging_path.exists():
+            staging_path.unlink(missing_ok=True)
+        raise MediaMappingError(f"Proxy generation failed: {res.stderr.strip()}")
+
+    os.replace(staging_path, out_path)
+
+    return ProxyArtifactMapping(
+        source_revision_id=source_revision_id,
+        source_path=str(src_path),
+        source_sha256=_compute_file_sha256(src_path),
+        proxy_path=str(out_path),
+        proxy_sha256=_compute_file_sha256(out_path),
+        proxy_width=proxy_w,
+        proxy_height=proxy_h,
+        proxy_fps_num=24,
+        proxy_fps_den=1,
+        audio_sample_rate_hz=CANONICAL_AUDIO_SAMPLE_RATE,
+        color_transform_revision=str(color_dec.get("color_transform_revision") or "COLOR-SDR-REC709-v1"),
+        conform_map=conform_map,
+    )
+
+
 def probe_and_index_real_video(video_path: str | Path) -> Dict[str, Any]:
     """
     S10.1 & S10.T1: Runs real ffprobe packet/frame inspection on a video file to extract presentation-order
