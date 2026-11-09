@@ -13,7 +13,7 @@
 |---|---|---|---|---|
 | **G0** | Nền tảng chạy thật | S00 – S03 | 🟢 **DONE (Đóng Gate G0: S00–S03 PASS 100%, bao gồm S02.T1/T2 có bằng chứng)** | Build `.app` arm64, worker thật, file sandbox/bookmark, model local, offline, Resolve spike |
 | **G1** | Dữ liệu và phục hồi | S04 – S09 | 🟢 **DONE (Đóng Gate G1: Hoàn thành 100% S04 – S09, đạt toàn bộ tiêu chí dữ liệu, publication và phục hồi)** | Single-writer `ProjectStore`, snapshot bất biến, publication state machine, crash recovery |
-| **G2** | Phân tích và bằng chứng | S10 – S15 | ⚪ Chưa bắt đầu | Media mapping, full-frame coverage, claim verifier, corpus benchmark |
+| **G2** | Phân tích và bằng chứng | S10 – S15 | 🟡 **IN_PROGRESS (Tiến hành Gate G2: S10 & S11 DONE, chuẩn bị S12 Full-Frame Pipeline)** | Media mapping, full-frame coverage, claim verifier, corpus benchmark |
 | **G3** | Kịch bản dựng được | S16 – S19 | ⚪ Chưa bắt đầu | Outline hợp lệ, TTS thật, beam search shot selection, script approval snapshot |
 | **G4** | Preview được duyệt | S20 – S21 | ⚪ Chưa bắt đầu | Managed timeline Resolve, QC preview tự động, preview approval |
 | **G5** | Final và phát hành | S22 – S26 | ⚪ Chưa bắt đầu | Final QC 2160x3840 24fps, nghiệm thu E0/E1, fault-injection, đóng gói release |
@@ -49,10 +49,10 @@
   *Biên bản:* [`reports/progress/S09.md`](reports/progress/S09.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Online SQLite Backup API trong write barrier, checkpoint vs portable backup, restore sang thư mục mới, safe migration và đóng Gate G1, 3/3 test PASS)
 
 ### G2 — Phân tích và bằng chứng
-- [ ] **S10** — Media indexer, VFR frame mapping, tạo proxy và profile màu SDR Rec.709.  
-  *Biên bản:* [`reports/progress/S10.md`](reports/progress/S10.md) · *Trạng thái:* `NOT_STARTED`
-- [ ] **S11** — Model adapters (Qwen-VL, Whisper, VieNeu-TTS, DINOv2) và setup offline local.  
-  *Biên bản:* [`reports/progress/S11.md`](reports/progress/S11.md) · *Trạng thái:* `NOT_STARTED`
+- [x] **S10** — Media indexer, VFR frame mapping, tạo proxy và profile màu SDR Rec.709.  
+  *Biên bản:* [`reports/progress/S10.md`](reports/progress/S10.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Rational PTS indexer, ánh xạ VFR→CFR 24/1 `M-24-SDR-v1`, chặn mất frame bằng chứng ngắn, audio 48 kHz & màu SDR Rec.709/HDR Mobius, 100% PASS)
+- [x] **S11** — Model adapters (Qwen-VL, Whisper, VieNeu-TTS, DINOv2) và setup offline local.  
+  *Biên bản:* [`reports/progress/S11.md`](reports/progress/S11.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Offline preflight 5 adapters E0, Post-Processor frame truncation audit, khóa chính sách RAM 16 GB chặn 32B, Capability Registry & xác thực JSON tiếng Việt/TTS 1.0x, 100% PASS)
 - [ ] **S12** — Pipeline phân tích toàn frame (full-frame baseline), checkpointing và theo dõi độ phủ thực.  
   *Biên bản:* [`reports/progress/S12.md`](reports/progress/S12.md) · *Trạng thái:* `NOT_STARTED`
 - [ ] **S13** — Xử lý brief/facts, trích xuất claims, xây dựng event graph và verifier độc lập.  

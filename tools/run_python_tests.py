@@ -25,6 +25,10 @@ def requirement_id(test_id: str) -> str:
         return "DATA-04"
     if "test_model_setup" in test_id:
         return "OFF-01"
+    if "test_s10_media_indexer" in test_id:
+        return "MEDIA-01"
+    if "test_s11_model_adapters" in test_id:
+        return "AI-01"
     return "JOB-04"
 
 

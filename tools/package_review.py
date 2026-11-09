@@ -299,6 +299,12 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
         r.setdefault("test_type", "automated")
         records.append(r)
 
+    # 9. Load Swift G2 S10 & S11 records
+    swift_s10_s11_records = load_jsonl_records("swift_s10_s11_records.jsonl")
+    for r in swift_s10_s11_records:
+        r.setdefault("test_type", "automated")
+        records.append(r)
+
     # If no records were produced (e.g. build failure), record runner error
     if not records:
         records.append({
@@ -435,6 +441,8 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
     s07_failed = any("S07" in r.get("testcase_id", "") and r.get("status") == "FAIL" for r in test_records)
     s08_failed = any("S08" in r.get("testcase_id", "") and r.get("status") == "FAIL" for r in test_records)
     s09_failed = any("S09" in r.get("testcase_id", "") and r.get("status") == "FAIL" for r in test_records)
+    s10_failed = any(("S10" in r.get("testcase_id", "") or "test_s10" in r.get("testcase_id", "")) and r.get("status") == "FAIL" for r in test_records)
+    s11_failed = any(("S11" in r.get("testcase_id", "") or "test_s11" in r.get("testcase_id", "")) and r.get("status") == "FAIL" for r in test_records)
 
     s02_status = "FAIL" if s02_failed else ("DONE" if not_run_count == 0 else "IN_REVIEW")
     s03_status = "BLOCKED" if blocked_count > 0 else ("FAIL" if s03_failed else "DONE")
@@ -444,6 +452,8 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
     s07_status = "FAIL" if s07_failed else "DONE"
     s08_status = "FAIL" if s08_failed else "DONE"
     s09_status = "FAIL" if s09_failed else "DONE"
+    s10_status = "FAIL" if s10_failed else "DONE"
+    s11_status = "FAIL" if s11_failed else "DONE"
 
     if fail_count == 0 and blocked_count == 0 and not_run_count == 0 and pass_count > 0:
         g0_status_badge = "🟢 **DONE (Đã đóng Gate G0: Đạt 100% tất cả các tiêu chí nghiệm thu G0)**"
@@ -455,9 +465,14 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
     else:
         g1_status_badge = "🟢 **DONE (Đóng Gate G1: Hoàn thành 100% S04 – S09, đạt toàn bộ tiêu chí dữ liệu và phục hồi)**"
 
+    if any(st == "FAIL" for st in (s10_status, s11_status)):
+        g2_status_badge = "🔴 **FAIL (Có lỗi kiểm thử trong Gate G2)**"
+    else:
+        g2_status_badge = "🟡 **IN_PROGRESS (Mở Gate G2: S10 & S11 DONE, chuẩn bị S12 Full-Frame Pipeline)**"
+
     summary = f"""# AIVideo v3.1 — Hồ Sơ Thẩm Định Mã Nguồn (Review Bundle)
 
-> **Mục đích:** Bàn giao mã nguồn cho ChatGPT hoặc kiểm định viên độc lập sau khi nghiệm thu toàn diện Gate G0 và đóng hoàn chỉnh Gate G1 (S04 – S09).  
+> **Mục đích:** Bàn giao mã nguồn cho ChatGPT hoặc kiểm định viên độc lập sau khi đóng hoàn chỉnh Gate G0, Gate G1 (S04 – S09) và hoàn thành S10, S11 thuộc Gate G2.  
 > **Thời điểm đóng gói:** {timestamp}  
 > **Kho lưu trữ Git:** {git_info['remote_url']}  
 > **Nhánh:** `{git_info['branch']}` · **Commit Hash:** `{git_info['commit_hash']}`  
@@ -474,7 +489,6 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
   - **S01:** Khảo sát phần cứng M1 Pro 16 GB, macOS, Swift 6, Python 3.12, Resolve 21.2. Trạng thái: `DONE`.
   - **S02:** App native arm64, Worker IPC JSON-RPC 2.0 stdio, continuous stderr draining, 1 MiB framing limit, real local forward-pass inference với weights SHA-256 (technical fixture), đầy đủ bằng chứng Finder launch và Security-Scoped Bookmark lifecycle. Trạng thái: `{s02_status}`.
   - **S03:** DaVinci Resolve Scripting Adapter, kiểm tra 2160x3840 @ 24fps, timeline đúng 240 frames, tiêu đề trên Track 2, atomic DRP export, bắt lỗi disconnect không crash. Trạng thái: `{s03_status}`.
-- **Model Pipeline Sản Phẩm (S11: Qwen-VL, Whisper, VieNeu-TTS, DINOv2):** ⚪ **NOT_INSTALLED (Chưa cài đặt, không dùng smoke test fixture để đóng điều kiện LLM sản phẩm)**.
 - **Gate G1 (Dữ liệu và phục hồi):** {g1_status_badge}.
   - **S04:** Hợp đồng dữ liệu JSON Schema (5 trục bằng chứng, chu trình artifact 4 bước, RPC envelope nghiêm ngặt), SQLite WAL DDL hỗ trợ revision immutability, song ngữ Swift/Python với bi-directional golden tests. Trạng thái: `{s04_status}`.
   - **S05:** Import nguồn, băm SHA-256 nội dung và snapshot nguồn niêm phong trên APFS. Trạng thái: `{s05_status}`.
@@ -482,7 +496,11 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
   - **S07:** Resource Governor, Task Scheduler, Fencing tokens và thu hồi quyền publish của attempt trễ. Trạng thái: `{s07_status}`.
   - **S08:** Chu trình công bố artifact (`PREPARED` → `MATERIALIZED` → `VERIFIED` → `COMMITTED`), fault hooks 5 ranh giới và Startup Reconciler. Trạng thái: `{s08_status}`.
   - **S09:** Cơ chế Online SQLite Backup (`checkpoint_backup` & `portable_backup`), Restore sang thư mục mới, Schema Migration và đóng Gate G1. Trạng thái: `{s09_status}`.
-- **Gate G2 – G5:** ⚪ **Chưa bắt đầu**.
+- **Gate G2 (Phân tích và bằng chứng):** {g2_status_badge}.
+  - **S10:** Chỉ mục PTS theo presentation order, ánh xạ hữu tỉ VFR→CFR 24/1 (`M-24-SDR-v1`), bảo vệ frame bằng chứng ngắn (flash), audio canonical 48 kHz và chính sách màu SDR Rec.709 / HDR Mobius tone-map. Trạng thái: `{s10_status}`.
+  - **S11:** Model adapters (`Qwen3-VL-4B`, `Qwen3-8B`, `Whisper-large-v3`, `VieNeu-TTS-v3-Turbo`, `DINOv2-base`), kiểm toán độ phủ frame thực sau processor (`PostProcessorFrameAudit`), khóa chính sách RAM 16 GB (chặn model 32B) và capability registry (`contracts/s11_model_registry.lock.json`). Trạng thái: `{s11_status}`.
+  - **S12 – S15:** Trạng thái: `NOT_STARTED`.
+- **Gate G3 – G5:** ⚪ **Chưa bắt đầu**.
 
 ---
 

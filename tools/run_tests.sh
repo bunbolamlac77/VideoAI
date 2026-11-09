@@ -127,7 +127,7 @@ swiftc -sdk "$SDK_PATH" \
 
 ./build/tests/test_s08_publication_reconciler
 
-echo "=== [9/9] Running Swift Gate G1 S09 Backup, Restore & Migration Unit Tests ==="
+echo "=== [9/10] Running Swift Gate G1 S09 Backup, Restore & Migration Unit Tests ==="
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
@@ -140,5 +140,17 @@ swiftc -sdk "$SDK_PATH" \
   -o build/tests/test_s09_backup_restore_migration
 
 ./build/tests/test_s09_backup_restore_migration
+
+echo "=== [10/10] Running Swift Gate G2 S10 Media Indexer & S11 Model Adapter Unit Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Media/MediaIndexer.swift \
+  packages/AIVideoCore/Sources/Adapters/ModelAdapterContracts.swift \
+  tests/test_s10_s11_g2_foundations.swift \
+  -o build/tests/test_s10_s11_g2_foundations
+
+./build/tests/test_s10_s11_g2_foundations
 
 echo "=== ALL REGRESSION TEST SUITES EXECUTED SUCCESSFULLY ==="

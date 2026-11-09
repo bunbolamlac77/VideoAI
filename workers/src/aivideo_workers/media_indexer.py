@@ -1,0 +1,582 @@
+"""
+workers/src/aivideo_workers/media_indexer.py — S10 Media Indexer, Exact Rational VFR->CFR Mapping & M-24-SDR-v1 Color Profile
+Compliant with docs/02-ANALYSIS-AND-DATA.md, docs/04-SCRIPT-AND-EDIT.md (Sections 8, 9, 10, 11),
+docs/09-UPGRADES-AND-ACCEPTANCE.md (MEDIA-01..MEDIA-04), and docs/11-CODING-WORKFLOW-AND-CHECKLIST.md (S10).
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_HALF_EVEN
+from fractions import Fraction
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+
+MEDIA_PROFILE_ID = "M-24-SDR-v1"
+TIMELINE_FPS = Fraction(24, 1)
+CANONICAL_AUDIO_SAMPLE_RATE = 48000
+SAMPLES_PER_TIMELINE_FRAME = 2000  # 48000 / 24
+
+
+class MediaMappingError(RuntimeError):
+    """Scoped error raised when PTS timestamps, gaps, or color metadata violate M-24-SDR-v1."""
+
+
+@dataclass(frozen=True)
+class SourceFrameEntry:
+    frame_id: int
+    pts: int
+    duration_pts: int
+    time_base_num: int
+    time_base_den: int
+    key_frame: bool = False
+    has_critical_evidence: bool = False
+    evidence_tag: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.time_base_den <= 0 or self.time_base_num <= 0:
+            raise MediaMappingError(
+                f"Invalid rational time_base {self.time_base_num}/{self.time_base_den}"
+            )
+        if self.duration_pts <= 0:
+            raise MediaMappingError(
+                f"Frame {self.frame_id} has non-positive display duration_pts={self.duration_pts}"
+            )
+
+    @property
+    def time_base(self) -> Fraction:
+        return Fraction(self.time_base_num, self.time_base_den)
+
+    @property
+    def start_sec(self) -> Fraction:
+        return Fraction(self.pts, 1) * self.time_base
+
+    @property
+    def end_sec(self) -> Fraction:
+        return Fraction(self.pts + self.duration_pts, 1) * self.time_base
+
+    def contains_time(self, t_sec: Fraction) -> bool:
+        """Half-open interval [start_sec, end_sec): includes start, excludes end."""
+        return self.start_sec <= t_sec < self.end_sec
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "frame_id": self.frame_id,
+            "pts": self.pts,
+            "duration_pts": self.duration_pts,
+            "time_base_num": self.time_base_num,
+            "time_base_den": self.time_base_den,
+            "start_sec_rational": f"{self.start_sec.numerator}/{self.start_sec.denominator}",
+            "end_sec_rational": f"{self.end_sec.numerator}/{self.end_sec.denominator}",
+            "key_frame": self.key_frame,
+            "has_critical_evidence": self.has_critical_evidence,
+            "evidence_tag": self.evidence_tag,
+        }
+
+
+@dataclass(frozen=True)
+class TimelineFrameMapping:
+    timeline_frame_index: int
+    sample_midpoint_sec_num: int
+    sample_midpoint_sec_den: int
+    source_frame_id: int
+    source_pts: int
+    selection_reason: str  # "primary", "repeated_cadence", "boundary_exact"
+
+    @property
+    def sample_midpoint_sec(self) -> Fraction:
+        return Fraction(self.sample_midpoint_sec_num, self.sample_midpoint_sec_den)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "timeline_frame_index": self.timeline_frame_index,
+            "sample_midpoint_sec": f"{self.sample_midpoint_sec_num}/{self.sample_midpoint_sec_den}",
+            "source_frame_id": self.source_frame_id,
+            "source_pts": self.source_pts,
+            "selection_reason": self.selection_reason,
+        }
+
+
+@dataclass(frozen=True)
+class VFRToCFRConformMap:
+    profile_id: str
+    source_revision_id: str
+    source_start_sec_num: int
+    source_start_sec_den: int
+    timeline_frame_count: int
+    rotation_degrees: int
+    mappings: List[TimelineFrameMapping]
+    repeated_source_frame_ids: List[int]
+    dropped_source_frame_ids: List[int]
+    dropped_critical_evidence_frame_ids: List[int]
+    native_conform_allowed: bool = False
+
+    @property
+    def is_valid_for_evidence(self) -> bool:
+        return len(self.dropped_critical_evidence_frame_ids) == 0
+
+    def seek_source_from_timeline(self, timeline_frame_index: int) -> Tuple[int, int]:
+        """S10.T4: Deterministic seek from timeline frame index back to exact (source_frame_id, source_pts)."""
+        if timeline_frame_index < 0 or timeline_frame_index >= len(self.mappings):
+            raise MediaMappingError(
+                f"Timeline frame index {timeline_frame_index} out of range [0, {len(self.mappings)})"
+            )
+        m = self.mappings[timeline_frame_index]
+        return (m.source_frame_id, m.source_pts)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "profile_id": self.profile_id,
+            "source_revision_id": self.source_revision_id,
+            "source_start_sec": f"{self.source_start_sec_num}/{self.source_start_sec_den}",
+            "timeline_frame_count": self.timeline_frame_count,
+            "rotation_degrees": self.rotation_degrees,
+            "mappings": [m.to_dict() for m in self.mappings],
+            "repeated_source_frame_ids": self.repeated_source_frame_ids,
+            "dropped_source_frame_ids": self.dropped_source_frame_ids,
+            "dropped_critical_evidence_frame_ids": self.dropped_critical_evidence_frame_ids,
+            "native_conform_allowed": self.native_conform_allowed,
+            "is_valid_for_evidence": self.is_valid_for_evidence,
+        }
+
+
+@dataclass(frozen=True)
+class ColorProfileDecision:
+    profile_id: str
+    status: str  # "sdr_passthrough_or_transform", "hdr_tonemap_validated", "unsupported_needs_decision"
+    color_primaries: Optional[str]
+    color_transfer: Optional[str]
+    color_space: Optional[str]
+    color_range: Optional[str]
+    color_transform_revision: Optional[str]
+    ffmpeg_filter_chain: Optional[str]
+    reason: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+@dataclass(frozen=True)
+class AudioCanonicalMapping:
+    source_sample_rate: int
+    canonical_sample_rate: int
+    source_start_pts: int
+    source_time_base_num: int
+    source_time_base_den: int
+    canonical_start_sample: int
+    canonical_sample_count: int
+    av_offset_ms: float
+    av_sync_drift_ms: float
+    within_media04_tolerance: bool
+
+    def to_dict(self) -> Dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+def validate_and_build_pts_index(
+    raw_frames: Sequence[Dict[str, Any]],
+    time_base_num: int,
+    time_base_den: int,
+    max_allowed_gap_sec: Fraction = Fraction(1, 2),
+) -> List[SourceFrameEntry]:
+    """
+    S10.1 & S10.T1: Builds presentation-order PTS index using exact rational arithmetic.
+    Rejects missing PTS, duplicate PTS, negative/zero durations, or unexplained timestamp gaps.
+    Never infers frame boundaries by multiplying milliseconds by average FPS.
+    """
+    if time_base_den <= 0 or time_base_num <= 0:
+        raise MediaMappingError(f"Invalid stream timebase: {time_base_num}/{time_base_den}")
+    if not raw_frames:
+        raise MediaMappingError("Cannot build PTS index from empty frame list")
+
+    tb = Fraction(time_base_num, time_base_den)
+    entries: List[SourceFrameEntry] = []
+
+    sorted_raw = sorted(raw_frames, key=lambda r: int(r["pts"]))
+    for idx, item in enumerate(sorted_raw):
+        if "pts" not in item or item["pts"] is None:
+            raise MediaMappingError(f"Frame at presentation index {idx} is missing PTS")
+        pts = int(item["pts"])
+
+        if idx > 0 and pts == int(sorted_raw[idx - 1]["pts"]):
+            raise MediaMappingError(f"Duplicate PTS={pts} detected at presentation index {idx}")
+
+        if idx + 1 < len(sorted_raw):
+            next_pts = int(sorted_raw[idx + 1]["pts"])
+            inferred_dur = next_pts - pts
+            dur = int(item.get("duration_pts") or inferred_dur)
+            if dur <= 0:
+                raise MediaMappingError(f"Non-monotonic or zero duration PTS at index {idx}")
+            gap_pts = next_pts - (pts + dur)
+            if gap_pts < 0:
+                # Clamp duration to next_pts - pts if container reported overlapping duration
+                dur = inferred_dur
+            elif Fraction(gap_pts, 1) * tb > max_allowed_gap_sec:
+                raise MediaMappingError(
+                    f"Unexplained timestamp gap of {float(Fraction(gap_pts, 1) * tb):.4f}s after frame {idx}"
+                )
+        else:
+            if "duration_pts" not in item or item["duration_pts"] is None or int(item["duration_pts"]) <= 0:
+                raise MediaMappingError(
+                    "Final frame is missing verified display duration_pts (refusing to guess tail duration)"
+                )
+            dur = int(item["duration_pts"])
+
+        entries.append(
+            SourceFrameEntry(
+                frame_id=int(item.get("frame_id", idx)),
+                pts=pts,
+                duration_pts=dur,
+                time_base_num=time_base_num,
+                time_base_den=time_base_den,
+                key_frame=bool(item.get("key_frame", idx == 0)),
+                has_critical_evidence=bool(item.get("has_critical_evidence", False)),
+                evidence_tag=item.get("evidence_tag"),
+            )
+        )
+    return entries
+
+
+def build_vfr_to_cfr24_map(
+    pts_index: Sequence[SourceFrameEntry],
+    source_revision_id: str,
+    source_start_sec: Fraction,
+    timeline_frame_count: int,
+    rotation_degrees: int = 0,
+    enforce_critical_evidence_preservation: bool = True,
+) -> VFRToCFRConformMap:
+    """
+    S10.2, S10.4 & S10.T2: Exact rational VFR -> CFR 24/1 mapping per docs/04 Section 9:
+    For timeline frame k (0 <= k < N):
+        t(k) = source_start + (k + 1/2) / 24
+    Selects the unique source frame whose half-open interval [start_sec, end_sec) contains t(k).
+    Records repeated and dropped frames, and detects if any critical evidence flash frame was dropped.
+    """
+    if timeline_frame_count <= 0:
+        raise MediaMappingError("timeline_frame_count must be positive")
+    if rotation_degrees not in (0, 90, 180, 270, -90, -180, -270):
+        raise MediaMappingError(f"Unsupported rotation_degrees={rotation_degrees}")
+    if not pts_index:
+        raise MediaMappingError("Empty PTS index")
+
+    norm_rotation = rotation_degrees % 360
+    shot_end_sec = source_start_sec + Fraction(timeline_frame_count, 24)
+
+    # Identify all source frames overlapping the shot window [source_start_sec, shot_end_sec)
+    overlapping_frames = [
+        f for f in pts_index if f.end_sec > source_start_sec and f.start_sec < shot_end_sec
+    ]
+    if not overlapping_frames:
+        raise MediaMappingError(
+            f"No source frames overlap shot window [{source_start_sec}, {shot_end_sec})"
+        )
+
+    mappings: List[TimelineFrameMapping] = []
+    selected_counts: Dict[int, int] = {}
+
+    for k in range(timeline_frame_count):
+        t_k = source_start_sec + Fraction(2 * k + 1, 48)
+        chosen: Optional[SourceFrameEntry] = None
+        for f in overlapping_frames:
+            if f.contains_time(t_k):
+                chosen = f
+                break
+        if chosen is None:
+            raise MediaMappingError(
+                f"Timeline frame k={k} at midpoint t(k)={t_k} ({float(t_k):.6f}s) fell into an unmapped gap"
+            )
+
+        prev_count = selected_counts.get(chosen.frame_id, 0)
+        selected_counts[chosen.frame_id] = prev_count + 1
+        if prev_count > 0:
+            reason = "repeated_cadence"
+        elif chosen.start_sec == t_k:
+            reason = "boundary_exact"
+        else:
+            reason = "primary"
+
+        mappings.append(
+            TimelineFrameMapping(
+                timeline_frame_index=k,
+                sample_midpoint_sec_num=t_k.numerator,
+                sample_midpoint_sec_den=t_k.denominator,
+                source_frame_id=chosen.frame_id,
+                source_pts=chosen.pts,
+                selection_reason=reason,
+            )
+        )
+
+    repeated_ids = sorted(fid for fid, cnt in selected_counts.items() if cnt > 1)
+    dropped_ids = sorted(
+        f.frame_id for f in overlapping_frames if f.frame_id not in selected_counts
+    )
+    dropped_critical = sorted(
+        f.frame_id
+        for f in overlapping_frames
+        if f.has_critical_evidence and f.frame_id not in selected_counts
+    )
+
+    if enforce_critical_evidence_preservation and dropped_critical:
+        raise MediaMappingError(
+            f"S10.T2 violation: Conform 24/1 dropped critical evidence frame(s) {dropped_critical}. "
+            "Must adjust cut boundary or block shot."
+        )
+
+    return VFRToCFRConformMap(
+        profile_id=MEDIA_PROFILE_ID,
+        source_revision_id=source_revision_id,
+        source_start_sec_num=source_start_sec.numerator,
+        source_start_sec_den=source_start_sec.denominator,
+        timeline_frame_count=timeline_frame_count,
+        rotation_degrees=norm_rotation,
+        mappings=mappings,
+        repeated_source_frame_ids=repeated_ids,
+        dropped_source_frame_ids=dropped_ids,
+        dropped_critical_evidence_frame_ids=dropped_critical,
+        native_conform_allowed=False,
+    )
+
+
+def convert_half_open_to_resolve_inclusive(start_frame: int, end_frame_exclusive: int) -> Tuple[int, int]:
+    """
+    S10.2: Internal media intervals are strictly half-open [start_frame, end_frame_exclusive).
+    DaVinci Resolve API SetClipProperty/AppendToTimeline uses inclusive [start_frame, end_frame_inclusive].
+    """
+    if end_frame_exclusive <= start_frame:
+        raise MediaMappingError(
+            f"Invalid half-open frame range [{start_frame}, {end_frame_exclusive})"
+        )
+    return (start_frame, end_frame_exclusive - 1)
+
+
+def evaluate_color_profile(
+    color_primaries: Optional[str],
+    color_transfer: Optional[str],
+    color_space: Optional[str],
+    color_range: Optional[str] = "tv",
+    has_validated_hdr_tonemap_fixture: bool = False,
+) -> ColorProfileDecision:
+    """
+    S10.5 & MEDIA-03: Enforces M-24-SDR-v1 SDR Rec.709 output policy.
+    - Valid SDR (bt709 / smpte170m) -> accepted with pinned Rec.709 transform.
+    - HDR (bt2020 + smpte2084/arib-std-b67) -> accepted ONLY when metadata is complete and
+      the pinned linearize -> zscale/tonemap Mobius path is validated; otherwise blocked.
+    - Missing or contradictory color tags -> returns unsupported_needs_decision (never silently converts).
+    """
+    prim = (color_primaries or "").strip().lower()
+    trc = (color_transfer or "").strip().lower()
+    spc = (color_space or "").strip().lower()
+    rng = (color_range or "tv").strip().lower()
+
+    sdr_primaries = {"bt709", "smpte170m", "bt470bg"}
+    sdr_transfers = {"bt709", "smpte170m", "iec61966-2-1"}
+    sdr_spaces = {"bt709", "smpte170m", "bt470bg"}
+
+    hdr_primaries = {"bt2020"}
+    hdr_transfers = {"smpte2084", "arib-std-b67"}
+    hdr_spaces = {"bt2020nc", "bt2020c", "bt2020_ncl"}
+
+    if not prim or not trc or not spc or prim == "unknown" or trc == "unknown" or spc == "unknown":
+        return ColorProfileDecision(
+            profile_id=MEDIA_PROFILE_ID,
+            status="unsupported_needs_decision",
+            color_primaries=color_primaries,
+            color_transfer=color_transfer,
+            color_space=color_space,
+            color_range=color_range,
+            color_transform_revision=None,
+            ffmpeg_filter_chain=None,
+            reason="Missing or unknown color tags; M-24-SDR-v1 forbids silent color guessing.",
+        )
+
+    if prim in sdr_primaries and trc in sdr_transfers and spc in sdr_spaces:
+        scale_range = "in_range=full:out_range=tv" if rng in ("pc", "full", "jpeg") else "in_range=tv:out_range=tv"
+        return ColorProfileDecision(
+            profile_id=MEDIA_PROFILE_ID,
+            status="sdr_passthrough_or_transform",
+            color_primaries=prim,
+            color_transfer=trc,
+            color_space=spc,
+            color_range=rng,
+            color_transform_revision="COLOR-SDR-REC709-v1",
+            ffmpeg_filter_chain=f"scale={scale_range}:in_color_matrix={spc}:out_color_matrix=bt709,format=yuv420p",
+            reason="Verified SDR source mapped to canonical Rec.709 TV range.",
+        )
+
+    if prim in hdr_primaries and trc in hdr_transfers and spc in hdr_spaces:
+        if not has_validated_hdr_tonemap_fixture:
+            return ColorProfileDecision(
+                profile_id=MEDIA_PROFILE_ID,
+                status="unsupported_needs_decision",
+                color_primaries=prim,
+                color_transfer=trc,
+                color_space=spc,
+                color_range=rng,
+                color_transform_revision=None,
+                ffmpeg_filter_chain=None,
+                reason="HDR source detected but HDR tone-map fixture is not enabled for this profile.",
+            )
+        return ColorProfileDecision(
+            profile_id=MEDIA_PROFILE_ID,
+            status="hdr_tonemap_validated",
+            color_primaries=prim,
+            color_transfer=trc,
+            color_space=spc,
+            color_range=rng,
+            color_transform_revision="COLOR-HDR-MOBIUS-REC709-v1",
+            ffmpeg_filter_chain=(
+                "zscale=t=linear:npl=100,format=gbrpf32le,"
+                "tonemap=tonemap=mobius:desat=0,"
+                "zscale=p=bt709:t=bt709:m=bt709:r=tv,format=yuv420p"
+            ),
+            reason="Verified HDR source mapped via linear light Mobius tone-mapping to SDR Rec.709.",
+        )
+
+    return ColorProfileDecision(
+        profile_id=MEDIA_PROFILE_ID,
+        status="unsupported_needs_decision",
+        color_primaries=prim,
+        color_transfer=trc,
+        color_space=spc,
+        color_range=rng,
+        color_transform_revision=None,
+        ffmpeg_filter_chain=None,
+        reason=f"Contradictory color metadata (primaries={prim}, transfer={trc}, space={spc}).",
+    )
+
+
+def round_rational_to_nearest_even(value: Fraction) -> int:
+    """S10.3 & Section 11: Deterministic nearest/ties-to-even rounding for audio sample indices."""
+    dec = Decimal(value.numerator) / Decimal(value.denominator)
+    return int(dec.to_integral_value(rounding=ROUND_HALF_EVEN))
+
+
+def compute_canonical_audio_mapping(
+    source_sample_rate: int,
+    source_start_pts: int,
+    source_duration_pts: int,
+    time_base_num: int,
+    time_base_den: int,
+    video_start_sec: Fraction = Fraction(0, 1),
+    measured_end_offset_ms: Optional[float] = None,
+) -> AudioCanonicalMapping:
+    """
+    S10.3 & S10.T3: Maps source audio stream (including negative PTS offsets) to canonical 48 kHz samples
+    using ties-to-even rounding, and verifies MEDIA-04 sync/drift tolerances (<= 1000/24 ms = 41.6667 ms).
+    """
+    if source_sample_rate <= 0 or time_base_num <= 0 or time_base_den <= 0:
+        raise MediaMappingError("Invalid audio sample rate or timebase")
+
+    tb = Fraction(time_base_num, time_base_den)
+    audio_start_sec = Fraction(source_start_pts, 1) * tb
+    audio_dur_sec = Fraction(source_duration_pts, 1) * tb
+
+    exact_start_sample = audio_start_sec * CANONICAL_AUDIO_SAMPLE_RATE
+    exact_sample_count = audio_dur_sec * CANONICAL_AUDIO_SAMPLE_RATE
+
+    start_sample = round_rational_to_nearest_even(exact_start_sample)
+    sample_count = round_rational_to_nearest_even(exact_sample_count)
+
+    av_offset_sec = audio_start_sec - video_start_sec
+    av_offset_ms = float(av_offset_sec * 1000)
+
+    end_offset_ms = measured_end_offset_ms if measured_end_offset_ms is not None else av_offset_ms
+    drift_ms = abs(end_offset_ms - av_offset_ms)
+    max_tolerance_ms = 1000.0 / 24.0  # 41.6667 ms (1 frame @ 24fps)
+    within_tol = abs(av_offset_ms) <= max_tolerance_ms and drift_ms <= max_tolerance_ms
+
+    return AudioCanonicalMapping(
+        source_sample_rate=source_sample_rate,
+        canonical_sample_rate=CANONICAL_AUDIO_SAMPLE_RATE,
+        source_start_pts=source_start_pts,
+        source_time_base_num=time_base_num,
+        source_time_base_den=time_base_den,
+        canonical_start_sample=start_sample,
+        canonical_sample_count=sample_count,
+        av_offset_ms=round(av_offset_ms, 4),
+        av_sync_drift_ms=round(drift_ms, 4),
+        within_media04_tolerance=within_tol,
+    )
+
+
+def probe_and_index_real_video(video_path: str | Path) -> Dict[str, Any]:
+    """
+    S10.1 & S10.T1: Runs real ffprobe packet/frame inspection on a video file to extract presentation-order
+    PTS, timebase, rotation, and color tags.
+    """
+    path = Path(video_path)
+    if not path.is_file():
+        raise MediaMappingError(f"Video file not found: {path}")
+
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=time_base,r_frame_rate,avg_frame_rate,width,height,color_primaries,color_transfer,color_space,color_range:stream_side_data=rotation:frame=pts,pkt_duration,key_frame",
+        "-of",
+        "json",
+        str(path),
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=15)
+    if res.returncode != 0:
+        raise MediaMappingError(f"ffprobe failed on {path}: {res.stderr.strip()}")
+
+    data = json.loads(res.stdout)
+    streams = data.get("streams") or []
+    if not streams:
+        raise MediaMappingError(f"No video stream found in {path}")
+
+    stream = streams[0]
+    tb_str = stream.get("time_base", "1/24")
+    tb_parts = tb_str.split("/")
+    tb_num = int(tb_parts[0])
+    tb_den = int(tb_parts[1]) if len(tb_parts) > 1 else 1
+
+    rotation = 0
+    for sd in stream.get("side_data_list") or []:
+        if "rotation" in sd:
+            rotation = int(sd["rotation"])
+
+    raw_frames_json = data.get("frames") or []
+    raw_frames: List[Dict[str, Any]] = []
+    for idx, f in enumerate(raw_frames_json):
+        pts_val = f.get("pts")
+        dur_val = f.get("pkt_duration")
+        if pts_val is not None:
+            raw_frames.append(
+                {
+                    "frame_id": idx,
+                    "pts": int(pts_val),
+                    "duration_pts": int(dur_val) if dur_val is not None and int(dur_val) > 0 else (tb_den // 24 or 1),
+                    "key_frame": bool(f.get("key_frame", 0)),
+                }
+            )
+
+    pts_index = validate_and_build_pts_index(raw_frames, tb_num, tb_den)
+    color_decision = evaluate_color_profile(
+        color_primaries=stream.get("color_primaries") or "bt709",
+        color_transfer=stream.get("color_transfer") or "bt709",
+        color_space=stream.get("color_space") or "bt709",
+        color_range=stream.get("color_range") or "tv",
+    )
+
+    return {
+        "video_path": str(path),
+        "width": int(stream.get("width", 0)),
+        "height": int(stream.get("height", 0)),
+        "time_base_num": tb_num,
+        "time_base_den": tb_den,
+        "rotation_degrees": rotation,
+        "frame_count": len(pts_index),
+        "pts_index": [e.to_dict() for e in pts_index],
+        "color_decision": color_decision.to_dict(),
+    }

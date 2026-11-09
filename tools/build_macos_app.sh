@@ -97,6 +97,8 @@ swiftc -sdk "$SDK_PATH" \
   packages/AIVideoCore/Sources/Scheduler/ResourceGovernor.swift \
   packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
   packages/AIVideoCore/Sources/Recovery/BackupRestoreService.swift \
+  packages/AIVideoCore/Sources/Media/MediaIndexer.swift \
+  packages/AIVideoCore/Sources/Adapters/ModelAdapterContracts.swift \
   packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
   apps/macos/Sources/AIVideoApp.swift \
   -o "$TARGET_DIR/AIVideo"

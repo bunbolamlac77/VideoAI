@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0.0",
+  "registry_id": "s11-e0-pipeline-registry-v1",
+  "hardware_target": {
+    "chip": "Apple M1 Pro",
+    "unified_memory_gb": 16,
+    "ban_32b_models": true,
+    "enforce_offline_after_setup": true
+  },
+  "runtime_profiles": {
+    "P-VISION-DEV-v1": {
+      "runtime_profile_id": "P-VISION-DEV-v1",
+      "role": "visual_analysis_primary",
+      "model_id": "mlx-community/Qwen3-VL-4B-Instruct-4bit",
+      "window_frames_candidates": [8, 16, 32],
+      "default_window_frames": 8,
+      "default_overlap_frames": 2,
+      "pixel_budgets": [262144, 589824, 1048576],
+      "default_pixel_budget": 589824,
+      "output_token_budgets": [256, 512, 1024],
+      "default_output_tokens": 512,
+      "require_post_processor_audit": true
+    },
+    "P-STORY-SYNTH-v1": {
+      "runtime_profile_id": "P-STORY-SYNTH-v1",
+      "role": "story_script_synthesis",
+      "model_id": "mlx-community/Qwen3-8B-4bit",
+      "max_input_tokens": 4096,
+      "max_output_tokens": 1024,
+      "require_strict_json_schema": true,
+      "require_vietnamese_diacritics_validation": true
+    },
+    "P-ASR-WHISPER-v1": {
+      "runtime_profile_id": "P-ASR-WHISPER-v1",
+      "role": "asr_vietnamese",
+      "model_id": "ggerganov/whisper.cpp",
+      "artifact_name": "ggml-large-v3.bin",
+      "canonical_sample_rate_hz": 48000,
+      "is_sound_event_detector": false
+    },
+    "P-TTS-VIENEU-v1": {
+      "runtime_profile_id": "P-TTS-VIENEU-v1",
+      "role": "tts_vietnamese",
+      "model_id": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
+      "backend": "onnx_cpu_fp32",
+      "default_speed": 1.0,
+      "canonical_sample_rate_hz": 48000,
+      "forbid_cloud_v4_fallback": true
+    },
+    "P-EMBED-DINOV2-v1": {
+      "runtime_profile_id": "P-EMBED-DINOV2-v1",
+      "role": "shot_photo_candidate_embedding",
+      "model_id": "facebook/dinov2-base",
+      "allow_auto_confirm_same_event": false
+    }
+  },
+  "capabilities": {
+    "visual_action_understanding": {
+      "status": "candidate",
+      "primary_model": "mlx-community/Qwen3-VL-4B-Instruct-4bit",
+      "fallback_when_unvalidated": "keep_observation_insufficient_support_do_not_assert_event"
+    },
+    "vietnamese_ocr": {
+      "status": "candidate",
+      "primary_model": "mlx-community/Qwen3-VL-4B-Instruct-4bit",
+      "fallback_when_unvalidated": "show_clear_source_or_ask_targeted_question_do_not_hallucinate_text"
+    },
+    "sound_event_detection_sed": {
+      "status": "disabled",
+      "primary_model": null,
+      "fallback_when_unvalidated": "preserve_original_field_audio_do_not_label_sound_events_from_whisper"
+    },
+    "vietnamese_phrase_alignment": {
+      "status": "disabled",
+      "primary_model": null,
+      "fallback_when_unvalidated": "use_user_verified_phrase_cues_or_block_subword_caption_export"
+    },
+    "subject_aware_crop_tracker": {
+      "status": "disabled",
+      "primary_model": null,
+      "fallback_when_unvalidated": "use_approved_static_fit_layout_preserving_evidence"
+    },
+    "exact_photo_shutter_match": {
+      "status": "disabled",
+      "primary_model": "facebook/dinov2-base",
+      "fallback_when_unvalidated": "illustrative_only_until_temporal_geometric_gate_passed"
+    }
+  }
+}
