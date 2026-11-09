@@ -77,7 +77,7 @@ swiftc -sdk "$SDK_PATH" \
 
 ./build/tests/test_s02_manual_verification
 
-echo "=== [5/5] Running Swift Gate G1 S04 Contract Unit Tests ==="
+echo "=== [5/6] Running Swift Gate G1 S04 Contract Unit Tests ==="
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
@@ -88,5 +88,17 @@ swiftc -sdk "$SDK_PATH" \
   -o build/tests/test_g1_contracts
 
 ./build/tests/test_g1_contracts
+
+echo "=== [6/6] Running Swift Gate G1 S06 ProjectStore Unit Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  tests/test_s06_project_store.swift \
+  -o build/tests/test_s06_project_store
+
+./build/tests/test_s06_project_store
 
 echo "=== ALL REGRESSION TEST SUITES EXECUTED SUCCESSFULLY ==="

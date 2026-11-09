@@ -12,7 +12,7 @@
 | Cổng | Tên cổng | Bước bao hàm | Trạng thái hiện tại | Điều kiện tiên quyết |
 |---|---|---|---|---|
 | **G0** | Nền tảng chạy thật | S00 – S03 | 🟢 **DONE (Đóng Gate G0: S00–S03 PASS 100%, bao gồm S02.T1/T2 có bằng chứng)** | Build `.app` arm64, worker thật, file sandbox/bookmark, model local, offline, Resolve spike |
-| **G1** | Dữ liệu và phục hồi | S04 – S09 | 🟡 **IN_PROGRESS (Tiến hành Gate G1: S04 & S05 DONE, chuẩn bị S06 ProjectStore)** | Single-writer `ProjectStore`, snapshot bất biến, publication state machine, crash recovery |
+| **G1** | Dữ liệu và phục hồi | S04 – S09 | 🟡 **IN_PROGRESS (Tiến hành Gate G1: S04, S05, S06 DONE, chuẩn bị S07 Resource Governor)** | Single-writer `ProjectStore`, snapshot bất biến, publication state machine, crash recovery |
 | **G2** | Phân tích và bằng chứng | S10 – S15 | ⚪ Chưa bắt đầu | Media mapping, full-frame coverage, claim verifier, corpus benchmark |
 | **G3** | Kịch bản dựng được | S16 – S19 | ⚪ Chưa bắt đầu | Outline hợp lệ, TTS thật, beam search shot selection, script approval snapshot |
 | **G4** | Preview được duyệt | S20 – S21 | ⚪ Chưa bắt đầu | Managed timeline Resolve, QC preview tự động, preview approval |
@@ -39,8 +39,8 @@
   *Biên bản:* [`reports/progress/S04.md`](reports/progress/S04.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: snake_case & ISO-8601 Codable, Golden tests hai chiều, SQLite WAL disk test, JSON-RPC schema strictness)
 - [x] **S05** — Import nguồn, băm nội dung (content hash) và cơ chế snapshot nguồn niêm phong trên APFS.  
   *Biên bản:* [`reports/progress/S05.md`](reports/progress/S05.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: Two-phase copy atomic, content-addressed blob, manifest verifier, disk preflight, 50/50 test PASS)
-- [ ] **S06** — Triển khai `ProjectStore` actor trong Swift core, SQLite WAL, quản lý revision và transaction ngắn.  
-  *Biên bản:* [`reports/progress/S06.md`](reports/progress/S06.md) · *Trạng thái:* `NOT_STARTED`
+- [x] **S06** — Triển khai `ProjectStore` actor trong Swift core, SQLite WAL, quản lý revision và transaction ngắn.  
+  *Biên bản:* [`reports/progress/S06.md`](reports/progress/S06.md) · *Trạng thái:* `DONE` (Hoàn thành nghiệm thu: ProjectStore Swift actor, SQLite WAL trên disk, revision conflict detection, idempotency journal, 5/5 test PASS)
 - [ ] **S07** — Resource Governor, Task Scheduler, Fencing tokens và hủy attempt trễ.  
   *Biên bản:* [`reports/progress/S07.md`](reports/progress/S07.md) · *Trạng thái:* `NOT_STARTED`
 - [ ] **S08** — Chu trình công bố artifact (`PREPARED` → `MATERIALIZED` → `VERIFIED` → `COMMITTED`) và Startup Reconciler.  
