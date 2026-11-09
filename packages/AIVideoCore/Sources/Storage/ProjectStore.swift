@@ -435,6 +435,23 @@ public actor ProjectStore {
             resulting_allowed_use TEXT,
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
         );
+
+        CREATE TABLE IF NOT EXISTS raw_observations (
+            observation_id TEXT PRIMARY KEY NOT NULL,
+            source_revision_id TEXT NOT NULL,
+            window_index INTEGER NOT NULL,
+            pass_role TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            epistemic_status TEXT NOT NULL,
+            frame_ids_json TEXT NOT NULL,
+            start_pts INTEGER NOT NULL,
+            end_pts INTEGER NOT NULL,
+            observation_text TEXT NOT NULL,
+            ocr_raw_tokens_json TEXT NOT NULL,
+            ocr_is_uncertain INTEGER NOT NULL DEFAULT 0,
+            guided_hypothesis_ref TEXT,
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
         """
         try Self.execute(db: db, sql: schema)
     }
@@ -1782,6 +1799,98 @@ public actor ProjectStore {
             )
         }
         return records
+    }
+
+    public func saveRawObservation(_ obs: RawObservationArtifact) throws {
+        try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = """
+            INSERT OR REPLACE INTO raw_observations
+            (observation_id, source_revision_id, window_index, pass_role, origin, epistemic_status,
+             frame_ids_json, start_pts, end_pts, observation_text, ocr_raw_tokens_json, ocr_is_uncertain, guided_hypothesis_ref)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            let framesJson = (try? String(data: JSONEncoder().encode(obs.frameIds), encoding: .utf8)) ?? "[]"
+            let ocrJson = (try? String(data: JSONEncoder().encode(obs.ocrRawTokens), encoding: .utf8)) ?? "[]"
+            sqlite3_bind_text(stmt, 1, obs.observationId, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, obs.sourceRevisionId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 3, Int32(obs.windowIndex))
+            sqlite3_bind_text(stmt, 4, obs.passRole.rawValue, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 5, obs.origin.rawValue, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 6, obs.epistemicStatus.rawValue, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 7, framesJson, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 8, obs.startPts)
+            sqlite3_bind_int64(stmt, 9, obs.endPts)
+            sqlite3_bind_text(stmt, 10, obs.observationText, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 11, ocrJson, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 12, obs.ocrIsUncertain ? 1 : 0)
+            if let gRef = obs.guidedHypothesisRef {
+                sqlite3_bind_text(stmt, 13, gRef, -1, SQLITE_TRANSIENT)
+            } else {
+                sqlite3_bind_null(stmt, 13)
+            }
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+        }
+    }
+
+    public func listRawObservations(sourceRevisionId: UUID) throws -> [RawObservationArtifact] {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        let sql = """
+        SELECT observation_id, source_revision_id, window_index, pass_role, origin, epistemic_status,
+               frame_ids_json, start_pts, end_pts, observation_text, ocr_raw_tokens_json, ocr_is_uncertain, guided_hypothesis_ref
+        FROM raw_observations
+        WHERE source_revision_id = ?
+        ORDER BY window_index ASC;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, sourceRevisionId.uuidString, -1, SQLITE_TRANSIENT)
+        var list: [RawObservationArtifact] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let obsId = String(cString: sqlite3_column_text(stmt, 0))
+            let sRevId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
+            let winIdx = Int(sqlite3_column_int(stmt, 2))
+            let role = ObservationPassRole(rawValue: String(cString: sqlite3_column_text(stmt, 3))) ?? .rawIndependent
+            let orig = Origin(rawValue: String(cString: sqlite3_column_text(stmt, 4))) ?? .visualModel
+            let ep = EpistemicStatus(rawValue: String(cString: sqlite3_column_text(stmt, 5))) ?? .observed
+            let framesStr = String(cString: sqlite3_column_text(stmt, 6))
+            let frames = (try? JSONDecoder().decode([Int].self, from: Data(framesStr.utf8))) ?? []
+            let sPts = sqlite3_column_int64(stmt, 7)
+            let ePts = sqlite3_column_int64(stmt, 8)
+            let text = String(cString: sqlite3_column_text(stmt, 9))
+            let ocrStr = String(cString: sqlite3_column_text(stmt, 10))
+            let ocrTokens = (try? JSONDecoder().decode([String].self, from: Data(ocrStr.utf8))) ?? []
+            let ocrUnc = sqlite3_column_int(stmt, 11) != 0
+            let gRef = sqlite3_column_type(stmt, 12) != SQLITE_NULL ? String(cString: sqlite3_column_text(stmt, 12)) : nil
+            if let art = try? RawObservationArtifact(
+                observationId: obsId,
+                sourceRevisionId: sRevId,
+                windowIndex: winIdx,
+                passRole: role,
+                origin: orig,
+                epistemicStatus: ep,
+                frameIds: frames,
+                startPts: sPts,
+                endPts: ePts,
+                observationText: text,
+                ocrRawTokens: ocrTokens,
+                ocrIsUncertain: ocrUnc,
+                guidedHypothesisRef: gRef
+            ) {
+                list.append(art)
+            }
+        }
+        return list
     }
 }
 

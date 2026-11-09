@@ -555,6 +555,8 @@ def generate_proxy_and_mapping(
     source_revision_id: str = "rev-source-001",
     target_height: int = 540,
     critical_evidence_frame_ids: Optional[Sequence[int]] = None,
+    has_validated_hdr_tonemap_fixture: bool = False,
+    fallback_sdr_if_untagged: bool = False,
 ) -> ProxyArtifactMapping:
     """
     S10.3: Generates a real CFR 24/1 SDR Rec.709 proxy video + 48 kHz audio (if audio present)
@@ -566,7 +568,11 @@ def generate_proxy_and_mapping(
     if not src_path.is_file():
         raise MediaMappingError(f"Source video does not exist: {src_path}")
 
-    probed = probe_and_index_real_video(src_path)
+    probed = probe_and_index_real_video(
+        src_path,
+        fallback_sdr_if_untagged=fallback_sdr_if_untagged,
+        has_validated_hdr_tonemap_fixture=has_validated_hdr_tonemap_fixture,
+    )
     color_dec = probed["color_decision"]
     if color_dec["status"] == "unsupported_needs_decision":
         raise MediaMappingError(
@@ -609,9 +615,18 @@ def generate_proxy_and_mapping(
     proxy_h = max(16, (target_height // 2) * 2)
     proxy_w = max(16, (int(round(src_w * (proxy_h / float(src_h)))) // 2) * 2)
 
-    vf_chain = f"fps=24/1,scale={proxy_w}:{proxy_h},format=yuv420p"
+    color_filter = color_dec.get("ffmpeg_filter_chain")
+    if color_filter:
+        vf_chain = f"fps=24/1,scale={proxy_w}:{proxy_h},{color_filter}"
+    else:
+        vf_chain = f"fps=24/1,scale={proxy_w}:{proxy_h},format=yuv420p"
+
+    # Scale timeout dynamically with source duration (minimum 60s, up to 3600s for long field footage)
+    dynamic_timeout_sec = max(60, min(3600, int(float(total_dur_sec) * 2.0) + 60))
+
     cmd = [
         "ffmpeg",
+        "-nostdin",
         "-y",
         "-i",
         str(src_path),
@@ -631,7 +646,7 @@ def generate_proxy_and_mapping(
         "aac",
         str(staging_path),
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60)
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=dynamic_timeout_sec)
     if res.returncode != 0 or not staging_path.is_file() or staging_path.stat().st_size == 0:
         if staging_path.exists():
             staging_path.unlink(missing_ok=True)
@@ -655,10 +670,16 @@ def generate_proxy_and_mapping(
     )
 
 
-def probe_and_index_real_video(video_path: str | Path) -> Dict[str, Any]:
+def probe_and_index_real_video(
+    video_path: str | Path,
+    *,
+    fallback_sdr_if_untagged: bool = False,
+    has_validated_hdr_tonemap_fixture: bool = False,
+) -> Dict[str, Any]:
     """
     S10.1 & S10.T1: Runs real ffprobe packet/frame inspection on a video file to extract presentation-order
-    PTS, timebase, rotation, and color tags.
+    PTS, timebase, rotation, audio stream presence, and color tags.
+    Does NOT silently fabricate bt709 if color tags are missing unless `fallback_sdr_if_untagged=True` is explicitly passed.
     """
     path = Path(video_path)
     if not path.is_file():
@@ -668,24 +689,25 @@ def probe_and_index_real_video(video_path: str | Path) -> Dict[str, Any]:
         "ffprobe",
         "-v",
         "error",
-        "-select_streams",
-        "v:0",
         "-show_entries",
-        "stream=time_base,r_frame_rate,avg_frame_rate,width,height,color_primaries,color_transfer,color_space,color_range:stream_side_data=rotation:frame=pts,pkt_duration,key_frame",
+        "stream=index,codec_type,time_base,r_frame_rate,avg_frame_rate,width,height,sample_rate,channels,color_primaries,color_transfer,color_space,color_range:stream_side_data=rotation:frame=media_type,stream_index,pts,pkt_duration,key_frame",
         "-of",
         "json",
         str(path),
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=15)
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
     if res.returncode != 0:
         raise MediaMappingError(f"ffprobe failed on {path}: {res.stderr.strip()}")
 
     data = json.loads(res.stdout)
     streams = data.get("streams") or []
-    if not streams:
+    video_streams = [s for s in streams if s.get("codec_type") == "video"]
+    audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+    if not video_streams:
         raise MediaMappingError(f"No video stream found in {path}")
 
-    stream = streams[0]
+    stream = video_streams[0]
+    v_stream_index = int(stream.get("index", 0))
     tb_str = stream.get("time_base", "1/24")
     tb_parts = tb_str.split("/")
     tb_num = int(tb_parts[0])
@@ -698,13 +720,17 @@ def probe_and_index_real_video(video_path: str | Path) -> Dict[str, Any]:
 
     raw_frames_json = data.get("frames") or []
     raw_frames: List[Dict[str, Any]] = []
-    for idx, f in enumerate(raw_frames_json):
+    for f in raw_frames_json:
+        if f.get("media_type") not in (None, "video"):
+            continue
+        if "stream_index" in f and int(f["stream_index"]) != v_stream_index:
+            continue
         pts_val = f.get("pts")
         dur_val = f.get("pkt_duration")
         if pts_val is not None:
             raw_frames.append(
                 {
-                    "frame_id": idx,
+                    "frame_id": len(raw_frames),
                     "pts": int(pts_val),
                     "duration_pts": int(dur_val) if dur_val is not None and int(dur_val) > 0 else (tb_den // 24 or 1),
                     "key_frame": bool(f.get("key_frame", 0)),
@@ -712,11 +738,30 @@ def probe_and_index_real_video(video_path: str | Path) -> Dict[str, Any]:
             )
 
     pts_index = validate_and_build_pts_index(raw_frames, tb_num, tb_den)
+    raw_prim = stream.get("color_primaries")
+    raw_trc = stream.get("color_transfer")
+    raw_spc = stream.get("color_space")
+    raw_rng = stream.get("color_range")
+    if raw_prim in ("unknown", "unspecified", ""):
+        raw_prim = None
+    if raw_trc in ("unknown", "unspecified", ""):
+        raw_trc = None
+    if raw_spc in ("unknown", "unspecified", ""):
+        raw_spc = None
+    if not raw_rng or raw_rng in ("unknown", "unspecified"):
+        raw_rng = "tv"
+
+    if fallback_sdr_if_untagged:
+        raw_prim = raw_prim or "bt709"
+        raw_trc = raw_trc or "bt709"
+        raw_spc = raw_spc or "bt709"
+
     color_decision = evaluate_color_profile(
-        color_primaries=stream.get("color_primaries") or "bt709",
-        color_transfer=stream.get("color_transfer") or "bt709",
-        color_space=stream.get("color_space") or "bt709",
-        color_range=stream.get("color_range") or "tv",
+        color_primaries=raw_prim,
+        color_transfer=raw_trc,
+        color_space=raw_spc,
+        color_range=raw_rng,
+        has_validated_hdr_tonemap_fixture=has_validated_hdr_tonemap_fixture,
     )
 
     return {
@@ -726,6 +771,8 @@ def probe_and_index_real_video(video_path: str | Path) -> Dict[str, Any]:
         "time_base_num": tb_num,
         "time_base_den": tb_den,
         "rotation_degrees": rotation,
+        "has_audio_stream": len(audio_streams) > 0,
+        "audio_streams_count": len(audio_streams),
         "frame_count": len(pts_index),
         "pts_index": [e.to_dict() for e in pts_index],
         "color_decision": color_decision.to_dict(),

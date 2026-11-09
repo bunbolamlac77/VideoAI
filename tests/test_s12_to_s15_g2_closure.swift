@@ -293,6 +293,20 @@ struct TestS12ToS15G2Closure {
             try await store.saveCoverageRecord(covRec)
             let loadedCovs = try await store.listCoverageRecords(projectId: proj.projectId)
 
+            for cDto in rpcRes.claims {
+                let claimRec = ClaimRecord(
+                    workdayId: wdUUID,
+                    text: cDto.text,
+                    origin: Origin(rawValue: cDto.origin) ?? .user,
+                    epistemicStatus: EpistemicStatus(rawValue: cDto.epistemicStatus) ?? .reported,
+                    reviewStatus: ReviewStatus(rawValue: cDto.reviewStatus) ?? .unreviewed,
+                    supportStatus: SupportStatus(rawValue: cDto.supportStatus) ?? .insufficient,
+                    allowedUse: AllowedUse(rawValue: cDto.allowedUse) ?? .exclude
+                )
+                _ = try await store.saveClaim(claim: claimRec, idempotencyKey: "e2e-claim-\(cDto.claimId)")
+            }
+            let loadedClaims = try await store.getLatestClaims(workdayId: wdUUID)
+
             for rDto in rpcRes.reviewItems {
                 let rec = try TargetedReviewRecord(
                     projectId: proj.projectId,
@@ -308,19 +322,22 @@ struct TestS12ToS15G2Closure {
             await store.close()
 
             // Since visual model is not installed, status MUST be blocked_model_unavailable with 0% coverage & 0 fake observations,
-            // while brief decomposition creates real targeted review items persisted in SQLite!
+            // while brief decomposition creates real claims & targeted review items persisted in SQLite!
             let ok = rpcRes.coverageLedger.detailedPassStatus == "blocked_model_unavailable"
                 && rpcRes.coverageLedger.frameInputCoverage == 0.0
                 && rpcRes.rawObservationsCount == 0
+                && rpcRes.rawObservations.isEmpty
+                && rpcRes.audioBranchState == "no_audio"
                 && rpcRes.coverageLedger.totalDeclaredSourceFrames == 24
                 && loadedCovs.count == 1
                 && loadedCovs[0].detailedPassStatus == "blocked_model_unavailable"
+                && loadedClaims.count >= 2
                 && loadedReviews.count >= 2
             record(
                 "S12_S14_SWIFT_E2E_WORKER_RPC_TO_SQLITE",
                 "AI-01/AI-03/AI-09",
                 ok,
-                "E2E video -> g2.analyze_source -> blocked_model_unavailable (0% coverage, 0 fake obs) & \(loadedReviews.count) review items persisted in SQLite"
+                "E2E video -> g2.analyze_source -> blocked_model_unavailable (0% coverage, 0 fake obs, no_audio), \(loadedClaims.count) claims & \(loadedReviews.count) review items persisted in SQLite"
             )
         } catch {
             record("S12_S14_SWIFT_E2E_WORKER_RPC_TO_SQLITE", "AI-01/AI-03/AI-09", false, "Error: \(error)")

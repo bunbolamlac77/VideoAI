@@ -400,6 +400,25 @@ final class AppState: ObservableObject {
         }
     }
 
+    private static func deterministicUUID(from seed: String) -> UUID {
+        var h1: UInt64 = 14695981039346656037
+        var h2: UInt64 = 1099511628211
+        for b in seed.utf8 {
+            h1 ^= UInt64(b)
+            h1 = h1 &* 1099511628211
+            h2 ^= UInt64(b) &+ 0x9e3779b97f4a7c15
+            h2 = h2 &* 14695981039346656037
+        }
+        let hex = String(format: "%016llx%016llx", h1, h2)
+        let chars = Array(hex)
+        let s1 = String(chars[0..<8])
+        let s2 = String(chars[8..<12])
+        let s3 = "4" + String(chars[13..<16])
+        let s4 = "8" + String(chars[17..<20])
+        let s5 = String(chars[20..<32])
+        return UUID(uuidString: "\(s1)-\(s2)-\(s3)-\(s4)-\(s5)") ?? UUID()
+    }
+
     func runG2AnalysisOnSelectedSource() async {
         guard let store = projectStore, let proj = g1Project, let wd = g1Workday else { return }
         guard !selectedFilePath.isEmpty else {
@@ -411,7 +430,11 @@ final class AppState: ObservableObject {
         defer { self.isRunningG2Analysis = false }
 
         do {
-            let srcRevUUID = UUID()
+            // Deterministic sourceRevisionId from canonical path + file size so S12 window checkpoints resume on retry!
+            let fileAttrs = try? FileManager.default.attributesOfItem(atPath: selectedFilePath)
+            let fileSize = (fileAttrs?[.size] as? NSNumber)?.int64Value ?? 0
+            let srcRevUUID = Self.deterministicUUID(from: "src-rev:\(selectedFilePath):\(fileSize)")
+
             let res = try await worker.analyzeG2Source(
                 filePath: selectedFilePath,
                 sourceRevisionId: srcRevUUID.uuidString,
@@ -420,6 +443,7 @@ final class AppState: ObservableObject {
             )
             let dto = res.coverageLedger
             let covRec = CoverageLedgerRecord(
+                coverageId: Self.deterministicUUID(from: "cov:\(srcRevUUID.uuidString)"),
                 projectId: proj.projectId,
                 sourceRevisionId: srcRevUUID,
                 runtimeProfileId: dto.runtimeProfileId,
@@ -436,9 +460,55 @@ final class AppState: ObservableObject {
             )
             try await store.saveCoverageRecord(covRec)
 
-            for rItem in res.reviewItems {
+            for rawDto in res.rawObservations {
+                let role = ObservationPassRole(rawValue: rawDto.passRole) ?? .rawIndependent
+                let orig = Origin(rawValue: rawDto.origin) ?? .visualModel
+                let ep = EpistemicStatus(rawValue: rawDto.epistemicStatus) ?? .observed
+                let obsArt = try RawObservationArtifact(
+                    observationId: rawDto.observationId,
+                    sourceRevisionId: srcRevUUID,
+                    windowIndex: rawDto.windowIndex,
+                    passRole: role,
+                    origin: orig,
+                    epistemicStatus: ep,
+                    frameIds: rawDto.frameIds,
+                    startPts: rawDto.startPtsTicks,
+                    endPts: rawDto.endPtsTicks,
+                    observationText: rawDto.observationText,
+                    ocrRawTokens: rawDto.ocrRawTokens,
+                    ocrIsUncertain: rawDto.ocrIsUncertain
+                )
+                try await store.saveRawObservation(obsArt)
+            }
+
+            for cDto in res.claims {
+                let cId = Self.deterministicUUID(from: "claim:\(srcRevUUID.uuidString):\(cDto.claimId)")
+                let orig = Origin(rawValue: cDto.origin) ?? .user
+                let ep = EpistemicStatus(rawValue: cDto.epistemicStatus) ?? .reported
+                let revSt = ReviewStatus(rawValue: cDto.reviewStatus) ?? .unreviewed
+                let supSt = SupportStatus(rawValue: cDto.supportStatus) ?? .insufficient
+                let allUse = AllowedUse(rawValue: cDto.allowedUse) ?? .exclude
+                let claimRec = ClaimRecord(
+                    claimId: cId,
+                    workdayId: wd.workdayId,
+                    text: cDto.text,
+                    origin: orig,
+                    epistemicStatus: ep,
+                    reviewStatus: revSt,
+                    supportStatus: supSt,
+                    allowedUse: allUse
+                )
+                _ = try await store.saveClaim(
+                    claim: claimRec,
+                    idempotencyKey: "g2-claim-\(srcRevUUID.uuidString)-\(cDto.claimId)"
+                )
+            }
+
+            for (idx, rItem) in res.reviewItems.enumerated() {
                 let kind = ReviewEvidenceKind(rawValue: rItem.evidenceKind) ?? .briefSpan
+                let rUUID = Self.deterministicUUID(from: "rev-item:\(srcRevUUID.uuidString):\(idx):\(rItem.questionText)")
                 let rec = try TargetedReviewRecord(
+                    reviewItemId: rUUID,
                     projectId: proj.projectId,
                     workdayId: wd.workdayId,
                     evidenceScopeRevisionId: rItem.evidenceScopeRevisionId,
@@ -449,9 +519,11 @@ final class AppState: ObservableObject {
                 try await store.saveReviewItem(rec)
             }
 
+            self.g1Claims = try await store.getLatestClaims(workdayId: wd.workdayId)
             self.g2ReviewItems = try await store.listReviewItems(workdayId: wd.workdayId)
+            let savedObs = try await store.listRawObservations(sourceRevisionId: srcRevUUID)
             let pct = String(format: "%.1f", covRec.frameInputCoverage * 100.0)
-            self.g2ScopeSummary = "Status: \(covRec.detailedPassStatus) · Coverage: \(pct)% (\(covRec.uniqueProcessedFrameIds.count)/\(covRec.totalDeclaredFrames) frames) · Review items: \(self.g2ReviewItems.count)"
+            self.g2ScopeSummary = "Status: \(covRec.detailedPassStatus) · Coverage: \(pct)% (\(covRec.uniqueProcessedFrameIds.count)/\(covRec.totalDeclaredFrames) frames) · Obs: \(savedObs.count) · Claims: \(self.g1Claims.count) · Review: \(self.g2ReviewItems.count)"
         } catch {
             self.errorMessage = "Phân tích G2 thất bại: \(error.localizedDescription)"
         }

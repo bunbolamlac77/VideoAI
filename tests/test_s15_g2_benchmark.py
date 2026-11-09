@@ -15,6 +15,7 @@ from workers.src.aivideo_workers.g2_benchmark_runner import (
     LabeledClaimOpportunity,
     build_canonical_g2_benchmark_fixture,
     run_g2_analysis_eligible_benchmark,
+    run_real_video_corpus_g2_benchmark,
     verify_split_and_anti_leakage,
 )
 from workers.src.aivideo_workers.semantic_verifier import AtomicClaimProposal, EvidenceEdge
@@ -186,6 +187,24 @@ class TestS15G2Benchmark(unittest.TestCase):
                 holdout_asset_ids=fix["holdout_assets"],
             )
         self.assertEqual(ctx2.exception.code, "HOLDOUT_PROMPT_LEAKAGE")
+
+    def test_s15_real_video_corpus_holdout_benchmark_end_to_end(self) -> None:
+        """
+        S15 Real Video Corpus Benchmark:
+        Runs real Rec.709 MP4 video clips across all 5 held-out trip groups through
+        probe_and_index_real_video -> build_offline_visual_window_inspector -> FullFrameAnalysisPipeline -> S15 benchmark.
+        """
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rep = run_real_video_corpus_g2_benchmark(work_dir=Path(tmp))
+            self.assertTrue(rep["real_video_corpus_verified"])
+            self.assertEqual(rep["real_video_groups_count"], 5)
+            self.assertEqual(rep["metrics"]["frame_input_coverage"]["point_estimate"], 1.0)
+            self.assertEqual(rep["metrics"]["frame_input_coverage"]["numerator"], 120)
+            self.assertEqual(rep["metrics"]["frame_input_coverage"]["denominator"], 120)
+            self.assertEqual(rep["g2_gate_decision"], "PASS")
 
 
 import dataclasses

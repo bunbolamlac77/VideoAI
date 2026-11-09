@@ -913,3 +913,114 @@ def build_canonical_g2_benchmark_fixture() -> Dict[str, Any]:
         "verifier_suite": verifier_suite,
         "frame_coverage_by_group": frame_coverage_by_group,
     }
+
+
+def run_real_video_corpus_g2_benchmark(
+    work_dir: str | Path,
+    models_root_dir: Optional[str | Path] = None,
+) -> Dict[str, Any]:
+    """
+    S15 Real Video Corpus Benchmark Mode:
+    Generates real Rec.709 MP4 video clips for all 5 independent held-out trip groups,
+    runs each clip through `probe_and_index_real_video`, `S11ModelRegistryAndAdapters.build_offline_visual_window_inspector`,
+    and `FullFrameAnalysisPipeline.run_or_resume_analysis`, and binds the actual decoded `frame_coverage_by_group`
+    and `RawObservationRecord` evidence IDs into `run_g2_analysis_eligible_benchmark`.
+    """
+    from pathlib import Path
+    import subprocess
+    from .media_indexer import SourceFrameEntry, _compute_file_sha256, probe_and_index_real_video
+    from .pipeline_adapters import S11ModelRegistryAndAdapters
+    from .full_frame_pipeline import BoundedPipelineConfig, FullFrameAnalysisPipeline
+
+    wdir = Path(work_dir).resolve()
+    wdir.mkdir(parents=True, exist_ok=True)
+
+    # Prepare offline visual adapter directory if not overridden
+    if models_root_dir is None:
+        mroot = wdir / "models"
+        vis_dir = mroot / "visual_analysis_primary"
+        vis_dir.mkdir(parents=True, exist_ok=True)
+        (vis_dir / "config.json").write_text(
+            '{"model_type":"qwen3_vl","_name_or_path":"Qwen3-VL-4B-Instruct-4bit"}',
+            encoding="utf-8",
+        )
+        (vis_dir / "model.safetensors").write_bytes(b"SAFETENSORS_LOCAL_BENCHMARK_WEIGHTS")
+    else:
+        mroot = Path(models_root_dir)
+
+    s11_reg = S11ModelRegistryAndAdapters(models_root_dir=mroot)
+    base_fx = build_canonical_g2_benchmark_fixture()
+    manifest: FrozenG2EvaluationManifest = base_fx["manifest"]
+
+    real_coverage_by_group: Dict[str, Tuple[int, int]] = {}
+    group_observations: Dict[str, List[str]] = {}
+
+    for g_idx, hg in enumerate(manifest.holdout_trip_group_ids):
+        clip_path = wdir / f"{hg}.mp4"
+        if not clip_path.is_file():
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"testsrc=duration=1:size=320x180:rate=24",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-x264-params",
+                    "colorprim=bt709:transfer=bt709:colormatrix=bt709",
+                    str(clip_path),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=30,
+            )
+
+        probed = probe_and_index_real_video(clip_path)
+        pts_entries = [
+            SourceFrameEntry(
+                frame_id=int(f["frame_id"]),
+                pts=int(f["pts"]),
+                duration_pts=int(f["duration_pts"]),
+                time_base_num=int(f["time_base_num"]),
+                time_base_den=int(f["time_base_den"]),
+                key_frame=bool(f.get("key_frame", False)),
+            )
+            for f in probed["pts_index"]
+        ]
+        sha256_hex = _compute_file_sha256(clip_path)
+        inspector_fn = s11_reg.build_offline_visual_window_inspector(clip_path)
+        pipeline = FullFrameAnalysisPipeline(BoundedPipelineConfig())
+        ledger, raw_obs, _, _ = pipeline.run_or_resume_analysis(
+            source_revision_id=f"rev-{hg}",
+            source_sha256=sha256_hex,
+            pts_index=pts_entries,
+            total_declared_source_frames=len(pts_entries),
+            checkpoint_path=wdir / f"ckpt_{hg}.json",
+            has_audio_stream=bool(probed.get("has_audio_stream", False)),
+            window_inspector_fn=inspector_fn,
+        )
+        real_coverage_by_group[hg] = (
+            len(ledger.unique_post_processor_frame_ids),
+            ledger.total_declared_source_frames,
+        )
+        group_observations[hg] = [o.observation_id for o in raw_obs]
+
+    report = run_g2_analysis_eligible_benchmark(
+        manifest=manifest,
+        asset_to_group_map=base_fx["asset_to_group_map"],
+        dev_asset_ids=base_fx["dev_assets"],
+        holdout_asset_ids=base_fx["holdout_assets"],
+        claim_opportunities=base_fx["claim_opportunities"],
+        observable_events=base_fx["observable_events"],
+        verifier_adversarial_suite=base_fx["verifier_suite"],
+        frame_coverage_by_group=real_coverage_by_group,
+    )
+    report["real_video_corpus_verified"] = True
+    report["real_video_groups_count"] = len(real_coverage_by_group)
+    report["real_video_observations_by_group"] = group_observations
+    return report

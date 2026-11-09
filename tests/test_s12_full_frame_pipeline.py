@@ -273,6 +273,91 @@ class TestS12FullFramePipeline(unittest.TestCase):
             self.assertEqual(ledger_blocked.detailed_pass_status, "blocked_resource")
             self.assertEqual(ledger_blocked.completed_window_indices, [])
 
+    def test_s12_real_worker_g2_analyze_source_uninstalled_and_installed(self) -> None:
+        """
+        S11/S12 End-to-End Worker RPC (`g2.analyze_source`) on a real 24-frame MP4 video:
+        - When adapter is not installed: returns blocked_model_unavailable, 0.0 coverage, 0 observations.
+        - When offline adapter is installed: automatically decodes source frames via build_offline_visual_window_inspector,
+          achieves 100% (1.0) coverage, emits validated raw_observations, and detects no_audio on silent MP4.
+        """
+        import json
+        import subprocess
+        from workers.src.aivideo_workers.main import handle_g2_analyze_source
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            video_path = tmp_path / "real_24f.mp4"
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc=duration=1:size=320x180:rate=24",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-x264-params",
+                    "colorprim=bt709:transfer=bt709:colormatrix=bt709",
+                    str(video_path),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=20,
+            )
+
+            # 1) Uninstalled models_root -> blocked_model_unavailable
+            empty_models_root = tmp_path / "empty_models"
+            res_uninstalled = handle_g2_analyze_source(
+                {
+                    "file_path": str(video_path),
+                    "source_revision_id": "00000000-0000-4000-8000-000000000777",
+                    "workday_id": "00000000-0000-4000-8000-000000000888",
+                    "brief_text": "Đi qua cầu lúc 9h. Mưa lớn làm đường trơn.",
+                    "models_root_dir": str(empty_models_root),
+                    "checkpoint_dir": str(tmp_path / "ckpt_uninstalled"),
+                }
+            )
+            self.assertFalse(res_uninstalled["vision_model_installed"])
+            self.assertEqual(res_uninstalled["coverage_ledger"]["detailed_pass_status"], "blocked_model_unavailable")
+            self.assertEqual(res_uninstalled["coverage_ledger"]["frame_input_coverage"], 0.0)
+            self.assertEqual(res_uninstalled["raw_observations_count"], 0)
+            self.assertEqual(len(res_uninstalled["raw_observations"]), 0)
+            self.assertEqual(res_uninstalled["audio_branch_state"], "no_audio")
+            self.assertGreaterEqual(len(res_uninstalled["claims"]), 2)
+
+            # 2) Installed offline visual adapter -> completed, 100% coverage, real decoded window observations!
+            installed_models_root = tmp_path / "installed_models"
+            vis_dir = installed_models_root / "visual_analysis_primary"
+            vis_dir.mkdir(parents=True, exist_ok=True)
+            (vis_dir / "config.json").write_text(
+                json.dumps({"model_type": "qwen3_vl", "_name_or_path": "Qwen3-VL-4B-Instruct-4bit"}),
+                encoding="utf-8",
+            )
+            (vis_dir / "model.safetensors").write_bytes(b"SAFETENSORS_OFFLINE_WEIGHTS_STUB")
+
+            res_installed = handle_g2_analyze_source(
+                {
+                    "file_path": str(video_path),
+                    "source_revision_id": "00000000-0000-4000-8000-000000000777",
+                    "workday_id": "00000000-0000-4000-8000-000000000888",
+                    "brief_text": "Đi qua cầu lúc 9h. Mưa lớn làm đường trơn.",
+                    "models_root_dir": str(installed_models_root),
+                    "checkpoint_dir": str(tmp_path / "ckpt_installed"),
+                }
+            )
+            self.assertTrue(res_installed["vision_model_installed"])
+            self.assertEqual(res_installed["coverage_ledger"]["detailed_pass_status"], "completed")
+            self.assertEqual(res_installed["coverage_ledger"]["frame_input_coverage"], 1.0)
+            self.assertEqual(len(res_installed["coverage_ledger"]["unique_post_processor_frame_ids"]), 24)
+            self.assertGreater(res_installed["raw_observations_count"], 0)
+            self.assertEqual(len(res_installed["raw_observations"]), res_installed["raw_observations_count"])
+            self.assertEqual(res_installed["audio_branch_state"], "no_audio")
+            self.assertEqual(res_installed["color_decision"]["status"], "sdr_passthrough_or_transform")
+
 
 if __name__ == "__main__":
     unittest.main()

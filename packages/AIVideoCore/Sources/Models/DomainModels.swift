@@ -506,6 +506,58 @@ public struct G2AnalyzeCoverageDTO: Codable, Sendable {
     }
 }
 
+public struct G2AnalyzeRawObservationDTO: Codable, Sendable {
+    public let observationId: String
+    public let sourceRevisionId: String
+    public let windowIndex: Int
+    public let passRole: String
+    public let origin: String
+    public let epistemicStatus: String
+    public let frameIds: [Int]
+    public let startPtsTicks: Int64
+    public let endPtsTicks: Int64
+    public let observationText: String
+    public let ocrRawTokens: [String]
+    public let ocrIsUncertain: Bool
+
+    public enum CodingKeys: String, CodingKey {
+        case observationId = "observation_id"
+        case sourceRevisionId = "source_revision_id"
+        case windowIndex = "window_index"
+        case passRole = "pass_role"
+        case origin
+        case epistemicStatus = "epistemic_status"
+        case frameIds = "frame_ids"
+        case startPtsTicks = "start_pts_ticks"
+        case endPtsTicks = "end_pts_ticks"
+        case observationText = "observation_text"
+        case ocrRawTokens = "ocr_raw_tokens"
+        case ocrIsUncertain = "ocr_is_uncertain"
+    }
+}
+
+public struct G2AnalyzeClaimDTO: Codable, Sendable {
+    public let claimId: String
+    public let text: String
+    public let origin: String
+    public let epistemicStatus: String
+    public let reviewStatus: String
+    public let supportStatus: String
+    public let allowedUse: String
+    public let requiresTargetedReview: Bool
+
+    public enum CodingKeys: String, CodingKey {
+        case claimId = "claim_id"
+        case text
+        case origin
+        case epistemicStatus = "epistemic_status"
+        case reviewStatus = "review_status"
+        case supportStatus = "support_status"
+        case allowedUse = "allowed_use"
+        case requiresTargetedReview = "requires_targeted_review"
+    }
+}
+
 public struct G2AnalyzeReviewItemDTO: Codable, Sendable {
     public let evidenceScopeRevisionId: String
     public let evidenceKind: String
@@ -526,8 +578,10 @@ public struct G2AnalyzeSourceResult: Codable, Sendable {
     public let visionModelInstalled: Bool
     public let coverageLedger: G2AnalyzeCoverageDTO
     public let rawObservationsCount: Int
+    public let rawObservations: [G2AnalyzeRawObservationDTO]
     public let audioBranchState: String
     public let omissionFindingsCount: Int
+    public let claims: [G2AnalyzeClaimDTO]
     public let reviewItems: [G2AnalyzeReviewItemDTO]
 
     public enum CodingKeys: String, CodingKey {
@@ -536,8 +590,10 @@ public struct G2AnalyzeSourceResult: Codable, Sendable {
         case visionModelInstalled = "vision_model_installed"
         case coverageLedger = "coverage_ledger"
         case rawObservationsCount = "raw_observations_count"
+        case rawObservations = "raw_observations"
         case audioBranchState = "audio_branch_state"
         case omissionFindingsCount = "omission_findings_count"
+        case claims
         case reviewItems = "review_items"
     }
 }

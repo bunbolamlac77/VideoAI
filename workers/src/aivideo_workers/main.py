@@ -302,15 +302,23 @@ def handle_media_index_and_proxy(params: dict) -> dict:
         raise ValueError("Missing required parameter: 'file_path'")
     proxy_out = params.get("proxy_output_path")
     source_rev_id = params.get("source_revision_id") or "rev-source-001"
+    fallback_sdr = bool(params.get("fallback_sdr_if_untagged", False))
+    has_hdr_fixture = bool(params.get("has_validated_hdr_tonemap_fixture", False))
     if proxy_out:
         art = generate_proxy_and_mapping(
             source_video_path=Path(file_path),
             proxy_output_path=Path(proxy_out),
             source_revision_id=source_rev_id,
             target_height=int(params.get("target_height", 540)),
+            has_validated_hdr_tonemap_fixture=has_hdr_fixture,
+            fallback_sdr_if_untagged=fallback_sdr,
         )
         return art.to_dict()
-    return probe_and_index_real_video(Path(file_path))
+    return probe_and_index_real_video(
+        Path(file_path),
+        fallback_sdr_if_untagged=fallback_sdr,
+        has_validated_hdr_tonemap_fixture=has_hdr_fixture,
+    )
 
 
 def handle_g2_analyze_source(params: dict) -> dict:
@@ -319,12 +327,17 @@ def handle_g2_analyze_source(params: dict) -> dict:
     1. Probes real video file via ffprobe (`probe_and_index_real_video`).
     2. Checks whether `P-VISION-DEV-v1` (`Qwen3-VL-4B-Instruct-4bit`) is installed offline on disk.
     3. Runs `FullFrameAnalysisPipeline.run_or_resume_analysis` (returns `blocked_model_unavailable` with 0% coverage
-       and 0 fabricated observations when the visual model is not installed).
+       and 0 fabricated observations when the visual model is not installed; decodes real source window frames and
+       runs offline visual window inspection when installed).
     4. Parses optional user brief via `parse_user_brief` and evaluates claims via `evaluate_claim_decision_table` (S13).
     """
     from pathlib import Path
     import tempfile
-    from aivideo_workers.media_indexer import SourceFrameEntry, probe_and_index_real_video
+    from aivideo_workers.media_indexer import (
+        SourceFrameEntry,
+        _compute_file_sha256,
+        probe_and_index_real_video,
+    )
     from aivideo_workers.pipeline_adapters import PipelineAdapterError, S11ModelRegistryAndAdapters
     from aivideo_workers.full_frame_pipeline import BoundedPipelineConfig, FullFrameAnalysisPipeline
     from aivideo_workers.semantic_verifier import (
@@ -344,7 +357,11 @@ def handle_g2_analyze_source(params: dict) -> dict:
     workday_id = str(params.get("workday_id") or "00000000-0000-4000-8000-000000000002")
     brief_text = str(params.get("brief_text") or "").strip()
 
-    probed = probe_and_index_real_video(src_path)
+    probed = probe_and_index_real_video(
+        src_path,
+        fallback_sdr_if_untagged=bool(params.get("fallback_sdr_if_untagged", False)),
+        has_validated_hdr_tonemap_fixture=bool(params.get("has_validated_hdr_tonemap_fixture", False)),
+    )
     pts_entries = [
         SourceFrameEntry(
             frame_id=int(f["frame_id"]),
@@ -356,19 +373,23 @@ def handle_g2_analyze_source(params: dict) -> dict:
         )
         for f in probed["pts_index"]
     ]
-    src_sha256 = hashlib.sha256(src_path.read_bytes()).hexdigest()
+    src_sha256 = _compute_file_sha256(src_path)
 
-    # Check if S11 visual model adapter is installed offline
-    s11_reg = S11ModelRegistryAndAdapters()
+    # Check if S11 visual model adapter is installed offline and build real window inspector
+    models_root_override = params.get("models_root_dir")
+    s11_reg = S11ModelRegistryAndAdapters(models_root_dir=models_root_override)
     vision_installed = False
+    inspector_fn = None
     try:
         s11_reg.preflight_adapter_offline(
             role="visual_analysis_primary",
             required_files=["config.json", "model.safetensors"],
         )
         vision_installed = True
+        inspector_fn = params.get("_inspector_fn") or s11_reg.build_offline_visual_window_inspector(src_path)
     except PipelineAdapterError:
         vision_installed = False
+        inspector_fn = None
 
     ckpt_dir = Path(params.get("checkpoint_dir") or tempfile.gettempdir())
     ckpt_path = ckpt_dir / f"g2_ckpt_{source_rev_id[:8]}_{src_sha256[:8]}.json"
@@ -381,8 +402,8 @@ def handle_g2_analyze_source(params: dict) -> dict:
         pts_index=pts_entries,
         total_declared_source_frames=len(pts_entries),
         checkpoint_path=ckpt_path,
-        has_audio_stream=True,
-        window_inspector_fn=None if not vision_installed else params.get("_inspector_fn"),
+        has_audio_stream=bool(probed.get("has_audio_stream", False)),
+        window_inspector_fn=inspector_fn,
     )
 
     claims_out = []
@@ -433,8 +454,10 @@ def handle_g2_analyze_source(params: dict) -> dict:
         "source_revision_id": source_rev_id,
         "source_sha256": src_sha256,
         "vision_model_installed": vision_installed,
+        "color_decision": probed["color_decision"],
         "coverage_ledger": ledger.to_dict(),
         "raw_observations_count": len(raw_obs),
+        "raw_observations": [o.to_dict() for o in raw_obs],
         "audio_branch_state": audio_res.audio_state,
         "omission_findings_count": len(findings),
         "claims": claims_out,

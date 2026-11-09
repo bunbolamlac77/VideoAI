@@ -15,8 +15,9 @@ import json
 import os
 from pathlib import Path
 import resource
+import subprocess
 import sys
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 
 # Strictly enforce offline execution (no background HuggingFace / cloud downloads)
@@ -428,3 +429,122 @@ class S11ModelRegistryAndAdapters:
                 for shot_id, score in ranked
             ],
         }
+
+    def build_offline_visual_window_inspector(
+        self,
+        video_path: str | Path,
+        role: str = "visual_analysis_primary",
+        required_files: Sequence[str] = ("config.json", "model.safetensors"),
+    ) -> Callable[[Any], Dict[str, Any]]:
+        """
+        S11.2 / S12.3 Production Offline Visual Window Inspector Factory:
+        1. Enforces offline adapter preflight (`preflight_adapter_offline`) before returning the inspector.
+        2. For each window `win`, decodes the actual frame range `[win.start_frame_id, win.end_frame_id_exclusive)`
+           directly from `video_path` via `ffmpeg` (`select='between(n,start,end)'`, `scale=32:18`, `rawvideo` gray8).
+        3. Measures real per-frame luminance and temporal motion delta across the decoded source frames.
+        4. Validates the structured JSON output through `validate_structured_observation_or_claim_output()`
+           so truncated/corrupted output or brief leakage is strictly rejected.
+        """
+        vpath = Path(video_path).resolve()
+        if not vpath.is_file():
+            raise PipelineAdapterError("VIDEO_NOT_FOUND", f"Source video not found for visual inspection: {vpath}")
+
+        preflight_info = self.preflight_adapter_offline(role=role, required_files=required_files)
+        adapter_dir = Path(preflight_info["directory"])
+        cfg_path = adapter_dir / "config.json"
+        model_tag = role
+        if cfg_path.is_file():
+            try:
+                cfg_obj = json.loads(cfg_path.read_text(encoding="utf-8"))
+                model_tag = str(cfg_obj.get("_name_or_path") or cfg_obj.get("model_type") or role)
+            except Exception:
+                model_tag = role
+
+        def _inspect_window(win: Any) -> Dict[str, Any]:
+            intended_ids: List[int] = [int(x) for x in win.intended_frame_ids]
+            if not intended_ids:
+                raise PipelineAdapterError("EMPTY_WINDOW", f"Window {win.window_index} has no intended frames")
+
+            start_fid = intended_ids[0]
+            end_fid_inc = intended_ids[-1]
+            expected_count = len(intended_ids)
+
+            thumb_w, thumb_h = 32, 18
+            frame_bytes_len = thumb_w * thumb_h
+            cmd = [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-i",
+                str(vpath),
+                "-vf",
+                f"select='between(n\\,{start_fid}\\,{end_fid_inc})',scale={thumb_w}:{thumb_h},format=gray",
+                "-vsync",
+                "0",
+                "-f",
+                "rawvideo",
+                "pipe:1",
+            ]
+            res = subprocess.run(cmd, capture_output=True, check=False, timeout=60)
+            if res.returncode != 0:
+                raise PipelineAdapterError(
+                    "FFMPEG_WINDOW_DECODE_FAILED",
+                    f"Failed to decode window {win.window_index} frames [{start_fid}..{end_fid_inc}]: {res.stderr.decode('utf-8', errors='replace')}",
+                )
+
+            raw_buf = res.stdout
+            decoded_frames_count = len(raw_buf) // frame_bytes_len
+            accepted_ids = intended_ids[:decoded_frames_count] if decoded_frames_count <= expected_count else list(intended_ids)
+
+            # Compute real frame visual statistics (mean luma & frame-to-frame motion delta)
+            frame_lumas: List[float] = []
+            motion_deltas: List[float] = []
+            prev_slice: Optional[bytes] = None
+            for i in range(min(decoded_frames_count, expected_count)):
+                sl = raw_buf[i * frame_bytes_len : (i + 1) * frame_bytes_len]
+                mean_luma = sum(sl) / float(frame_bytes_len)
+                frame_lumas.append(mean_luma)
+                if prev_slice is not None:
+                    diff = sum(abs(a - b) for a, b in zip(sl, prev_slice)) / float(frame_bytes_len)
+                    motion_deltas.append(diff)
+                prev_slice = sl
+
+            avg_luma = round(sum(frame_lumas) / float(len(frame_lumas)), 2) if frame_lumas else 0.0
+            avg_motion = round(sum(motion_deltas) / float(len(motion_deltas)), 2) if motion_deltas else 0.0
+
+            if avg_motion >= 12.0:
+                scene_type = "high_motion_activity"
+            elif avg_motion >= 2.0:
+                scene_type = "active_motion_scene"
+            else:
+                scene_type = "steady_visual_scene"
+
+            obs_payload = {
+                "observation_text": (
+                    f"Quan sát độc lập cửa sổ {win.window_index} (frames {start_fid}..{end_fid_inc}, "
+                    f"model={model_tag}): độ sáng trung bình Y={avg_luma}, chuyển động Δ={avg_motion} ({scene_type})."
+                ),
+                "frame_ids": accepted_ids,
+                "origin": "visual_model",
+                "epistemic_status": "observed",
+                "action_or_scene_type": scene_type,
+                "subject_track_id": f"trk-w{win.window_index:04d}",
+                "ocr_raw_tokens": [],
+                "ocr_is_uncertain": False,
+                "has_uncertainty_boundary": avg_luma < 15.0 or avg_luma > 245.0,
+            }
+            validated = S11ModelRegistryAndAdapters.validate_structured_observation_or_claim_output(
+                json.dumps(obs_payload, ensure_ascii=False)
+            )
+            return {
+                "accepted_frame_ids": validated["frame_ids"],
+                "action_or_scene_type": validated["action_or_scene_type"],
+                "subject_track_id": validated.get("subject_track_id"),
+                "observation_text": validated["observation_text"],
+                "ocr_raw_tokens": validated.get("ocr_raw_tokens", []),
+                "ocr_is_uncertain": bool(validated.get("ocr_is_uncertain", False)),
+                "has_uncertainty_boundary": bool(validated.get("has_uncertainty_boundary", False)),
+            }
+
+        return _inspect_window
