@@ -403,22 +403,26 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
 
     test_table_md = "\n".join(test_rows)
 
+    s02_failed = any(r.get("requirement_id") in {"JOB-04", "UI-16", "OFF-01"} and r.get("status") == "FAIL" for r in test_records)
+    s03_failed = any(r.get("requirement_id") == "RES-01" and r.get("status") == "FAIL" for r in test_records)
+    s04_failed = any(r.get("requirement_id") == "DATA-04" and r.get("status") == "FAIL" for r in test_records)
+    s05_failed = any(r.get("requirement_id") == "DATA-01" and r.get("status") == "FAIL" for r in test_records)
+
+    s02_status = "FAIL" if s02_failed else ("DONE" if not_run_count == 0 else "IN_REVIEW")
+    s03_status = "BLOCKED" if blocked_count > 0 else ("FAIL" if s03_failed else "DONE")
+    s04_status = "FAIL" if s04_failed else "DONE"
+    s05_status = "FAIL" if s05_failed else "DONE"
+
     if fail_count == 0 and blocked_count == 0 and not_run_count == 0 and pass_count > 0:
         g0_status_badge = "🟢 **DONE (Đã đóng Gate G0: Đạt 100% tất cả các tiêu chí nghiệm thu G0)**"
-        s02_status = "DONE"
-        s03_status = "DONE"
-        g1_status_badge = "🟡 **IN_PROGRESS (Mở Gate G1: S04 DONE, chuẩn bị S05)**"
-        s04_status = "DONE"
     else:
-        g0_status_badge = "🔵 **IN_REVIEW (Đang thẩm định / còn testcase chưa hoàn thành)**"
-        s02_status = "IN_REVIEW"
-        s03_status = "IN_REVIEW"
-        g1_status_badge = "🟡 **IN_PROGRESS (S04 còn lỗi, chưa hoàn thành nghiệm thu)**"
-        s04_status = "IN_REVIEW"
+        g0_status_badge = "🔵 **IN_REVIEW (Đang thẩm định / còn testcase S03.T1 cần DaVinci Resolve chạy thật)**"
+
+    g1_status_badge = "🟡 **IN_PROGRESS (Mở Gate G1: S04 & S05 DONE, chuẩn bị S06)**"
 
     summary = f"""# AIVideo v3.1 — Hồ Sơ Thẩm Định Mã Nguồn (Review Bundle)
 
-> **Mục đích:** Bàn giao mã nguồn cho ChatGPT hoặc kiểm định viên độc lập sau khi nghiệm thu toàn diện Gate G0 và hoàn thành bước S04 Gate G1.  
+> **Mục đích:** Bàn giao mã nguồn cho ChatGPT hoặc kiểm định viên độc lập sau khi nghiệm thu toàn diện Gate G0 và hoàn thành bước S04, S05 Gate G1.  
 > **Thời điểm đóng gói:** {timestamp}  
 > **Kho lưu trữ Git:** {git_info['remote_url']}  
 > **Nhánh:** `{git_info['branch']}` · **Commit Hash:** `{git_info['commit_hash']}`  
@@ -438,7 +442,8 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
 - **Model Pipeline Sản Phẩm (S11: Qwen-VL, Whisper, VieNeu-TTS, DINOv2):** ⚪ **NOT_INSTALLED (Chưa cài đặt, không dùng smoke test fixture để đóng điều kiện LLM sản phẩm)**.
 - **Gate G1 (Dữ liệu và phục hồi):** {g1_status_badge}.
   - **S04:** Hợp đồng dữ liệu JSON Schema (5 trục bằng chứng, chu trình artifact 4 bước, RPC envelope nghiêm ngặt), SQLite WAL DDL hỗ trợ revision immutability, song ngữ Swift/Python với bi-directional golden tests. Trạng thái: `{s04_status}`.
-  - **S05 – S09:** Trạng thái: `NOT_STARTED` (Chưa triển khai, giữ nghiêm ngặt quy trình tuần tự).
+  - **S05:** Import nguồn, băm SHA-256 nội dung và snapshot nguồn niêm phong trên APFS. Trạng thái: `{s05_status}`.
+  - **S06 – S09:** Trạng thái: `NOT_STARTED` (Chưa triển khai, giữ nghiêm ngặt quy trình tuần tự).
 - **Gate G2 – G5:** ⚪ **Chưa bắt đầu**.
 
 ---

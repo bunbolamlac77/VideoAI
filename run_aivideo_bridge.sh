@@ -15,7 +15,7 @@ PYTHON="${AIVIDEO_PYTHON:-python3}"
 
 GOAL="${1:-Sửa lỗi các bài test và hoàn thiện mã nguồn theo checklist PROGRESS_TRACKER.md}"
 TEST_CMD="${2:-python3 tools/run_python_tests.py}"
-MODE="${3:-hybrid}"
+MODE="${3:-cli}"
 MAX_ROUNDS="${AIVIDEO_MAX_ROUNDS:-30}"
 COOLDOWN="${AIVIDEO_COOLDOWN:-12}"
 AUTO_PUSH="${AIVIDEO_AUTO_PUSH:-0}"
@@ -23,8 +23,8 @@ OPEN_CHATGPT="${AIVIDEO_OPEN_CHATGPT:-1}"
 DRY_RUN="${AIVIDEO_DRY_RUN:-0}"
 
 case "$MODE" in
-  direct|hybrid) ;;
-  *) fail "Mode không hợp lệ: $MODE (chỉ chấp nhận direct hoặc hybrid)." ;;
+  direct|hybrid|cli|gui) ;;
+  *) fail "Mode không hợp lệ: $MODE (chỉ chấp nhận direct, hybrid, cli hoặc gui)." ;;
 esac
 
 [[ "$MAX_ROUNDS" =~ ^[1-9][0-9]*$ ]] || fail 'AIVIDEO_MAX_ROUNDS phải là số nguyên dương.'
@@ -90,7 +90,7 @@ if [[ "$DRY_RUN" == 1 ]]; then
 fi
 
 # Browser launch does not itself establish a ChatGPT control channel.
-if [[ "$MODE" == hybrid && "$OPEN_CHATGPT" == 1 ]]; then
+if [[ "$OPEN_CHATGPT" == 1 ]]; then
   command -v open >/dev/null 2>&1 ||
     fail 'Thiếu lệnh macOS open; đặt AIVIDEO_OPEN_CHATGPT=0 nếu đã mở trình duyệt.'
 
