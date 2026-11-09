@@ -92,6 +92,11 @@ swiftc -sdk "$SDK_PATH" \
   -swift-version 6 \
   -parse-as-library \
   packages/AIVideoCore/Sources/Models/DomainModels.swift \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  packages/AIVideoCore/Sources/Scheduler/ResourceGovernor.swift \
+  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  packages/AIVideoCore/Sources/Recovery/BackupRestoreService.swift \
   packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
   apps/macos/Sources/AIVideoApp.swift \
   -o "$TARGET_DIR/AIVideo"

@@ -49,6 +49,18 @@ final class AppState: ObservableObject {
     @Published var resolveSpikeResult: ResolveSpikeResult?
     @Published var isRunningResolveSpike: Bool = false
 
+    // Gate G1: ProjectStore, Brief/Fact Editor & ACK Save Status (S06.5)
+    @Published var g1Project: ProjectRecord?
+    @Published var g1Workday: WorkdayRecord?
+    @Published var g1DraftFactText: String = "Đoạn quay cảnh sương mù đèo Prenn lúc 6h sáng"
+    @Published var g1SaveStatus: String = "Chưa lưu" // Đang lưu / Đã lưu / Lưu lỗi
+    @Published var g1Claims: [ClaimRecord] = []
+    @Published var g1ReconciliationSummary: String = ""
+    @Published var g1LastBackupInfo: String = ""
+    private var projectStore: ProjectStore?
+    private var publicationService: ArtifactPublicationService?
+    private let backupService = BackupRestoreService(supportedMaxSchemaVersion: 2)
+
     @Published var errorMessage: String?
 
     let worker = WorkerClient()
@@ -316,7 +328,117 @@ final class AppState: ObservableObject {
     }
 
     func shutdownAsync() async {
+        if let store = projectStore {
+            try? await store.checkpointWAL()
+            await store.close()
+        }
         await worker.terminate()
+    }
+
+    // MARK: - Gate G1 Store Initialization, ACK-based Save/Confirm & Backup (S06.5 - S09)
+
+    func initializeG1ProjectStore() async {
+        do {
+            let fm = FileManager.default
+            let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? fm.temporaryDirectory
+            let g1Dir = appSupport.appendingPathComponent("AIVideo/Projects/DefaultG1Project", isDirectory: true)
+            try fm.createDirectory(at: g1Dir, withIntermediateDirectories: true)
+            let dbURL = g1Dir.appendingPathComponent("project_store.db")
+
+            let store = try ProjectStore(dbURL: dbURL)
+            let pubService = try ArtifactPublicationService(workspaceRoot: g1Dir)
+            self.projectStore = store
+            self.publicationService = pubService
+
+            let fixedProjId = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!
+            let fixedWorkdayId = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
+
+            let proj: ProjectRecord
+            if let existing = try await store.getProject(id: fixedProjId) {
+                proj = existing
+            } else {
+                proj = try await store.createProject(id: fixedProjId, name: "Dự án mặc định (Gate G1)")
+                _ = try await store.createWorkday(id: fixedWorkdayId, projectId: fixedProjId, title: "Ngày 1: Tư liệu thực địa", date: "2026-11-09")
+            }
+            self.g1Project = proj
+            self.g1Workday = WorkdayRecord(workdayId: fixedWorkdayId, projectId: fixedProjId, title: "Ngày 1: Tư liệu thực địa", date: "2026-11-09")
+
+            let report = try await pubService.runStartupReconciliation(
+                store: store,
+                projectId: fixedProjId,
+                newSessionId: "app-session-\(UUID().uuidString)"
+            )
+            self.g1ReconciliationSummary = "Reconciled: revoked=\(report.revokedOldAttemptsCount), quarantined=\(report.quarantinedTempsCount), corrupted=\(report.corruptedCommittedBlobsCount)"
+            self.g1Claims = try await store.getLatestClaims(workdayId: fixedWorkdayId)
+            self.g1SaveStatus = "Đã lưu (Rev \(proj.currentRevision))"
+        } catch {
+            self.g1SaveStatus = "Lưu lỗi: \(error.localizedDescription)"
+        }
+    }
+
+    func saveDraftFactToStore() async {
+        guard let store = projectStore, let proj = g1Project, let wd = g1Workday else { return }
+        let trimmed = g1DraftFactText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        self.g1SaveStatus = "Đang lưu..."
+        do {
+            let claim = ClaimRecord(
+                workdayId: wd.workdayId,
+                text: trimmed,
+                origin: .user,
+                epistemicStatus: .reported,
+                reviewStatus: .unreviewed
+            )
+            _ = try await store.saveClaim(claim: claim, expectedRevision: proj.currentRevision)
+            if let updated = try await store.getProject(id: proj.projectId) {
+                self.g1Project = updated
+                self.g1SaveStatus = "Đã lưu (ACK Rev \(updated.currentRevision))"
+            }
+            self.g1Claims = try await store.getLatestClaims(workdayId: wd.workdayId)
+        } catch {
+            // S06.5: Keep buffer on error and display Lưu lỗi based on real ACK failure
+            self.g1SaveStatus = "Lưu lỗi: \(error.localizedDescription)"
+        }
+    }
+
+    func confirmFactInStore(claimId: UUID) async {
+        guard let store = projectStore, let proj = g1Project, let wd = g1Workday else { return }
+        self.g1SaveStatus = "Đang lưu..."
+        do {
+            _ = try await store.confirmFact(
+                claimId: claimId,
+                approvedBy: NSUserName(),
+                expectedRevision: proj.currentRevision
+            )
+            if let updated = try await store.getProject(id: proj.projectId) {
+                self.g1Project = updated
+                self.g1SaveStatus = "Đã lưu & Xác nhận Fact (ACK Rev \(updated.currentRevision))"
+            }
+            self.g1Claims = try await store.getLatestClaims(workdayId: wd.workdayId)
+        } catch {
+            self.g1SaveStatus = "Lưu lỗi: \(error.localizedDescription)"
+        }
+    }
+
+    func createPortableBackupFromUI() async {
+        guard let store = projectStore, let proj = g1Project else { return }
+        do {
+            let fm = FileManager.default
+            let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? fm.temporaryDirectory
+            let backupsDir = appSupport.appendingPathComponent("AIVideo/Backups", isDirectory: true)
+            let (bundleURL, manifest) = try await backupService.createBackup(
+                store: store,
+                projectId: proj.projectId,
+                mode: .portableBackup,
+                backupsRootURL: backupsDir
+            )
+            self.g1LastBackupInfo = "Portable Backup thành công (Rev \(manifest.rootRevision)): \(bundleURL.lastPathComponent)"
+        } catch {
+            self.g1LastBackupInfo = "Backup lỗi: \(error.localizedDescription)"
+        }
     }
 }
 
@@ -359,6 +481,7 @@ struct AIVideoApp: App {
                 .onAppear {
                     appDelegate.appState = state
                     Task {
+                        await state.initializeG1ProjectStore()
                         await state.initializeWorker()
                         state.restoreSavedBookmark()
                     }
@@ -657,41 +780,114 @@ struct ContentView: View {
                         .padding(8)
                     }
 
-                    // Section 4: Future Capabilities (Gate G1 Matrix)
-                    GroupBox(label: Label("4. Bản đồ năng lực hệ thống (Capabilities Matrix)", systemImage: "checklist")) {
+                    // Section 4: Gate G1 ProjectStore, ACK-based Editor & Portable Backup
+                    GroupBox(label: Label("4. Quản lý Dữ liệu & Phục hồi (Gate G1 — ProjectStore SQLite WAL)", systemImage: "externaldrive.badge.checkmark")) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("Dự án: \(state.g1Project?.name ?? "Đang mở...") · Revision: \(state.g1Project?.currentRevision ?? 1)")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Spacer()
+                                Text("Trạng thái lưu: \(state.g1SaveStatus)")
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundColor(state.g1SaveStatus.hasPrefix("Lưu lỗi") ? .red : (state.g1SaveStatus.hasPrefix("Đang lưu") ? .blue : .green))
+                            }
+
+                            if !state.g1ReconciliationSummary.isEmpty {
+                                Text("Startup Reconciler (S08): \(state.g1ReconciliationSummary)")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+
+                            HStack {
+                                TextField("Nhập ghi chú/dữ kiện ngày làm việc (Brief/Fact)...", text: $state.g1DraftFactText)
+                                    .textFieldStyle(.roundedBorder)
+                                Button("Lưu nháp (ACK)") {
+                                    Task {
+                                        await state.saveDraftFactToStore()
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                Button("Tạo Portable Backup (S09)") {
+                                    Task {
+                                        await state.createPortableBackupFromUI()
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                            }
+
+                            if !state.g1LastBackupInfo.isEmpty {
+                                Text(state.g1LastBackupInfo)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(.blue)
+                            }
+
+                            if !state.g1Claims.isEmpty {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Danh sách Claims/Facts hiện hành (\(state.g1Claims.count)):")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    ForEach(state.g1Claims) { c in
+                                        HStack {
+                                            Text("• [\(c.origin.rawValue)/\(c.epistemicStatus.rawValue)] \(c.text)")
+                                                .font(.system(size: 11))
+                                            Spacer()
+                                            Text(c.reviewStatus.rawValue.uppercased())
+                                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                                .foregroundColor(c.reviewStatus == .confirmed ? .green : .orange)
+                                            if c.reviewStatus != .confirmed {
+                                                Button("Xác nhận Fact") {
+                                                    Task {
+                                                        await state.confirmFactInStore(claimId: c.claimId)
+                                                    }
+                                                }
+                                                .controlSize(.small)
+                                            }
+                                        }
+                                    }
+                                }
+                                .padding(8)
+                                .background(Color(NSColor.textBackgroundColor).opacity(0.5))
+                                .cornerRadius(6)
+                            }
+                        }
+                        .padding(8)
+                    }
+
+                    // Section 5: Capabilities Matrix (Gate G0 & Gate G1 Completed)
+                    GroupBox(label: Label("5. Bản đồ năng lực hệ thống (Capabilities Matrix)", systemImage: "checklist")) {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Trạng thái triển khai trung thực theo đặc tả AIVideo v3.1:")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                             HStack {
-                                Text("• Worker JSON-RPC 2.0 stdio:")
+                                Text("• Worker JSON-RPC 2.0 stdio & Media Inspector (ffprobe):")
                                 Spacer()
                                 Text("IMPLEMENTED (G0)").font(.caption).foregroundColor(.green)
                             }
                             HStack {
-                                Text("• Media Inspector (ffprobe):")
+                                Text("• Local Neural Model Smoke & DaVinci Resolve Adapter:")
                                 Spacer()
                                 Text("IMPLEMENTED (G0)").font(.caption).foregroundColor(.green)
                             }
                             HStack {
-                                Text("• Local Neural Model Inference:")
+                                Text("• Single-writer ProjectStore (SQLite WAL & Revision History):")
                                 Spacer()
-                                Text("IMPLEMENTED (G0)").font(.caption).foregroundColor(.green)
+                                Text("IMPLEMENTED (G1 — S04/S06)").font(.caption).foregroundColor(.green)
                             }
                             HStack {
-                                Text("• DaVinci Resolve Scripting Adapter:")
+                                Text("• APFS Source Snapshot & 4-State Artifact Publication Engine:")
                                 Spacer()
-                                Text("IMPLEMENTED (G0)").font(.caption).foregroundColor(.green)
+                                Text("IMPLEMENTED (G1 — S05/S08)").font(.caption).foregroundColor(.green)
                             }
                             HStack {
-                                Text("• Single-writer ProjectStore (SQLite WAL):")
+                                Text("• Global Heavy Lease Governor, Fencing & Online Backup/Restore:")
                                 Spacer()
-                                Text("PLANNED (Gate G1)").font(.caption).foregroundColor(.orange)
+                                Text("IMPLEMENTED (G1 — S07/S09)").font(.caption).foregroundColor(.green)
                             }
                             HStack {
-                                Text("• APFS Source Snapshot & Publication Engine:")
+                                Text("• VFR PTS Indexer, Production Models & Full-Frame Analysis:")
                                 Spacer()
-                                Text("PLANNED (Gate G1)").font(.caption).foregroundColor(.orange)
+                                Text("PLANNED (Gate G2 — S10..S15)").font(.caption).foregroundColor(.orange)
                             }
                         }
                         .padding(8)
