@@ -123,7 +123,24 @@ class StructuredJSONLTestResult(unittest.TextTestResult):
                        command_id=test.id())
 
 
+def _maybe_reexec_with_mlx_runtime() -> None:
+    if os.environ.get("AIVIDEO_PYTHON_REEXEC") == "1":
+        return
+    try:
+        import mlx  # noqa: F401
+        import mlx_lm  # noqa: F401
+        return
+    except Exception:
+        pass
+    candidate = Path.home() / "Library" / "Application Support" / "AIVideo" / "Runtimes" / "g0-mlx-runtime" / "bin" / "python3"
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        env = dict(os.environ)
+        env["AIVIDEO_PYTHON_REEXEC"] = "1"
+        os.execve(str(candidate), [str(candidate), *sys.argv], env)
+
+
 def main():
+    _maybe_reexec_with_mlx_runtime()
     os.chdir(PROJECT_ROOT)
     report_dir = PROJECT_ROOT / "build" / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
