@@ -38,6 +38,12 @@ jobs:
             "jsonschema>=4.23,<5" \
             "cryptography>=42"
 
+      - name: Install ffmpeg (media probes and worker tests)
+        run: brew install ffmpeg
+
+      - name: Export interpreter for the worker
+        run: echo "AIVIDEO_PYTHON=$(command -v python3)" >> "$GITHUB_ENV"
+
       - name: Validate JSON Contracts and Schemas
         run: |
           python3 - <<'PY'
@@ -81,20 +87,27 @@ jobs:
         run: |
           python3 -m unittest discover -s tools/autobridge/tests -p 'test_*.py' -v
 
-      - name: Parse All Swift Sources (syntax-only)
+      - name: Parse All Swift Sources (fast syntax gate)
         run: |
           swiftc -frontend -parse apps/macos/Sources/*.swift \
             packages/AIVideoCore/Sources/*/*.swift tests/*.swift
 
-      - name: Run G1 Swift Contract Tests
+      - name: Build macOS App (must compile with zero warnings)
+        shell: bash
         run: |
-          mkdir -p build/tests build/reports
-          swiftc -swift-version 6 -parse-as-library \
-            packages/AIVideoCore/Sources/Models/DomainModels.swift \
-            packages/AIVideoCore/Sources/Models/DataContracts.swift \
-            tests/test_g1_contracts.swift \
-            -o build/tests/test_g1_contracts
-          ./build/tests/test_g1_contracts
+          set -o pipefail
+          ./tools/build_macos_app.sh 2>&1 | tee build/app-build.log
+          if grep -q "warning:" build/app-build.log; then
+            echo "ERROR: compiler warnings are not allowed in a release build"
+            grep -n "warning:" build/app-build.log
+            exit 1
+          fi
+          test -x apps/macos/build/AIVideo.app/Contents/MacOS/AIVideo
+
+      - name: Run Full Regression Matrix (Python + 17 Swift suites)
+        shell: bash
+        run: |
+          ./tools/run_tests.sh
 
       - name: Verify No Model Binaries Tracked by Git
         run: |
