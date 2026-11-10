@@ -129,3 +129,8 @@
 - **Nhãn trung thực**: 5 clip trong `fixtures/corpus` là **title card tĩnh** (đã xem frame), không phải footage thực địa. Nhãn ghi `labeler_type=agent_visual_review`, `source_kind=synthetic_title_card`, không có claim/event. `corpus_labels.summarize_label_eligibility` trả `acceptance_eligible=False`; `evaluate_e0_e1_accounting` và preflight đều từ chối chứng nhận với blocker `CORPUS_KIND_NOT_FIELD`, `LABELS_NOT_HUMAN`, `NOT_FIELD_FOOTAGE`.
 - **Resolve thật**: `run_g0_spike` chạy trên DaVinci Resolve Studio 21.2.0 đang mở — tạo project riêng, timeline 2160×3840@24, đúng 240 frame, title track 2, render settings, save + reopen, export DRP 26 KB. Bằng chứng: `reports/evidence/resolve_g0_real_run.json`.
 - **G4/G5 end-to-end vẫn bị chặn**: S20 cần `approved_plan` từ G3, mà G3 cần WAV thoại thật; VieNeu-TTS chưa cài nên `g3.voice.trial` trả `blocked_tts_runtime_unavailable`. Đây là phụ thuộc thật, không phải lỗi Resolve.
+
+## 15. CI thật trên GitHub Actions (2026-11-10)
+- Run xanh: https://github.com/bunbolamlac77/VideoAI/actions/runs/42838639795 (294 s).
+- CI phát hiện 4 lỗi chỉ có trên runner, đều đã sửa: thiếu `drawtext`; clip fixture bị gitignore; hard-code Homebrew python trong 3 suite Swift; test phụ thuộc model chưa skip.
+- Kỹ thuật chẩn đoán: vì log Actions cần đăng nhập, workflow tạo check-run công khai `aivideo-diagnostics` chứa non-PASS records + tail log, đọc qua `GET /commits/{sha}/check-runs`.

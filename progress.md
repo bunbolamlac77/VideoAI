@@ -271,3 +271,14 @@
 - Resolve acceptance thật: G0 spike trên Resolve Studio 21.2.0, DRP 26 KB, evidence `reports/evidence/resolve_g0_real_run.json`.
 - G4/G5 e2e: bị chặn bởi VieNeu-TTS chưa cài (không có WAV → không có G3 approval).
 - Tests mới: `tests/test_corpus_labels.py` (7 ca) + cập nhật anchor invariants.
+
+## 2026-11-10 — Wave F: CI xanh trên GitHub Actions
+
+- Push toàn bộ Wave A–F lên `origin/main` (repo `bunbolamlac77/VideoAI`).
+- CI đỏ lần đầu, sửa 5 nguyên nhân runner-specific:
+  1. ffmpeg hosted thiếu filter `drawtext` → guard `FFMPEG_DRAWTEXT_UNAVAILABLE` + test skip.
+  2. Nhãn trỏ tới clip bị gitignore → track 5 fixture `.mp4` (~90 KB).
+  3. `test_worker_ipc` hard-code `/opt/homebrew/bin/python3.12` → `aivideo_test_python_path()` (AIVIDEO_PYTHON → runtime → brew → PATH) cho 3 suite Swift.
+  4. Test phụ thuộc model (token limit, preflight, inference) fail khi runner không có weights → ghi SKIPPED thay vì FAIL.
+  5. Diagnostics: check-run công khai chứa non-PASS + log tail (logs GitHub cần auth).
+- **Kết quả**: run [42838639795](https://github.com/bunbolamlac77/VideoAI/actions/runs/42838639795) **success** (4m54s) — Python 213 test, build 0 warning, 17 nhóm Swift.
