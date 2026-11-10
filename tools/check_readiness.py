@@ -203,43 +203,56 @@ def check_resolve_installation() -> dict[str, Any]:
 def check_field_corpus_and_certification(
     manifest_path: Path | None = None,
 ) -> dict[str, Any]:
-    from aivideo_workers.g5_release_audit import (
-        validate_signed_field_manifest,
-    )
-    path = manifest_path or (
-        ROOT / "reports"
-        / "evidence"
-        / "signed_field_corpus_manifest.json"
-    )
+    """A signed manifest is necessary but not sufficient: it must also be real
+    footage with human labels. A valid signature over synthetic fixtures proves the
+    key works, not that the model was accepted on field data."""
+    from aivideo_workers.g5_release_audit import validate_signed_field_manifest
+
+    path = manifest_path or (ROOT / "reports" / "evidence" / "signed_field_corpus_manifest.json")
     corpus_dir = ROOT / "fixtures" / "corpus"
-    certified = False
+    signature_valid = False
+    scope: dict[str, Any] = {}
+    blockers: list[str] = []
     if path.is_file():
         try:
-            data = json.loads(
-                path.read_text(encoding="utf-8")
-            )
-            authority = data.get(
-                "signing_authority", {}
-            )
-            algorithm = (
-                authority.get("algorithm", "")
-                if isinstance(authority, dict)
-                else ""
-            )
-            certified = (
+            data = json.loads(path.read_text(encoding="utf-8"))
+            scope = data.get("corpus_scope", {}) if isinstance(data, dict) else {}
+            authority = data.get("signing_authority", {})
+            algorithm = authority.get("algorithm", "") if isinstance(authority, dict) else ""
+            signature_valid = (
                 algorithm.strip().lower() == "ed25519"
                 and validate_signed_field_manifest(
-                    data,
-                    corpus_dir=corpus_dir,
-                    enforce_signature=True,
+                    data, corpus_dir=corpus_dir, enforce_signature=True
                 )
             )
-        except Exception:
-            certified = False
+        except Exception as exc:
+            blockers.append(f"MANIFEST_UNREADABLE:{exc}")
+    else:
+        blockers.append("MANIFEST_MISSING")
 
+    labels = scope.get("labels", {}) if isinstance(scope, dict) else {}
+    corpus_kind = str(scope.get("corpus_kind", "")) if isinstance(scope, dict) else ""
+    labelers = list(labels.get("labeler_types") or [])
+    sources = list(labels.get("source_kinds") or [])
+
+    if not signature_valid:
+        blockers.append("SIGNED_MANIFEST_INVALID")
+    if corpus_kind != "E0_5_HELD_OUT_TRIPS":
+        blockers.append(f"CORPUS_KIND_NOT_FIELD:{corpus_kind or 'unknown'}")
+    if labelers != ["human"]:
+        blockers.append(f"LABELS_NOT_HUMAN:{labelers}")
+    if sources != ["field_footage"]:
+        blockers.append(f"NOT_FIELD_FOOTAGE:{sources}")
+
+    certified = not blockers
     return {
         "live_field_corpus_certified": certified,
-        "certification_status": "CERTIFIED_FIELD_CORPUS" if certified else "UNVERIFIED_INPUT_REQUIRES_SIGNED_FIELD_CORPUS",
+        "certification_status": (
+            "CERTIFIED_FIELD_CORPUS" if certified else "UNVERIFIED_INPUT_REQUIRES_SIGNED_FIELD_CORPUS"
+        ),
+        "certification_blockers": blockers,
+        "corpus_kind": corpus_kind,
+        "labels": labels,
         "manifest_path": str(path),
     }
 
@@ -272,7 +285,11 @@ def run_preflight() -> int:
         blockers.append("DAVINCI_RESOLVE_NOT_INSTALLED: Resolve Studio must be present for the production workflow")
 
     if not field_corpus["live_field_corpus_certified"]:
-        blockers.append("UNVERIFIED_INPUT_REQUIRES_SIGNED_FIELD_CORPUS: E0/E1 real video held-out runs require signed field corpus")
+        detail = ", ".join(field_corpus.get("certification_blockers", [])) or "unknown"
+        blockers.append(
+            "UNVERIFIED_INPUT_REQUIRES_SIGNED_FIELD_CORPUS: E0/E1 real video held-out runs "
+            f"require signed field corpus ({detail})"
+        )
 
     report = {
         "schema": "aivideo-readiness-preflight-v1",

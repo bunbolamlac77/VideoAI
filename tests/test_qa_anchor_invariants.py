@@ -34,10 +34,20 @@ class TestPinnedQATrustAnchor(unittest.TestCase):
             else:
                 os.environ["AIVIDEO_CONTRACTS_DIR"] = previous
 
-    def test_production_anchor_is_unprovisioned_by_default(self) -> None:
-        """Until a real QA key is issued, field certification must be unavailable."""
-        self.assertEqual(g5_release_audit.PINNED_FIELD_QA_KEY_SHA256, "")
+    def test_production_anchor_matches_the_committed_public_key(self) -> None:
+        """The pinned fingerprint must equal the committed PEM, or signing breaks."""
+        import hashlib
+
+        pem = (_ROOT / "contracts" / "field_qa_ed25519_public_key.pem").read_bytes()
+        self.assertEqual(
+            hashlib.sha256(pem).hexdigest(),
+            g5_release_audit.PINNED_FIELD_QA_KEY_SHA256,
+        )
         self.assertEqual(g5_release_audit.FIELD_QA_KEY_ID, "aivideo-field-qa-v1")
+
+    def test_private_key_never_lives_in_the_repository(self) -> None:
+        private_candidates = list(_ROOT.rglob("*field_qa*private*"))
+        self.assertEqual(private_candidates, [], f"private key committed: {private_candidates}")
 
 
 if __name__ == "__main__":

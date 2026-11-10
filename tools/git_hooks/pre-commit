@@ -21,8 +21,11 @@ if [ -n "$LARGE_FILES" ]; then
     exit 1
 fi
 
-# 2. Block secret files
-SECRET_FILES="$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(env|key|pem|secret|token)$' || true)"
+# 2. Block secret files. Public verification keys are intentionally published,
+#    so `*_public_key.pem` is allowed; any other .pem (private keys) is blocked.
+SECRET_FILES="$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(env|key|secret|token)$' || true)"
+BLOCKED_PEM="$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.pem$' | grep -vE '_public_key\.pem$' || true)"
+SECRET_FILES="${SECRET_FILES}${BLOCKED_PEM}"
 if [ -n "$SECRET_FILES" ]; then
     echo "❌ PRE-COMMIT ERROR: Phát hiện file bí mật trong staging area:"
     echo "$SECRET_FILES"

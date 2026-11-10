@@ -38,7 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 # The path deliberately ignores AIVIDEO_CONTRACTS_DIR so an environment variable can no
 # longer redirect signature verification to a caller-supplied key.
 FIELD_QA_KEY_ID = "aivideo-field-qa-v1"
-PINNED_FIELD_QA_KEY_SHA256 = ""
+PINNED_FIELD_QA_KEY_SHA256 = "9c7edbdd5cb6519c7eda4dfc8154ccf8cbbd96b06a5993c4c9b322819876a179"
 _QA_PUBLIC_KEY_PATH = PROJECT_ROOT / "contracts" / "field_qa_ed25519_public_key.pem"
 
 
@@ -290,13 +290,32 @@ def evaluate_e0_e1_accounting(params: dict[str, Any]) -> dict[str, Any]:
         isinstance(signed_manifest, dict)
         and str(signed_manifest.get("signing_authority", {}).get("algorithm", "")).strip().lower() == "ed25519"
     )
-    live_field_corpus_certified = bool(
-        has_valid_manifest
-        and is_ed25519_cert
-        and not is_synthetic_fixture
-        and total_runs >= 5
-        and counts["failed"] == 0
-    )
+    scope = signed_manifest.get("corpus_scope", {}) if isinstance(signed_manifest, dict) else {}
+    labels_meta = scope.get("labels", {}) if isinstance(scope, dict) else {}
+    labeler_types = list(labels_meta.get("labeler_types") or [])
+    source_kinds = list(labels_meta.get("source_kinds") or [])
+    human_field_labels = labeler_types == ["human"] and source_kinds == ["field_footage"]
+    corpus_kind_ok = str(scope.get("corpus_kind", "")) == "E0_5_HELD_OUT_TRIPS"
+
+    certification_blockers = []
+    if not has_valid_manifest:
+        certification_blockers.append("SIGNED_MANIFEST_INVALID")
+    if not is_ed25519_cert:
+        certification_blockers.append("NOT_ED25519")
+    if is_synthetic_fixture:
+        certification_blockers.append("CALLER_DECLARED_SYNTHETIC")
+    if not corpus_kind_ok:
+        certification_blockers.append(f"CORPUS_KIND_NOT_FIELD:{scope.get('corpus_kind')}")
+    if not human_field_labels:
+        certification_blockers.append(
+            f"LABELS_NOT_HUMAN_FIELD:labelers={labeler_types},sources={source_kinds}"
+        )
+    if total_runs < 5:
+        certification_blockers.append("FEWER_THAN_5_RUNS")
+    if counts["failed"] != 0:
+        certification_blockers.append("FAILED_RUNS_PRESENT")
+
+    live_field_corpus_certified = bool(not certification_blockers)
 
     if live_field_corpus_certified:
         certification_status = "CERTIFIED_FIELD_CORPUS"
@@ -314,6 +333,7 @@ def evaluate_e0_e1_accounting(params: dict[str, Any]) -> dict[str, Any]:
         "is_synthetic_fixture": is_synthetic_fixture,
         "live_field_corpus_certified": live_field_corpus_certified,
         "certification_status": certification_status,
+        "certification_blockers": certification_blockers,
         "total_runs": total_runs,
         "outcome_counts": counts,
         "rates": {

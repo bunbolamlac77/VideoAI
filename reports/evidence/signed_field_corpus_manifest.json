@@ -1,83 +1,90 @@
 {
   "schema": "aivideo-signed-field-corpus-manifest-v1",
-  "version": "1.0.0",
-  "signed_at": "2026-11-09T20:25:00Z",
+  "version": "1.1.0",
+  "signed_at": "2026-11-10T14:04:45Z",
   "corpus_scope": {
-    "corpus_kind": "E0_5_HELD_OUT_TRIPS_AND_E1_10_WORKDAYS",
-    "target_platform": "Apple Silicon M1 Pro, 16 GB Unified Memory (macOS)",
+    "corpus_kind": "SYNTHETIC_FIXTURE",
+    "target_platform": "Apple Silicon (local offline)",
     "held_out_trips": [
       {
         "trip_id": "trip-holdout-01-dalat",
-        "route": "Đèo Prenn - Hồ Tuyền Lâm",
-        "workdays": 2,
-        "total_video_duration_seconds": 1820.0,
-        "video_codec": "hevc_10bit_rec709",
-        "audio_spec": "pcm_s16le_48khz_mono",
-        "ground_truth_claims_count": 21,
-        "sha256": "4a7f29b8c0e13d52e67a18f4321c9b8e7d6a5c4b3a2f1e0d9c8b7a6f5e4d3c2b"
+        "route": "Cảnh quay POV Đèo Prenn - Hồ Tuyền Lâm Đà Lạt",
+        "workdays": 1,
+        "total_video_duration_seconds": 1.5,
+        "video_codec": "h264",
+        "resolution": "1080x1920",
+        "sha256": "ae84acc2aacd1a4c86daa80bd7054e22ce2b84d400dbd93cfc222e67c69e23f8",
+        "ground_truth_claims_count": 0,
+        "labeler_type": "agent_visual_review",
+        "source_kind": "synthetic_title_card"
       },
       {
         "trip_id": "trip-holdout-02-halong",
-        "route": "Vịnh Hạ Long - Đảo Ti Tốp",
-        "workdays": 2,
-        "total_video_duration_seconds": 1940.0,
-        "video_codec": "h264_8bit_rec709",
-        "audio_spec": "pcm_s16le_48khz_mono",
-        "ground_truth_claims_count": 21,
-        "sha256": "8e3b5a1c9f2d4e6a8b0c2e4f6a8b0c2e4f6a8b0c2e4f6a8b0c2e4f6a8b0c2e4f"
+        "route": "Cảnh quay POV Vịnh Hạ Long - Đảo Ti Tốp",
+        "workdays": 1,
+        "total_video_duration_seconds": 1.5,
+        "video_codec": "h264",
+        "resolution": "1080x1920",
+        "sha256": "2aab15322d3e0767391d64f965de697e0e1cd708dc89b5f6f5ca83085f37e4e2",
+        "ground_truth_claims_count": 0,
+        "labeler_type": "agent_visual_review",
+        "source_kind": "synthetic_title_card"
       },
       {
         "trip_id": "trip-holdout-03-hagiang",
-        "route": "Đèo Mã Pí Lèng - Sông Nho Quế",
-        "workdays": 2,
-        "total_video_duration_seconds": 2100.0,
-        "video_codec": "hevc_10bit_rec709",
-        "audio_spec": "pcm_s16le_48khz_mono",
-        "ground_truth_claims_count": 21,
-        "sha256": "3c5a7e9f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d"
+        "route": "Cảnh quay POV Đèo Mã Pí Lèng - Sông Nho Quế",
+        "workdays": 1,
+        "total_video_duration_seconds": 1.5,
+        "video_codec": "h264",
+        "resolution": "1080x1920",
+        "sha256": "8061c1fd6c86f7a1992432f47829e89d734a47ac68f3ec2b9a5b18c3cae27a22",
+        "ground_truth_claims_count": 0,
+        "labeler_type": "agent_visual_review",
+        "source_kind": "synthetic_title_card"
       },
       {
         "trip_id": "trip-holdout-04-phuquoc",
-        "route": "Bãi Sao - Cáp treo Hòn Thơm",
-        "workdays": 2,
-        "total_video_duration_seconds": 1780.0,
-        "video_codec": "h264_8bit_rec709",
-        "audio_spec": "pcm_s16le_48khz_mono",
-        "ground_truth_claims_count": 21,
-        "sha256": "1f2e3d4c5b6a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b0a1f2e"
+        "route": "Cảnh quay POV Bãi Sao - Cáp treo Hòn Thơm",
+        "workdays": 1,
+        "total_video_duration_seconds": 1.5,
+        "video_codec": "h264",
+        "resolution": "1080x1920",
+        "sha256": "cb1aba42e9f51087300a208f6546ea0ac55926487f5b5c52f423eb94421d55f5",
+        "ground_truth_claims_count": 0,
+        "labeler_type": "agent_visual_review",
+        "source_kind": "synthetic_title_card"
       },
       {
         "trip_id": "trip-holdout-05-mekong",
-        "route": "Chợ nổi Cái Răng - Cồn Sơn",
-        "workdays": 2,
-        "total_video_duration_seconds": 1850.0,
-        "video_codec": "hevc_10bit_rec709",
-        "audio_spec": "pcm_s16le_48khz_mono",
-        "ground_truth_claims_count": 21,
-        "sha256": "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b"
+        "route": "Cảnh quay POV Chợ nổi Cái Răng - Cồn Sơn Cần Thơ",
+        "workdays": 1,
+        "total_video_duration_seconds": 1.5,
+        "video_codec": "h264",
+        "resolution": "1080x1920",
+        "sha256": "2ff90102e5a072c318bb2983d1a8f526787453c35ed8fa140a755d98f65ded2d",
+        "ground_truth_claims_count": 0,
+        "labeler_type": "agent_visual_review",
+        "source_kind": "synthetic_title_card"
       }
     ],
-    "total_held_out_trips": 5,
-    "total_workdays": 10,
-    "total_labeled_opportunities": 105,
-    "total_observable_events": 50,
-    "zero_leakage_verified": true
-  },
-  "benchmark_summary": {
-    "status": "PASS",
-    "completion_rate": 1.0,
-    "abstention_rate": 0.0,
-    "blocked_rate": 0.0,
-    "failure_rate": 0.0,
-    "fact_precision": 1.0,
-    "frame_input_coverage": 1.0,
-    "max_rss_mb": 4500.0,
-    "memory_within_16gb_budget": true
+    "labels": {
+      "clip_count": 5,
+      "labeler_types": [
+        "agent_visual_review"
+      ],
+      "source_kinds": [
+        "synthetic_title_card"
+      ],
+      "acceptance_eligible": false,
+      "blockers": [
+        "LABELS_NOT_HUMAN:['agent_visual_review']",
+        "NOT_FIELD_FOOTAGE:['synthetic_title_card']"
+      ]
+    }
   },
   "signing_authority": {
-    "organization": "AIVideo Field Verification & Quality Assurance",
-    "key_id": "aivideo-field-qa-signing-key-v1",
-    "algorithm": "sha256-rsa-pss",
-    "signature": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855d41d8cd98f00b204e9800998ecf8427e"
+    "key_id": "aivideo-field-qa-v1",
+    "algorithm": "ed25519",
+    "signature": "ZTyV7eMUM/WJamWitLQ5LG/5RbaBHUxDllaBnfR2h8CToVWCSJkdqCKKod3/9n5EiDH2C+PEagdLrL+jgOZiCw=="
   }
 }
