@@ -44,7 +44,7 @@ class TestS15G2Benchmark(unittest.TestCase):
             claim_opportunities=fix["claim_opportunities"],
             observable_events=fix["observable_events"],
             verifier_adversarial_suite=fix["verifier_suite"],
-            frame_coverage_by_group=fix["frame_coverage_by_group"],
+            frame_coverage_by_group=fix["synthetic_coverage_by_group"],
         )
 
         self.assertEqual(report["g2_gate_decision"], "PASS")
@@ -130,7 +130,7 @@ class TestS15G2Benchmark(unittest.TestCase):
             claim_opportunities=corrupted_opps,
             observable_events=fix["observable_events"],
             verifier_adversarial_suite=fix["verifier_suite"],
-            frame_coverage_by_group=fix["frame_coverage_by_group"],
+            frame_coverage_by_group=fix["synthetic_coverage_by_group"],
         )
         self.assertEqual(report["g2_gate_decision"], "FAIL")
         self.assertEqual(report["metrics"]["critical_false_accept_count"]["count"], 1)
@@ -153,7 +153,7 @@ class TestS15G2Benchmark(unittest.TestCase):
             claim_opportunities=excluded_only,
             observable_events=fix["observable_events"],
             verifier_adversarial_suite=fix["verifier_suite"],
-            frame_coverage_by_group=fix["frame_coverage_by_group"],
+            frame_coverage_by_group=fix["synthetic_coverage_by_group"],
         )
         prec = report["metrics"]["accepted_claim_support_precision"]
         self.assertEqual(prec["denominator"], 0)
@@ -209,20 +209,29 @@ class TestS15G2Benchmark(unittest.TestCase):
 
     def test_s15_real_video_corpus_passes_with_verified_held_out_clips(self) -> None:
         """
-        S15 Gate G2 Closure: Genuine Rec.709 5 held-out trips processed via offline Qwen3-VL
-        full-frame pipeline pass all acceptance-targets-v0.1 without data leakage.
+        S15 real-corpus SMOKE run: genuine 5 held-out clips are processed by the offline
+        Qwen3-VL pipeline with declared 8/16 sampling. Claim/event metrics are still graded
+        against the synthetic harness fixture, so the run must never report Gate G2 acceptance.
         """
         from pathlib import Path
+        import os
         corpus_dir = Path(__file__).resolve().parents[1] / "fixtures" / "corpus"
         models_root = Path.home() / "Library/Application Support/AIVideo/Models"
+        if os.environ.get("AIVIDEO_RUN_HEAVY_G2") != "1":
+            self.skipTest("Heavy real-corpus VLM run; set AIVIDEO_RUN_HEAVY_G2=1 to execute")
         if not corpus_dir.is_dir() or not (models_root / "visual_analysis_primary" / "model.safetensors").is_file():
             self.skipTest("Real corpus or model not installed")
         report = run_real_video_corpus_g2_benchmark(corpus_dir, models_root_dir=models_root)
-        self.assertEqual(report["g2_gate_decision"], "PASS")
-        self.assertTrue(report["real_video_corpus_verified"])
+        self.assertEqual(report["g2_gate_decision"], "SMOKE_ONLY")
+        self.assertFalse(report["real_video_corpus_verified"])
+        self.assertFalse(report["acceptance_eligible"])
+        self.assertEqual(report["label_source"], "synthetic_decision_harness_fixture")
         self.assertEqual(report["real_video_groups_count"], 5)
-        self.assertEqual(report["metrics"]["accepted_claim_support_precision"]["point_estimate"], 1.0)
-        self.assertEqual(report["metrics"]["frame_input_coverage"]["point_estimate"], 1.0)
+        coverage = report["metrics"]["frame_input_coverage"]["point_estimate"]
+        self.assertGreater(coverage, 0.0)
+        self.assertLess(coverage, 1.0)  # declared sampling is 8/16, never "full frame"
+        # The synthetic decision harness itself still passes; it just is not acceptance evidence.
+        self.assertTrue(report["synthetic_harness_gate_passed"])
 
 
 

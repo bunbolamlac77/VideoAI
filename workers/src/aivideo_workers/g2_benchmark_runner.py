@@ -283,6 +283,7 @@ def run_g2_analysis_eligible_benchmark(
     observable_events: Sequence[LabeledObservableEvent],
     verifier_adversarial_suite: Sequence[VerifierAdversarialCase],
     frame_coverage_by_group: Dict[str, Tuple[int, int]],  # group_id -> (unique_processed_frames, total_valid_frames)
+    label_source: str = "synthetic_decision_harness_fixture",
 ) -> Dict[str, Any]:
     """
     S15.1 - S15.5 & S15.T1 - S15.T4:
@@ -460,10 +461,21 @@ def run_g2_analysis_eligible_benchmark(
         "full_frame_input_coverage": (frame_coverage_ratio is not None and frame_coverage_ratio == 1.0),
     }
     g2_gate_passed = all(gate_checks.values())
+    # 2026-11-10 fix (D05): this harness grades hand-authored labels. That is a valid
+    # regression test of the decision table, but it is NOT acceptance evidence for the
+    # vision model on real footage. Acceptance requires human-labelled holdout data.
+    acceptance_eligible = label_source == "human_labeled_holdout"
 
     return {
         "checkpoint_stage": "G2_analysis_eligible",
-        "evaluation_mode": "synthetic_decision_harness_fixture",
+        "evaluation_mode": label_source,
+        "label_source": label_source,
+        "acceptance_eligible": acceptance_eligible,
+        "acceptance_gate_decision": (
+            "ELIGIBLE_PASS"
+            if (g2_gate_passed and acceptance_eligible)
+            else "NOT_ACCEPTANCE_EVIDENCE"
+        ),
         "production_video_inference_verified": False,
         "target_version": manifest.target_version,
         "frozen_manifest_sha256": manifest.compute_lock_sha256(),
@@ -901,7 +913,9 @@ def build_canonical_g2_benchmark_fixture() -> Dict[str, Any]:
             )
         )
 
-    frame_coverage_by_group = {hg: (1200, 1200) for hg in holdout_groups}
+    # Explicitly synthetic: used only to exercise the decision harness. Real runs must
+    # supply measured coverage from `ledger.unique_post_processor_frame_ids`.
+    synthetic_coverage_by_group = {hg: (1200, 1200) for hg in holdout_groups}
 
     return {
         "manifest": manifest,
@@ -911,7 +925,7 @@ def build_canonical_g2_benchmark_fixture() -> Dict[str, Any]:
         "claim_opportunities": opportunities,
         "observable_events": events,
         "verifier_suite": verifier_suite,
-        "frame_coverage_by_group": frame_coverage_by_group,
+        "synthetic_coverage_by_group": synthetic_coverage_by_group,
     }
 
 
@@ -926,7 +940,12 @@ def run_real_video_corpus_g2_benchmark(
     """
     from pathlib import Path
     import subprocess
-    from .media_indexer import SourceFrameEntry, _compute_file_sha256, probe_and_index_real_video
+    from .media_indexer import (
+        SourceFrameEntry,
+        _compute_file_sha256,
+        declared_source_frame_count,
+        probe_and_index_real_video,
+    )
     from .pipeline_adapters import S11ModelRegistryAndAdapters
     from .full_frame_pipeline import BoundedPipelineConfig, FullFrameAnalysisPipeline
 
@@ -980,8 +999,8 @@ def run_real_video_corpus_g2_benchmark(
             source_revision_id=f"rev-{hg}",
             source_sha256=sha256_hex,
             pts_index=pts_entries,
-            total_declared_source_frames=len(pts_entries),
-            checkpoint_path=wdir / f"ckpt_{hg}.json",
+            total_declared_source_frames=declared_source_frame_count(probed, indexed_count=len(pts_entries)),
+            checkpoint_path=wdir / f"ckpt_v2_{hg}.json",
             has_audio_stream=bool(probed.get("has_audio_stream", False)),
             window_inspector_fn=inspector_fn,
         )
@@ -1000,8 +1019,15 @@ def run_real_video_corpus_g2_benchmark(
         observable_events=base_fx["observable_events"],
         verifier_adversarial_suite=base_fx["verifier_suite"],
         frame_coverage_by_group=real_coverage_by_group,
+        label_source="synthetic_decision_harness_fixture",
     )
-    report["real_video_corpus_verified"] = True
+    # 2026-11-10 fix (D05): a real-video run only measures frame coverage and produces
+    # observations. Claim precision / event recall / verifier FAR are still graded against
+    # the synthetic fixture, so this run is SMOKE evidence, never Gate G2 acceptance.
+    report["synthetic_harness_gate_passed"] = report["g2_gate_decision"] == "PASS"
+    report["g2_gate_decision"] = "SMOKE_ONLY"
+    report["corpus_mode"] = "smoke"
+    report["real_video_corpus_verified"] = False
     report["real_video_groups_count"] = len(real_coverage_by_group)
     report["real_video_observations_by_group"] = group_observations
     return report
