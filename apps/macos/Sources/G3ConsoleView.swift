@@ -112,14 +112,13 @@ struct G3ConsoleView: View {
     @State private var storyTopic: String = "Chuyến đi thực tế"
     @State private var storyTone: String = "pov_tu_nhien"
     @State private var targetSeconds: Int = 30
-    @State private var customClaimText: String = "Tôi đã đến địa điểm này và trải nghiệm thực tế."
+    @State private var selectedClaimId: UUID?
     @State private var editBeatId: String = "beat-01"
     @State private var editVoiceText: String = ""
 
     // S17 TTS Voice Form State
     @State private var voiceModelChoice: String = "nu_mien_bac"
     @State private var voiceTrialBeatId: String = "beat-01"
-    @State private var voiceSpeed: Double = 1.0
     @State private var voiceBeatId: String = "beat-01"
     @State private var voicePublicationId: String = ""
     @State private var reviewedVoiceSHA256: String = ""
@@ -231,11 +230,41 @@ struct G3ConsoleView: View {
                         .frame(maxWidth: 160)
                     }
 
-                    // Fact claim binding
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Fact Claim nguồn (từ G1/G2)").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                        TextField("Nội dung fact claim cần đối chiếu...", text: $customClaimText)
-                            .textFieldStyle(.roundedBorder)
+                    // Fact claim binding — only claims that already exist in G1 can be narrated.
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Fact Claim nguồn (bắt buộc từ G1/G2)").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                        if state.g1Claims.isEmpty {
+                            Text("Chưa có fact nào trong G1. Hãy chạy phân tích G2 ở Bước 1 để tạo fact có bằng chứng nguồn.")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        } else {
+                            Picker("", selection: $selectedClaimId) {
+                                Text("— Chọn một fact —").tag(UUID?.none)
+                                ForEach(state.g1Claims) { claim in
+                                    Text("\(claim.text.prefix(70)) · \(claim.reviewStatus.rawValue)")
+                                        .tag(Optional(claim.claimId))
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+
+                            if let claim = selectedClaim {
+                                HStack(spacing: 8) {
+                                    badge(claim.origin.rawValue)
+                                    badge(claim.epistemicStatus.rawValue)
+                                    badge(claim.reviewStatus.rawValue)
+                                    badge(claim.supportStatus.rawValue)
+                                    badge(claim.allowedUse.rawValue)
+                                }
+                                if claim.reviewStatus != .confirmed {
+                                    Button("Xác nhận fact này (người dùng xác nhận)") {
+                                        confirmSelectedClaim()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
                     }
 
                     HStack(spacing: 10) {
@@ -343,10 +372,13 @@ struct G3ConsoleView: View {
                         .frame(maxWidth: 120)
 
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Tốc độ: \(String(format: "%.1fx", voiceSpeed))").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                            Slider(value: $voiceSpeed, in: 0.8...1.2, step: 0.05)
+                            Text("Tốc độ: 1.0× (profile khoá)").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            Text("P-TTS-VIENEU-v1 chỉ chấp nhận 1.0×; cần cài VieNeu-TTS offline, nếu thiếu worker trả blocked_tts_runtime_unavailable.")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        .frame(maxWidth: 160)
+                        .frame(maxWidth: 200)
 
                         Button("Tạo WAV 48 kHz") {
                             buildAndSendVoiceTrial()
@@ -514,42 +546,59 @@ struct G3ConsoleView: View {
             }
         }
         .padding(.vertical, 4)
-        .onAppear {
-            if (customClaimText.isEmpty || customClaimText == "Tôi đã đến địa điểm này và trải nghiệm thực tế.") {
-                if let firstConfirmed = state.g1Claims.first(where: { $0.reviewStatus == .confirmed }) ?? state.g1Claims.first {
-                    customClaimText = firstConfirmed.text
-                }
+    }
+
+    private var selectedClaim: ClaimRecord? {
+        guard let id = selectedClaimId else { return nil }
+        return state.g1Claims.first { $0.claimId == id }
+    }
+
+    private func confirmSelectedClaim() {
+        guard let store = state.projectStore,
+              let workday = state.g1Workday,
+              let claim = selectedClaim else { return }
+        Task {
+            do {
+                _ = try await store.confirmFact(
+                    claimId: claim.claimId,
+                    approvedBy: NSUserName()
+                )
+                state.g1Claims = try await store.getLatestClaims(workdayId: workday.workdayId)
+                output = "Đã xác nhận fact \(claim.claimId.uuidString.prefix(8)) — origin và epistemic status được giữ nguyên."
+            } catch {
+                output = "Không xác nhận được fact: \(error.localizedDescription)"
             }
         }
     }
 
+    private func badge(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.secondary.opacity(0.12), in: Capsule())
+    }
+
     private func buildAndSendStoryRequest() {
-        let cid = "c1"
-        let factObj: [String: G3JSONValue] = [
-            "claim_id": .string(cid),
-            "revision_id": .string("rev-\(cid)"),
-            "text": .string(customClaimText),
-            "origin": .string("user"),
-            "epistemic_status": .string("reported"),
-            "review_status": .string("confirmed"),
-            "support_status": .string("supported"),
-            "allowed_use": .string("attributed_or_qualified"),
-            "scope_revalidation_status": .string("complete"),
-            "evidence_scope_revision_id": .string(scopeRevisionId)
-        ]
-        let obj: [String: G3JSONValue] = [
-            "evidence_scope_revision_id": .string(scopeRevisionId),
-            "claims": .array([.object(factObj)]),
-            "shots": .array([]),
-            "constraints": .object([
-                "tone": .string(storyTone),
-                "target_seconds": .integer(targetSeconds),
-                "must_use": .array([]),
-                "must_not_use": .array([]),
-                "preferred": .array([])
-            ])
-        ]
-        storyRequest = G3JSONValue.object(obj).json
+        guard let claim = selectedClaim else {
+            output = "Lỗi: chọn một fact đã có trong G1 trước khi sinh kịch bản."
+            return
+        }
+        guard claim.reviewStatus == .confirmed else {
+            output = "Lỗi: fact chưa được xác nhận. Bấm 'Xác nhận fact này' rồi thử lại."
+            return
+        }
+        do {
+            storyRequest = try G3StoryRequestBuilder.makeJSON(
+                claim: claim,
+                scopeRevisionId: scopeRevisionId,
+                tone: storyTone,
+                targetSeconds: targetSeconds
+            )
+        } catch {
+            output = "Lỗi: \(error.localizedDescription)"
+            return
+        }
 
         Task {
             await rpc(method: "g3.story.generate", json: storyRequest) { result in
@@ -590,7 +639,7 @@ struct G3ConsoleView: View {
         let obj: [String: G3JSONValue] = [
             "beat_id": .string(voiceTrialBeatId),
             "voice_id": .string(voiceModelChoice),
-            "speed": .decimal(voiceSpeed),
+            "speed": .decimal(1.0),
             "text": .string(textToUse)
         ]
         voiceRequest = G3JSONValue.object(obj).json

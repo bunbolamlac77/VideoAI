@@ -181,6 +181,18 @@ swiftc -sdk "$SDK_PATH" \
 
 ./build/tests/test_g2_coverage_dto
 
+echo "=== [10c/17] Running Swift G3 Story Request Builder Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Models/G3StoryRequest.swift \
+  tests/test_g3_story_request.swift \
+  -o build/tests/test_g3_story_request
+
+./build/tests/test_g3_story_request
+
 echo "=== [11/15] Running Swift Gate G2 S12..S15 Analysis, Verifier & Review Closure Tests ==="
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
@@ -250,7 +262,7 @@ swiftc -sdk "$SDK_PATH" \
 
 TEST_RECORDS_OUT="build/reports/swift_g4_s21_records.jsonl" ./build/tests/test_g4_approval
 
-echo "=== [16/16] Running Swift Gate G5 S22..S26 Final 4K, Handoff, IME & Cache Quota Tests ==="
+echo "=== [17/17] Running Swift Gate G5 S22..S26 Final 4K, Handoff, IME & Cache Quota Tests ==="
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \

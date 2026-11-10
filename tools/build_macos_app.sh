@@ -111,6 +111,7 @@ swiftc -sdk "$SDK_PATH" \
   -parse-as-library \
   packages/AIVideoCore/Sources/Models/DomainModels.swift \
   packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Models/G3StoryRequest.swift \
   packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
   packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
   packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
