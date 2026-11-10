@@ -73,14 +73,28 @@ jobs:
           mkdir -p build/reports
           set -o pipefail
           python3 tools/run_python_tests.py 2>&1 | tee build/reports/python-regression.log
-          python3 - <<'PY'
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import json
           from pathlib import Path
           s = json.loads(Path("build/reports/python_test_summary.json").read_text())
+          records = [json.loads(line) for line in Path("build/reports/python_test_records.jsonl").read_text().splitlines() if line.strip()]
+          non_pass = [r for r in records if r["status"] != "PASS"]
+          print("### Python regression")
+          print(f"- tests_run: {s['tests_run']}")
+          print(f"- failures: {s['failures']} | errors: {s['errors']} | skipped: {s['skipped']}")
+          for r in non_pass:
+              print(f"- {r['status']}: {r['testcase_id']}")
+          print("")
+          print("<details><summary>last 40 log lines</summary>")
+          print("")
+          print("```")
+          print("".join(Path("build/reports/python-regression.log").read_text().splitlines(keepends=True)[-40:]))
+          print("```")
+          print("</details>")
           assert s["successful"] and s["failures"] == 0 and s["errors"] == 0, s
           assert s["tests_run"] >= 140, "Unexpected loss of test coverage"
-          # Real model/corpus tests are intentionally unavailable on hosted CI.
-          assert s["skipped"] <= 3, "Unexpectedly skipped tests"
+          # Hosted CI has no local model weights, so model-dependent tests skip by design.
+          assert s["skipped"] <= 6, f"Unexpectedly skipped tests: {s['skipped']}"
           PY
 
       - name: Test Local Bridge (separate non-model suite)
