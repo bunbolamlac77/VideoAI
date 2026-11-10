@@ -1,0 +1,53 @@
+{
+  "schema": "aivideo-resolve-acceptance-v1",
+  "executed_at": "2026-11-10T14:05:55Z",
+  "resolver": "tools/run_g0_spike via resolve_adapter.run_g0_spike",
+  "result": {
+    "success": true,
+    "resolve_product": "DaVinci Resolve Studio",
+    "resolve_version": "21.2.0.6",
+    "project_name": "AIVideo_G0_Spike_486371c4",
+    "timeline_name": "Timeline_10s_Vertical_486371c4",
+    "timeline_resolution": "2160x3840",
+    "timeline_fps": 24.0,
+    "timeline_start_frame": 86400,
+    "timeline_end_frame": 86640,
+    "timeline_total_frames": 240,
+    "video_track_count": 2,
+    "audio_track_count": 1,
+    "video_items_count": 1,
+    "audio_items_count": 1,
+    "video_item_duration": 240,
+    "audio_item_duration": 240,
+    "title_inserted": true,
+    "render_settings_configured": true,
+    "project_saved": true,
+    "preview_path": null,
+    "drp_exported": true,
+    "drp_path": "/tmp/aivideo_resolve_acceptance.drp",
+    "drp_size_bytes": 27625,
+    "supported_mp4_codecs": [
+      "H.264",
+      "H.265",
+      "YUV 422 10-bit"
+    ],
+    "verified_steps": [
+      "resolve_connection",
+      "preflight_permissions",
+      "unique_project_created",
+      "timeline_settings_configured",
+      "media_imported",
+      "media_appended_parallel",
+      "frame_boundary_240_verified",
+      "title_inserted",
+      "title_verified_track_2",
+      "render_settings_configured",
+      "project_saved",
+      "project_reopened_verified",
+      "atomic_drp_exported",
+      "drp_zip_archive_verified"
+    ]
+  },
+  "scope": "Real DaVinci Resolve Studio 21.2.0: unique project, 2160x3840 @24, 240-frame boundary, title on track 2, render settings, save, reopen, atomic DRP export.",
+  "not_covered": "G4/G5 product path (S20-S22) requires an approved G3 plan with real voice WAVs; VieNeu-TTS is not installed, so g3.voice.trial returns blocked_tts_runtime_unavailable."
+}
