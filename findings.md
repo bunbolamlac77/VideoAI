@@ -115,3 +115,10 @@
   - Clip chuyển động 60 s (testsrc): 91 phân tích / 29 bỏ ⇒ 48 phút → **~36 phút** (−24%).
   - 5 clip fixture 1.5 s: mỗi clip 3 cửa sổ, bỏ 2 (max-diff ≈ 0.0000 — các fixture gần như tĩnh, càng khẳng định benchmark cũ yếu).
 - **Mặc định TẮT**: chỉ bật qua `prefilter` trong `g2.analyze_source`; fingerprint checkpoint chỉ đổi khi bật, nên checkpoint cũ vẫn resume được.
+
+## 13. Wave E — Cấu trúc app, portability và CI thật (2026-11-10)
+- **Tách god file**: `AIVideoApp.swift` 2.738 → **1.459 dòng**; `AppState` (worker lifecycle, bookmark, scan, store, batch, prefilter) chuyển sang `AppState.swift` **1.279 dòng**. Guard `tests/test_source_hygiene.py` chặn phình lại (>1.700 / >1.400).
+- **Portability**: bỏ đoán thư mục cá nhân `APP_CaNhan/AIVideo`; thêm override `AIVIDEO_PYTHON` cho app và harness; `contracts/environment_matrix.json` hết path `/Users/...`; guard cấm path tuyệt đối trong source.
+- **Prefilter UI**: toggle "Bỏ qua cảnh tĩnh" ở thẻ thư mục, mặc định tắt, truyền qua `G2AnalyzeSourceParams.prefilter` → `g2.analyze_source`.
+- **CI thật**: workflow cũ chỉ `swiftc -frontend -parse` + 1 suite; nay cài ffmpeg, export `AIVIDEO_PYTHON`, **build app** (fail nếu có `warning:`), và chạy **toàn bộ** `tools/run_tests.sh` (205 Python + 17 nhóm Swift).
+- **Bằng chứng**: 205 Python PASS (1 skip), ma trận `run_tests.sh` EXIT=0, app build 0 warning.

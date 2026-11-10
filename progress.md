@@ -254,3 +254,12 @@
 - Test: `tests/test_g2_prefilter.py` (15 ca: config, scan tĩnh/động, mapping, skip/first-window, resume, RPC, param sai).
 - Đo: clip tĩnh 60 s 48 phút → ~24 s VLM; clip động −24%; scan 0.11 s/clip.
 - **Nghiệm thu**: 199 Python PASS · 0 FAIL · 1 SKIP; ma trận `run_tests.sh` chạy sau khi hoàn tất.
+
+## 2026-11-10 — ECC Wave E: cấu trúc app, portability, CI thật
+
+- Tách `AppState.swift` khỏi `AIVideoApp.swift` (2.738 → 1.459 + 1.279 dòng); build script cập nhật.
+- Bỏ path cá nhân trong `workspaceRoots()`; `AIVIDEO_PYTHON` override cho app + S02 harness; `environment_matrix.json` portable.
+- Toggle prefilter trong UI (mặc định tắt) + `G2PrefilterParams` trong Swift client.
+- CI: ffmpeg, `AIVIDEO_PYTHON`, build app với zero-warning gate, chạy full `run_tests.sh`.
+- Guard mới `tests/test_source_hygiene.py` (6 ca): path tuyệt đối, kích thước file, wiring prefilter, CI contract.
+- Nghiệm thu: 205 Python PASS · 0 FAIL · 1 SKIP; matrix EXIT=0.

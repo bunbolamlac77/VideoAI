@@ -5,7 +5,7 @@
 **Size tier:** **large** — cross-cutting (Python pipeline contract, benchmark, Swift stores, tests, docs), có thay đổi contract nội bộ và open questions.
 **Phase mask:** 0 → 1 (light) → 2 → **GATE 1** → 4 (TDD) → 5 → 6 → **GATE 2**
 
-**Trạng thái:** Wave A+B+C+D hoàn tất (T01–T15). Wave E (hygiene) còn mở.
+**Trạng thái:** Wave A+B+C+D+E hoàn tất (T01–T15 + hygiene).
 
 ---
 
@@ -116,3 +116,11 @@ test(s02): stop self-certifying manual evidence                [T12]
 | P3 tham số RPC `prefilter` | ✅ |
 | P4 test (15 ca) | ✅ |
 | P5 đo trên clip tĩnh/động | ✅ (48 phút → ~24 giây với clip tĩnh 60 s) |
+
+## Wave E — Hygiene bàn giao
+| Task | Trạng thái |
+|---|---|
+| Tách `AppState.swift` khỏi app shell | ✅ |
+| Bỏ path cứng, thêm `AIVIDEO_PYTHON`, guard hygiene | ✅ |
+| Toggle prefilter trong UI | ✅ |
+| CI build app + chạy full harness + zero-warning gate | ✅ |
