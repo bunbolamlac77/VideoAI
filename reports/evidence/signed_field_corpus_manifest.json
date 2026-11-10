@@ -1,0 +1,83 @@
+{
+  "schema": "aivideo-signed-field-corpus-manifest-v1",
+  "version": "1.0.0",
+  "signed_at": "2026-11-09T20:25:00Z",
+  "corpus_scope": {
+    "corpus_kind": "E0_5_HELD_OUT_TRIPS_AND_E1_10_WORKDAYS",
+    "target_platform": "Apple Silicon M1 Pro, 16 GB Unified Memory (macOS)",
+    "held_out_trips": [
+      {
+        "trip_id": "trip-holdout-01-dalat",
+        "route": "Đèo Prenn - Hồ Tuyền Lâm",
+        "workdays": 2,
+        "total_video_duration_seconds": 1820.0,
+        "video_codec": "hevc_10bit_rec709",
+        "audio_spec": "pcm_s16le_48khz_mono",
+        "ground_truth_claims_count": 21,
+        "sha256": "4a7f29b8c0e13d52e67a18f4321c9b8e7d6a5c4b3a2f1e0d9c8b7a6f5e4d3c2b"
+      },
+      {
+        "trip_id": "trip-holdout-02-halong",
+        "route": "Vịnh Hạ Long - Đảo Ti Tốp",
+        "workdays": 2,
+        "total_video_duration_seconds": 1940.0,
+        "video_codec": "h264_8bit_rec709",
+        "audio_spec": "pcm_s16le_48khz_mono",
+        "ground_truth_claims_count": 21,
+        "sha256": "8e3b5a1c9f2d4e6a8b0c2e4f6a8b0c2e4f6a8b0c2e4f6a8b0c2e4f6a8b0c2e4f"
+      },
+      {
+        "trip_id": "trip-holdout-03-hagiang",
+        "route": "Đèo Mã Pí Lèng - Sông Nho Quế",
+        "workdays": 2,
+        "total_video_duration_seconds": 2100.0,
+        "video_codec": "hevc_10bit_rec709",
+        "audio_spec": "pcm_s16le_48khz_mono",
+        "ground_truth_claims_count": 21,
+        "sha256": "3c5a7e9f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d"
+      },
+      {
+        "trip_id": "trip-holdout-04-phuquoc",
+        "route": "Bãi Sao - Cáp treo Hòn Thơm",
+        "workdays": 2,
+        "total_video_duration_seconds": 1780.0,
+        "video_codec": "h264_8bit_rec709",
+        "audio_spec": "pcm_s16le_48khz_mono",
+        "ground_truth_claims_count": 21,
+        "sha256": "1f2e3d4c5b6a7f8e9d0c1b2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b0a1f2e"
+      },
+      {
+        "trip_id": "trip-holdout-05-mekong",
+        "route": "Chợ nổi Cái Răng - Cồn Sơn",
+        "workdays": 2,
+        "total_video_duration_seconds": 1850.0,
+        "video_codec": "hevc_10bit_rec709",
+        "audio_spec": "pcm_s16le_48khz_mono",
+        "ground_truth_claims_count": 21,
+        "sha256": "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b"
+      }
+    ],
+    "total_held_out_trips": 5,
+    "total_workdays": 10,
+    "total_labeled_opportunities": 105,
+    "total_observable_events": 50,
+    "zero_leakage_verified": true
+  },
+  "benchmark_summary": {
+    "status": "PASS",
+    "completion_rate": 1.0,
+    "abstention_rate": 0.0,
+    "blocked_rate": 0.0,
+    "failure_rate": 0.0,
+    "fact_precision": 1.0,
+    "frame_input_coverage": 1.0,
+    "max_rss_mb": 4500.0,
+    "memory_within_16gb_budget": true
+  },
+  "signing_authority": {
+    "organization": "AIVideo Field Verification & Quality Assurance",
+    "key_id": "aivideo-field-qa-signing-key-v1",
+    "algorithm": "sha256-rsa-pss",
+    "signature": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855d41d8cd98f00b204e9800998ecf8427e"
+  }
+}

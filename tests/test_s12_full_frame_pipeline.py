@@ -329,7 +329,7 @@ class TestS12FullFramePipeline(unittest.TestCase):
             self.assertEqual(res_uninstalled["audio_branch_state"], "no_audio")
             self.assertGreaterEqual(len(res_uninstalled["claims"]), 2)
 
-            # 2) Installed offline visual adapter -> completed, 100% coverage, real decoded window observations!
+            # 2) Stub/synthetic weights without genuine model are rejected; G2 stays blocked
             installed_models_root = tmp_path / "installed_models"
             vis_dir = installed_models_root / "visual_analysis_primary"
             vis_dir.mkdir(parents=True, exist_ok=True)
@@ -339,24 +339,51 @@ class TestS12FullFramePipeline(unittest.TestCase):
             )
             (vis_dir / "model.safetensors").write_bytes(b"SAFETENSORS_OFFLINE_WEIGHTS_STUB")
 
-            res_installed = handle_g2_analyze_source(
+            res_stub = handle_g2_analyze_source(
                 {
                     "file_path": str(video_path),
                     "source_revision_id": "00000000-0000-4000-8000-000000000777",
                     "workday_id": "00000000-0000-4000-8000-000000000888",
                     "brief_text": "Đi qua cầu lúc 9h. Mưa lớn làm đường trơn.",
                     "models_root_dir": str(installed_models_root),
-                    "checkpoint_dir": str(tmp_path / "ckpt_installed"),
+                    "checkpoint_dir": str(tmp_path / "ckpt_stub"),
                 }
             )
-            self.assertTrue(res_installed["vision_model_installed"])
-            self.assertEqual(res_installed["coverage_ledger"]["detailed_pass_status"], "completed")
-            self.assertEqual(res_installed["coverage_ledger"]["frame_input_coverage"], 1.0)
-            self.assertEqual(len(res_installed["coverage_ledger"]["unique_post_processor_frame_ids"]), 24)
-            self.assertGreater(res_installed["raw_observations_count"], 0)
-            self.assertEqual(len(res_installed["raw_observations"]), res_installed["raw_observations_count"])
-            self.assertEqual(res_installed["audio_branch_state"], "no_audio")
-            self.assertEqual(res_installed["color_decision"]["status"], "sdr_passthrough_or_transform")
+            self.assertFalse(res_stub["vision_model_installed"])
+            self.assertEqual(res_stub["coverage_ledger"]["detailed_pass_status"], "blocked_model_unavailable")
+            self.assertEqual(res_stub["coverage_ledger"]["frame_input_coverage"], 0.0)
+
+            # 3) When an authorized fixture inspector is provided, pipeline runs to completion
+            def mock_inspector(win: Any) -> dict:
+                return {
+                    "accepted_frame_ids": list(win.intended_frame_ids),
+                    "action_or_scene_type": "steady_visual_scene",
+                    "subject_track_id": f"trk-w{win.window_index:04d}",
+                    "observation_text": f"Fixture observation for window {win.window_index}",
+                    "ocr_raw_tokens": [],
+                    "ocr_is_uncertain": False,
+                    "has_uncertainty_boundary": False,
+                }
+
+            res_fixture = handle_g2_analyze_source(
+                {
+                    "file_path": str(video_path),
+                    "source_revision_id": "00000000-0000-4000-8000-000000000777",
+                    "workday_id": "00000000-0000-4000-8000-000000000888",
+                    "brief_text": "Đi qua cầu lúc 9h. Mưa lớn làm đường trơn.",
+                    "models_root_dir": str(installed_models_root),
+                    "checkpoint_dir": str(tmp_path / "ckpt_fixture"),
+                    "_inspector_fn": mock_inspector,
+                }
+            )
+            self.assertTrue(res_fixture["vision_model_installed"])
+            self.assertEqual(res_fixture["coverage_ledger"]["detailed_pass_status"], "completed")
+            self.assertEqual(res_fixture["coverage_ledger"]["frame_input_coverage"], 1.0)
+            self.assertEqual(len(res_fixture["coverage_ledger"]["unique_post_processor_frame_ids"]), 24)
+            self.assertGreater(res_fixture["raw_observations_count"], 0)
+            self.assertEqual(len(res_fixture["raw_observations"]), res_fixture["raw_observations_count"])
+            self.assertEqual(res_fixture["audio_branch_state"], "no_audio")
+            self.assertEqual(res_fixture["color_decision"]["status"], "sdr_passthrough_or_transform")
 
 
 if __name__ == "__main__":

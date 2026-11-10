@@ -12,7 +12,7 @@
   },
   "runtime_lock": {
     "file": "workers/uv.lock",
-    "sha256": "85729dda92b528c2db41e67e610bf7d372c0bbc6b94e44261283bc397cac5cd2"
+    "sha256": "abdd6fa4e78df53a46ee1de41f1233c936512a648277753fcea6933a4a2d23ba"
   },
   "generation_settings": {
     "backend": "mlx-lm",
@@ -71,5 +71,5 @@
       "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
     }
   },
-  "verified_at": "2026-11-06T05:51:20Z"
+  "verified_at": "2026-11-09T17:46:54Z"
 }

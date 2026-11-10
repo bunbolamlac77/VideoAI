@@ -11,6 +11,15 @@
 
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+INSTALL_APP=0
+for arg in "$@"; do
+    case "$arg" in
+        --install) INSTALL_APP=1 ;;
+    esac
+done
+
 echo "=== [1/4] Detecting Compatible macOS SDK and Toolchain ==="
 
 SWIFT_VERSION_STRING="$(swiftc --version | head -n 1)"
@@ -51,10 +60,20 @@ echo "=== [2/4] Setting up App Bundle Directory Structure ==="
 rm -rf "$APP_BUNDLE"
 mkdir -p "$TARGET_DIR" "$RESOURCES_DIR"
 
-# 1. Copy Info.plist
-if [ -f "apps/macos/Resources/Info.plist" ]; then
-    cp "apps/macos/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
-fi
+# 1. Copy Info.plist and stamp repo root (Finder/Spotlight launches have cwd="/",
+#    so the app needs an absolute pointer to workers/.venv and the worker source).
+cp "apps/macos/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :AIVideoRepoRoot string $ROOT_DIR" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :AIVideoRepoRoot $ROOT_DIR" "$APP_BUNDLE/Contents/Info.plist"
+printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
+
+# 1b. App icon (rendered from source, no binary asset in git)
+ICON_TMP="$(mktemp -d)/AppIcon.iconset"
+ICON_TOOL="$(dirname "$ICON_TMP")/make_app_icon"
+swiftc -sdk "$SDK_PATH" -target arm64-apple-macosx14.0 tools/make_app_icon.swift -o "$ICON_TOOL"
+"$ICON_TOOL" "$ICON_TMP" >/dev/null
+iconutil -c icns "$ICON_TMP" -o "$RESOURCES_DIR/AppIcon.icns"
+rm -rf "$(dirname "$ICON_TMP")"
 
 # 2. Bundle Python Worker runtime into Contents/Resources/Workers/aivideo_workers
 echo "Bundling Python Worker into Resources..."
@@ -66,12 +85,11 @@ cp -R workers/src "$RESOURCES_DIR/workers/"
 
 # 3. Bundle Model profile lock into Contents/Resources/contracts
 mkdir -p "$RESOURCES_DIR/contracts"
-if [ -f "contracts/g0_model.lock.json" ]; then
-    cp "contracts/g0_model.lock.json" "$RESOURCES_DIR/contracts/g0_model.lock.json"
-fi
-if [ -f "contracts/environment_matrix.json" ]; then
-    cp "contracts/environment_matrix.json" "$RESOURCES_DIR/contracts/environment_matrix.json"
-fi
+for contract_file in contracts/*.json contracts/*.sql; do
+    if [ -f "$contract_file" ]; then
+        cp "$contract_file" "$RESOURCES_DIR/contracts/"
+    fi
+done
 
 # 4. Generate build manifest
 BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -94,17 +112,46 @@ swiftc -sdk "$SDK_PATH" \
   packages/AIVideoCore/Sources/Models/DomainModels.swift \
   packages/AIVideoCore/Sources/Models/DataContracts.swift \
   packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
+  packages/AIVideoCore/Sources/Storage/G4ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G4S21Guard.swift \
+  packages/AIVideoCore/Sources/Storage/G5ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G5S22Guard.swift \
   packages/AIVideoCore/Sources/Scheduler/ResourceGovernor.swift \
   packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  packages/AIVideoCore/Sources/Publication/G4FilePublisher.swift \
   packages/AIVideoCore/Sources/Recovery/BackupRestoreService.swift \
   packages/AIVideoCore/Sources/Media/MediaIndexer.swift \
   packages/AIVideoCore/Sources/Adapters/ModelAdapterContracts.swift \
   packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
   packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
   apps/macos/Sources/AIVideoApp.swift \
+  apps/macos/Sources/G3ConsoleView.swift \
+  apps/macos/Sources/G4ConsoleView.swift \
+  apps/macos/Sources/G5ConsoleView.swift \
   -o "$TARGET_DIR/AIVideo"
 
 echo "=== [4/4] Ad-hoc Code Signing App Bundle ==="
-codesign -s - --force "$APP_BUNDLE"
+find "$APP_BUNDLE" -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find "$APP_BUNDLE" -name "*.pyc" -delete 2>/dev/null || true
+codesign -s - --force --deep "$APP_BUNDLE"
 
 echo "=== BUILD SUCCESSFUL: $APP_BUNDLE ==="
+
+if [ "$INSTALL_APP" -eq 1 ]; then
+    echo "=== [5/5] Installing to Applications & registering with Spotlight ==="
+    if [ -w "/Applications" ]; then DEST_DIR="/Applications"; else DEST_DIR="$HOME/Applications"; fi
+    mkdir -p "$DEST_DIR"
+    DEST="$DEST_DIR/AIVideo.app"
+    osascript -e 'tell application id "com.phuthanh.aivideo" to quit' >/dev/null 2>&1 || true
+    rm -rf "$DEST"
+    ditto "$APP_BUNDLE" "$DEST"
+    LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+    # Drop the build-dir copy from LaunchServices so Spotlight resolves the installed one.
+    "$LSREGISTER" -u "$ROOT_DIR/$APP_BUNDLE" >/dev/null 2>&1 || true
+    "$LSREGISTER" -f "$DEST"
+    mdimport "$DEST" >/dev/null 2>&1 || true
+    touch "$DEST"
+    echo "=== INSTALLED: $DEST (Spotlight: gõ \"AIVideo\") ==="
+fi

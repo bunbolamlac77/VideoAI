@@ -12,6 +12,40 @@
 import SwiftUI
 import AppKit
 
+// MARK: - Media Models
+
+enum MediaItemKind: String, Codable, Sendable {
+    case video
+    case image
+
+    var symbol: String {
+        switch self {
+        case .video: return "film.fill"
+        case .image: return "photo.fill"
+        }
+    }
+}
+
+struct MediaSourceItem: Identifiable, Hashable, Sendable {
+    let id: String // Absolute path
+    let url: URL
+    let name: String
+    let kind: MediaItemKind
+    let fileSize: Int64
+    let modifiedDate: Date?
+
+    var formattedSize: String {
+        ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)
+    }
+}
+
+enum MediaFilter: String, CaseIterable, Identifiable {
+    case all = "Tất cả"
+    case videos = "Video"
+    case images = "Ảnh"
+    var id: String { rawValue }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     // Worker Status
@@ -22,13 +56,27 @@ final class AppState: ObservableObject {
     @Published var capabilities: [String] = []
     @Published var statusMessage: String = "Đang khởi tạo hệ thống..."
 
-    // Media Source Inspector & Security-Scoped Bookmark
+    // Media Source Inspector, Directory Workspace & Security-Scoped Bookmark
+    @Published var selectedDirectoryPath: String = ""
+    @Published var mediaItems: [MediaSourceItem] = []
     @Published var selectedFilePath: String = ""
     @Published var isSecurityScoped: Bool = false
     @Published var isBookmarkStale: Bool = false
     @Published var probeResult: MediaProbeResult?
     @Published var isProbing: Bool = false
+    @Published var mediaFilter: MediaFilter = .all
     private var currentlyAccessedSecurityScopedURL: URL? = nil
+
+    var videoCount: Int { mediaItems.filter { $0.kind == .video }.count }
+    var imageCount: Int { mediaItems.filter { $0.kind == .image }.count }
+    var totalFolderBytes: Int64 { mediaItems.reduce(0) { $0 + $1.fileSize } }
+    var filteredMediaItems: [MediaSourceItem] {
+        switch mediaFilter {
+        case .all: return mediaItems
+        case .videos: return mediaItems.filter { $0.kind == .video }
+        case .images: return mediaItems.filter { $0.kind == .image }
+        }
+    }
 
     func stopAccessingCurrentSecurityScopedResource() {
         if let url = currentlyAccessedSecurityScopedURL {
@@ -60,8 +108,8 @@ final class AppState: ObservableObject {
     @Published var g2ReviewItems: [TargetedReviewRecord] = []
     @Published var g2ScopeSummary: String = "Chưa có lượt phân tích G2 nào trong SQLite (Coverage: N/A)"
     @Published var isRunningG2Analysis: Bool = false
-    private var projectStore: ProjectStore?
-    private var publicationService: ArtifactPublicationService?
+    var projectStore: ProjectStore? // actor remains single canonical writer; exposed to G3 UI only
+    var publicationService: ArtifactPublicationService? // shared S08 actor for G4
     private let backupService = BackupRestoreService(supportedMaxSchemaVersion: 2)
 
     @Published var errorMessage: String?
@@ -90,14 +138,74 @@ final class AppState: ObservableObject {
             return envPath
         }
 
-        // 3. Check Workspace Relative Path
-        let currentDir = fm.currentDirectoryPath
-        let relativeWorker = (currentDir as NSString).appendingPathComponent("workers/src/aivideo_workers/main.py")
-        if fm.fileExists(atPath: relativeWorker) {
-            return relativeWorker
+        // 3. Check workspace roots (cwd is "/" when launched from Finder/Spotlight,
+        //    so also consult the repo root stamped into Info.plist at build time)
+        for root in Self.workspaceRoots() {
+            let relativeWorker = (root as NSString).appendingPathComponent("workers/src/aivideo_workers/main.py")
+            if fm.fileExists(atPath: relativeWorker) {
+                return relativeWorker
+            }
         }
 
         return nil
+    }
+
+    /// Candidate repository roots: dynamic discovery, env override, user defaults, build-time stamped root, ancestor traversal, cwd.
+    static func workspaceRoots() -> [String] {
+        var roots: [String] = []
+        let fm = FileManager.default
+
+        // 1. Explicit environment variable override
+        if let env = ProcessInfo.processInfo.environment["AIVIDEO_REPO_ROOT"], !env.isEmpty, fm.fileExists(atPath: env) {
+            roots.append(env)
+        }
+
+        // 2. User defaults preference (if user selected repo or saved path)
+        if let userPref = UserDefaults.standard.string(forKey: "AIVideoRepoRoot"), !userPref.isEmpty, fm.fileExists(atPath: userPref) {
+            roots.append(userPref)
+        }
+
+        // 3. Stamped root from build-time Info.plist (if path actually exists on this machine)
+        if let stamped = Bundle.main.object(forInfoDictionaryKey: "AIVideoRepoRoot") as? String, !stamped.isEmpty, fm.fileExists(atPath: stamped) {
+            roots.append(stamped)
+        }
+
+        // 4. Current working directory (if inside repo or root containing workers)
+        let cwd = fm.currentDirectoryPath
+        if cwd != "/" {
+            let workerInCwd = (cwd as NSString).appendingPathComponent("workers/src/aivideo_workers/main.py")
+            if fm.fileExists(atPath: workerInCwd) {
+                roots.append(cwd)
+            }
+        }
+
+        // 5. Dynamic Bundle ancestor traversal (when running from apps/macos/build/AIVideo.app or project tree)
+        var ancestor = Bundle.main.bundleURL.deletingLastPathComponent()
+        for _ in 0..<6 {
+            let candidate = ancestor.path
+            let checkPath = (candidate as NSString).appendingPathComponent("workers/src/aivideo_workers/main.py")
+            if fm.fileExists(atPath: checkPath) {
+                roots.append(candidate)
+                break
+            }
+            ancestor = ancestor.deletingLastPathComponent()
+        }
+
+        // 6. Common project directory conventions in user home
+        let home = fm.homeDirectoryForCurrentUser.path
+        let commonConventions = [
+            (home as NSString).appendingPathComponent("APP_CaNhan/AIVideo"),
+            (home as NSString).appendingPathComponent("Developer/AIVideo"),
+            (home as NSString).appendingPathComponent("Projects/AIVideo"),
+            (home as NSString).appendingPathComponent("AIVideo")
+        ]
+        for p in commonConventions {
+            if fm.fileExists(atPath: (p as NSString).appendingPathComponent("workers/src/aivideo_workers/main.py")) {
+                roots.append(p)
+            }
+        }
+
+        return Array(NSOrderedSet(array: roots)) as? [String] ?? roots
     }
 
     func resolvePythonPath() -> String? {
@@ -121,10 +229,11 @@ final class AppState: ObservableObject {
         }
 
         // 3. Check repo virtualenv
-        let currentDir = fm.currentDirectoryPath
-        let localVenvPy = (currentDir as NSString).appendingPathComponent("workers/.venv/bin/python3")
-        if fm.fileExists(atPath: localVenvPy) && fm.isExecutableFile(atPath: localVenvPy) {
-            return localVenvPy
+        for root in Self.workspaceRoots() {
+            let localVenvPy = (root as NSString).appendingPathComponent("workers/.venv/bin/python3")
+            if fm.fileExists(atPath: localVenvPy) && fm.isExecutableFile(atPath: localVenvPy) {
+                return localVenvPy
+            }
         }
 
         // 4. Fallback system/homebrew candidates
@@ -142,7 +251,29 @@ final class AppState: ObservableObject {
         return nil
     }
 
+    @Published var isStartingWorker: Bool = false
+    private var didBootstrap = false
+
+    /// One-shot startup. Guarded so view re-appearance never double-spawns the worker.
+    func bootstrap() async {
+        guard !didBootstrap else { return }
+        didBootstrap = true
+        await initializeG1ProjectStore()
+        await initializeWorker()
+        restoreSavedBookmark()
+    }
+
+    func restartWorker() async {
+        guard !isStartingWorker else { return }
+        await worker.terminate()
+        isWorkerConnected = false
+        modelStatus = nil
+        await initializeWorker()
+    }
+
     func initializeWorker() async {
+        isStartingWorker = true
+        defer { isStartingWorker = false }
         statusMessage = "Đang kiểm tra môi trường và kết nối Python worker..."
         errorMessage = nil
 
@@ -203,86 +334,327 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: - File Selection & Security-Scoped Bookmark Binding
+    // MARK: - Folder & Media Selection (Directory Workspace with Video & Optional Photos)
 
-    func selectFileAndProbe() {
+    nonisolated static let supportedVideoExtensions: Set<String> = [
+        "mp4", "mov", "m4v", "mkv", "avi", "webm"
+    ]
+    nonisolated static let supportedImageExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "heic", "heif", "webp", "tiff", "tif", "bmp"
+    ]
+
+    static func mediaKind(for url: URL) -> MediaItemKind? {
+        let ext = url.pathExtension.lowercased()
+        if supportedVideoExtensions.contains(ext) { return .video }
+        if supportedImageExtensions.contains(ext) { return .image }
+        return nil
+    }
+
+    /// Recursive enumeration can take seconds on large/external volumes — never run it on the main actor.
+    func scanDirectoryAsync(at dirURL: URL) async -> [MediaSourceItem] {
+        await Task.detached(priority: .userInitiated) {
+            Self.scanDirectory(at: dirURL)
+        }.value
+    }
+
+    nonisolated static func scanDirectory(at dirURL: URL) -> [MediaSourceItem] {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey]
+        guard let enumerator = fm.enumerator(
+            at: dirURL,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return []
+        }
+
+        var items: [MediaSourceItem] = []
+        for case let fileURL as URL in enumerator {
+            guard let resourceValues = try? fileURL.resourceValues(forKeys: Set(keys)),
+                  !(resourceValues.isDirectory ?? false) else {
+                continue
+            }
+
+            let ext = fileURL.pathExtension.lowercased()
+            let kind: MediaItemKind?
+            if Self.supportedVideoExtensions.contains(ext) {
+                kind = .video
+            } else if Self.supportedImageExtensions.contains(ext) {
+                kind = .image
+            } else {
+                kind = nil
+            }
+
+            if let kind = kind {
+                let size = Int64(resourceValues.fileSize ?? 0)
+                let date = resourceValues.contentModificationDate
+                items.append(MediaSourceItem(
+                    id: fileURL.path,
+                    url: fileURL,
+                    name: fileURL.lastPathComponent,
+                    kind: kind,
+                    fileSize: size,
+                    modifiedDate: date
+                ))
+            }
+        }
+
+        return items.sorted {
+            if $0.kind != $1.kind {
+                return $0.kind == .video // Videos first
+            }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    func selectSourceFolder() {
         let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.movie, .video, .quickTimeMovie, .mpeg4Movie, .image, .jpeg, .png]
+        panel.prompt = "Chọn thư mục"
+        panel.message = "Chọn thư mục chứa toàn bộ video và ảnh tư liệu nguồn"
 
         if panel.runModal() == .OK, let url = panel.url {
             handleSelectedURL(url)
         }
     }
 
+    func selectFileAndProbe() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Mở tư liệu"
+        panel.message = "Chọn thư mục hoặc file video/ảnh nguồn"
+
+        if panel.runModal() == .OK {
+            if let first = panel.urls.first {
+                if panel.urls.count == 1 && (first.hasDirectoryPath || (try? first.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true) {
+                    handleSelectedURL(first)
+                } else {
+                    handleSelectedURLs(panel.urls)
+                }
+            }
+        }
+    }
+
+    func handleSelectedURLs(_ urls: [URL]) {
+        guard let first = urls.first else { return }
+        if urls.count == 1 && (first.hasDirectoryPath || (try? first.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true) {
+            handleSelectedURL(first)
+            return
+        }
+
+        stopAccessingCurrentSecurityScopedResource()
+        let fm = FileManager.default
+        var items: [MediaSourceItem] = []
+
+        for url in urls {
+            let ext = url.pathExtension.lowercased()
+            let kind: MediaItemKind?
+            if Self.supportedVideoExtensions.contains(ext) {
+                kind = .video
+            } else if Self.supportedImageExtensions.contains(ext) {
+                kind = .image
+            } else {
+                kind = nil
+            }
+
+            if let kind = kind {
+                let attrs = try? fm.attributesOfItem(atPath: url.path)
+                let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+                let date = attrs?[.modificationDate] as? Date
+                items.append(MediaSourceItem(
+                    id: url.path,
+                    url: url,
+                    name: url.lastPathComponent,
+                    kind: kind,
+                    fileSize: size,
+                    modifiedDate: date
+                ))
+            }
+        }
+
+        self.mediaItems = items.sorted {
+            if $0.kind != $1.kind { return $0.kind == .video }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+
+        self.selectedDirectoryPath = first.deletingLastPathComponent().path
+        if let target = items.first(where: { $0.kind == .video }) ?? items.first {
+            selectItemForInspection(target)
+        }
+    }
+
     func handleSelectedURL(_ url: URL) {
         stopAccessingCurrentSecurityScopedResource()
-        self.selectedFilePath = url.path
         self.isBookmarkStale = false
 
-        // Create Security-Scoped Bookmark if running in app sandbox
+        let isDir = url.hasDirectoryPath || (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+
+        // Create Security-Scoped Bookmark for persistent access across app launches
         do {
             let bookmarkData = try url.bookmarkData(
                 options: .withSecurityScope,
                 includingResourceValuesForKeys: nil,
                 relativeTo: nil
             )
-            UserDefaults.standard.set(bookmarkData, forKey: "LastSelectedSourceBookmark")
+            UserDefaults.standard.set(bookmarkData, forKey: "LastSelectedSourceFolderBookmark")
             self.isSecurityScoped = true
         } catch {
             self.isSecurityScoped = false
         }
 
-        Task {
-            await self.probeFile(path: url.path)
+        if isDir {
+            let success = url.startAccessingSecurityScopedResource()
+            if success {
+                self.currentlyAccessedSecurityScopedURL = url
+            }
+            self.selectedDirectoryPath = url.path
+            self.mediaItems = []
+            self.statusMessage = "Đang quét thư mục: \(url.lastPathComponent)…"
+            Task { await self.loadDirectory(url) }
+        } else {
+            // Single file selection
+            guard let kind = Self.mediaKind(for: url) else {
+                self.errorMessage = "Định dạng không được hỗ trợ: .\(url.pathExtension)"
+                return
+            }
+            self.selectedDirectoryPath = url.deletingLastPathComponent().path
+            let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+            let date = attrs?[.modificationDate] as? Date
+            let singleItem = MediaSourceItem(
+                id: url.path,
+                url: url,
+                name: url.lastPathComponent,
+                kind: kind,
+                fileSize: size,
+                modifiedDate: date
+            )
+            self.mediaItems = [singleItem]
+            selectItemForInspection(singleItem)
         }
     }
 
+    /// Scans off-main, then applies results only if the user hasn't switched folders meanwhile.
+    func loadDirectory(_ url: URL, keepSelection: Bool = false) async {
+        let scanned = await scanDirectoryAsync(at: url)
+        guard selectedDirectoryPath == url.path else { return }
+        self.mediaItems = scanned
+        self.statusMessage = "Đã nạp thư mục: \(url.lastPathComponent) (\(videoCount) video, \(imageCount) ảnh)"
+        if keepSelection, scanned.contains(where: { $0.id == selectedFilePath }) { return }
+        if let target = scanned.first(where: { $0.kind == .video }) ?? scanned.first {
+            selectItemForInspection(target)
+        } else {
+            self.selectedFilePath = ""
+            self.probeResult = nil
+        }
+    }
+
+    func selectItemForInspection(_ item: MediaSourceItem) {
+        self.selectedFilePath = item.id
+        if item.kind == .video {
+            Task {
+                await self.probeFile(path: item.id)
+            }
+        } else {
+            self.probeResult = nil
+            self.isProbing = false
+            self.statusMessage = "Đang xem ảnh đính kèm: \(item.name) (\(item.formattedSize))"
+        }
+    }
+
+    func refreshCurrentDirectory() {
+        guard !selectedDirectoryPath.isEmpty else { return }
+        let url = URL(fileURLWithPath: selectedDirectoryPath)
+        self.statusMessage = "Đang quét lại thư mục…"
+        Task { await self.loadDirectory(url, keepSelection: true) }
+    }
+
     func restoreSavedBookmark() {
-        guard let data = UserDefaults.standard.data(forKey: "LastSelectedSourceBookmark") else { return }
         stopAccessingCurrentSecurityScopedResource()
         var isStale = false
-        do {
-            let restoredURL = try URL(
-                resolvingBookmarkData: data,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-            self.selectedFilePath = restoredURL.path
-            self.isBookmarkStale = isStale
-            if isStale {
-                self.errorMessage = "Quyền truy cập file đã cũ (stale bookmark). Vui lòng chọn lại file để tái cấp quyền."
-            } else {
+
+        if let data = UserDefaults.standard.data(forKey: "LastSelectedSourceFolderBookmark") {
+            do {
+                let restoredURL = try URL(
+                    resolvingBookmarkData: data,
+                    options: .withSecurityScope,
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+                self.isBookmarkStale = isStale
+                // A stale bookmark still resolves; Apple's guidance is to access it and re-mint the bookmark.
                 let success = restoredURL.startAccessingSecurityScopedResource()
                 if success {
                     self.currentlyAccessedSecurityScopedURL = restoredURL
-                    Task {
-                        await self.probeFile(path: restoredURL.path)
+                    if isStale,
+                       let fresh = try? restoredURL.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) {
+                        UserDefaults.standard.set(fresh, forKey: "LastSelectedSourceFolderBookmark")
+                        self.isBookmarkStale = false
                     }
+                    let isDir = restoredURL.hasDirectoryPath || (try? restoredURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+                    if isDir {
+                        self.selectedDirectoryPath = restoredURL.path
+                        Task { await self.loadDirectory(restoredURL) }
+                    } else {
+                        self.selectedFilePath = restoredURL.path
+                        Task { await self.probeFile(path: restoredURL.path) }
+                    }
+                } else if isStale {
+                    self.errorMessage = "Quyền truy cập thư mục đã cũ (stale bookmark). Vui lòng chọn lại thư mục để tái cấp quyền."
                 } else {
-                    self.errorMessage = "Không thể cấp quyền truy cập security-scoped cho file đã lưu."
+                    self.errorMessage = "Không thể cấp quyền truy cập security-scoped cho thư mục đã lưu."
                 }
+                return
+            } catch {
+                // Fallback to legacy single file bookmark
             }
-        } catch {
-            self.errorMessage = "Không thể khôi phục bookmark file: \(error.localizedDescription)"
+        }
+
+        // Legacy file bookmark fallback
+        if let data = UserDefaults.standard.data(forKey: "LastSelectedSourceBookmark") {
+            do {
+                let restoredURL = try URL(
+                    resolvingBookmarkData: data,
+                    options: .withSecurityScope,
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+                self.selectedFilePath = restoredURL.path
+                self.isBookmarkStale = isStale
+                if isStale {
+                    self.errorMessage = "Quyền truy cập file đã cũ. Vui lòng chọn lại file."
+                } else {
+                    let success = restoredURL.startAccessingSecurityScopedResource()
+                    if success {
+                        self.currentlyAccessedSecurityScopedURL = restoredURL
+                        Task { await self.probeFile(path: restoredURL.path) }
+                    }
+                }
+            } catch {
+                self.errorMessage = "Không thể khôi phục bookmark: \(error.localizedDescription)"
+            }
         }
     }
 
     func probeFile(path: String) async {
         self.isProbing = true
         self.errorMessage = nil
+        defer { if selectedFilePath == path || selectedFilePath.isEmpty { isProbing = false } }
         do {
             let res = try await worker.probeMedia(filePath: path)
+            // Drop stale results: user may have clicked another item while ffprobe ran.
+            guard selectedFilePath == path else { return }
             self.probeResult = res
-            self.statusMessage = "Phân tích tư liệu thành công: \(URL(fileURLWithPath: path).lastPathComponent)"
+            self.statusMessage = "Phân tích media thành công: \(URL(fileURLWithPath: path).lastPathComponent)"
         } catch {
+            guard selectedFilePath == path else { return }
             self.errorMessage = "Lỗi probe media: \(error.localizedDescription)"
             self.probeResult = nil
         }
-        self.isProbing = false
     }
 
     // MARK: - Real Local Model Inference (G0 Text Smoke)
@@ -600,20 +972,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var appState: AppState?
 
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
-        if let first = filenames.first {
-            let url = URL(fileURLWithPath: first)
-            appState?.handleSelectedURL(url)
+        let urls = filenames.map { URL(fileURLWithPath: $0) }
+        Task { @MainActor in
+            appState?.handleSelectedURLs(urls)
+            sender.reply(toOpenOrPrint: .success)
         }
     }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let state = appState else { return .terminateNow }
 
-        Task {
-            await state.shutdownAsync()
-            await MainActor.run {
-                sender.reply(toApplicationShouldTerminate: true)
+        // Bounded quit barrier: a hung worker/DB checkpoint must never block quitting forever.
+        Task { @MainActor in
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await state.shutdownAsync() }
+                group.addTask { try? await Task.sleep(nanoseconds: 5_000_000_000) }
+                await group.next()
+                group.cancelAll()
             }
+            sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
     }
@@ -621,460 +1000,1122 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 // MARK: - SwiftUI UI Views
 
+extension Color {
+    /// Brand teal: #0F766E (light) / #5EEAD4 (dark), per 10-UI-UX-MACOS.md.
+    static let brandTeal = Color(nsColor: NSColor(name: "AIVideoBrandTeal") { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0x5E / 255, green: 0xEA / 255, blue: 0xD4 / 255, alpha: 1)
+            : NSColor(srgbRed: 0x0F / 255, green: 0x76 / 255, blue: 0x6E / 255, alpha: 1)
+    })
+}
+
 @main
 struct AIVideoApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var state = AppState()
 
     var body: some Scene {
-        WindowGroup {
+        // Single-window app: a WindowGroup would spawn duplicate windows
+        // (each re-running bootstrap) on ⌘N or Dock reopen.
+        Window("AIVideo", id: "main") {
             ContentView()
                 .environmentObject(state)
-                .onAppear {
+                .tint(.brandTeal)
+                .task {
                     appDelegate.appState = state
-                    Task {
-                        await state.initializeG1ProjectStore()
-                        await state.initializeWorker()
-                        state.restoreSavedBookmark()
-                    }
+                    await state.bootstrap()
                 }
                 .onOpenURL { url in
                     state.handleSelectedURL(url)
                 }
         }
-        .windowStyle(.titleBar)
+        .defaultSize(width: 1280, height: 820)
         .windowToolbarStyle(.unified)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("Mở thư mục tư liệu…") { state.selectSourceFolder() }
+                    .keyboardShortcut("o", modifiers: .command)
+                Button("Mở file riêng lẻ…") { state.selectFileAndProbe() }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+            }
+            CommandMenu("Worker") {
+                Button("Khởi động lại worker") {
+                    Task { await state.restartWorker() }
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                Button("Kiểm tra lại model") {
+                    Task { await state.refreshModelStatus() }
+                }
+                Button("Làm mới DaVinci Resolve") {
+                    Task { await state.checkResolveStatus() }
+                }
+            }
+        }
     }
+}
+
+enum AppSection: String, CaseIterable, Identifiable, Hashable {
+    case media, model, resolve, data, review, story, preview, final, capabilities
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .media: return "Tư liệu nguồn"
+        case .model: return "Model local"
+        case .resolve: return "DaVinci Resolve"
+        case .data: return "Dữ liệu & Backup"
+        case .review: return "Kiểm chứng G2"
+        case .story: return "Kịch bản & Cắt G3"
+        case .preview: return "Preview G4"
+        case .final: return "Final 4K G5"
+        case .capabilities: return "Năng lực hệ thống"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .media: return "Probe media qua ffprobe, bookmark bảo mật"
+        case .model: return "Smoke test model offline trên Apple Silicon"
+        case .resolve: return "Kết nối Resolve Studio, timeline spike 24 fps"
+        case .data: return "ProjectStore SQLite WAL, fact ACK, portable backup"
+        case .review: return "Coverage, claim, review có truy vết nguồn"
+        case .story: return "Storyboard, TTS trial, SEARCH-v1, duyệt S19"
+        case .preview: return "Timeline 1080×1920, QC kỹ thuật, duyệt S21"
+        case .final: return "Render 2160×3840, handoff, release audit"
+        case .capabilities: return "Năng lực worker công bố thực tế"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .media: return "film"
+        case .model: return "cpu"
+        case .resolve: return "film.stack"
+        case .data: return "externaldrive.badge.checkmark"
+        case .review: return "magnifyingglass.circle"
+        case .story: return "text.book.closed"
+        case .preview: return "play.rectangle"
+        case .final: return "checkmark.seal"
+        case .capabilities: return "checklist"
+        }
+    }
+
+    static let groups: [(String, [AppSection])] = [
+        ("Chuẩn bị", [.media, .model, .resolve]),
+        ("Dự án", [.data, .review]),
+        ("Dựng", [.story, .preview, .final]),
+        ("Hệ thống", [.capabilities]),
+    ]
 }
 
 struct ContentView: View {
     @EnvironmentObject var state: AppState
+    @SceneStorage("selectedSection") private var selectionRaw: String = AppSection.media.rawValue
 
-    var statusColor: Color {
-        if state.isRunningModelInfer {
-            return .blue
+    private var selection: Binding<AppSection?> {
+        Binding(
+            get: { AppSection(rawValue: selectionRaw) ?? .media },
+            set: { selectionRaw = ($0 ?? .media).rawValue }
+        )
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            List(selection: selection) {
+                ForEach(AppSection.groups, id: \.0) { group in
+                    Section(group.0) {
+                        ForEach(group.1) { section in
+                            Label(section.title, systemImage: section.symbol)
+                                .badge(badge(for: section))
+                                .tag(section)
+                        }
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 280)
+            .safeAreaInset(edge: .bottom) { WorkerStatusCard().padding(12) }
+        } detail: {
+            let current = AppSection(rawValue: selectionRaw) ?? .media
+            VStack(spacing: 0) {
+                if let err = state.errorMessage {
+                    ErrorBanner(message: err) { state.errorMessage = nil }
+                }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        SectionHeader(section: current)
+                        detailView(for: current)
+                    }
+                    .padding(24)
+                    .frame(maxWidth: 1100, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Divider()
+                StatusBar()
+            }
+            .navigationTitle(current.title)
+            .navigationSubtitle(state.g1Project?.name ?? "AIVideo v3.1")
+            .toolbar {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Menu {
+                        Button {
+                            state.selectSourceFolder()
+                        } label: {
+                            Label("Chọn thư mục tư liệu…", systemImage: "folder.badge.plus")
+                        }
+                        Button {
+                            state.selectFileAndProbe()
+                        } label: {
+                            Label("Chọn file riêng lẻ…", systemImage: "doc.badge.plus")
+                        }
+                    } label: {
+                        Label("Mở tư liệu", systemImage: "folder.badge.plus")
+                    } primaryAction: {
+                        state.selectSourceFolder()
+                    }
+                    .help("Chọn thư mục chứa video và ảnh (⌘O) hoặc file riêng lẻ (⇧⌘O)")
+
+                    if !state.selectedDirectoryPath.isEmpty {
+                        Button {
+                            state.refreshCurrentDirectory()
+                        } label: {
+                            Label("Làm mới", systemImage: "arrow.clockwise")
+                        }
+                        .help("Quét lại các file trong thư mục hiện tại")
+                    }
+
+                    Button { Task { await state.restartWorker() } } label: {
+                        Label("Khởi động lại worker", systemImage: "arrow.clockwise")
+                    }
+                    .help("Khởi động lại Python worker (⇧⌘R)")
+                    .disabled(state.isStartingWorker)
+                }
+            }
         }
-        if state.modelInferResult != nil {
-            return .green
-        }
-        guard let status = state.modelStatus else {
-            return .gray
-        }
-        switch status.status {
-        case .availableUnloaded:
-            return .purple
-        case .invalidAssets, .runtimeUnavailable:
-            return .red
-        case .notConfigured, .notInstalled:
-            return .orange
+        .frame(minWidth: 980, minHeight: 640)
+    }
+
+    private func badge(for section: AppSection) -> Int {
+        switch section {
+        case .review: return state.g2ReviewItems.filter { $0.status != "resolved" }.count
+        case .data: return state.g1Claims.filter { $0.reviewStatus != .confirmed }.count
+        default: return 0
         }
     }
 
-    var statusLabel: String {
-        if state.isRunningModelInfer {
-            return "Đang chạy model"
+    @ViewBuilder
+    private func detailView(for section: AppSection) -> some View {
+        switch section {
+        case .media: MediaSectionView()
+        case .model: ModelSectionView()
+        case .resolve: ResolveSectionView()
+        case .data: DataSectionView()
+        case .review: G2ReviewSectionView(state: state)
+        case .story: G3ConsoleView(state: state)
+        case .preview: G4ConsoleView(state: state)
+        case .final: G5ConsoleView(state: state)
+        case .capabilities: CapabilitiesSectionView()
         }
-        if state.modelInferResult != nil {
-            return "Đã nhận kết quả từ model local"
+    }
+}
+
+// MARK: - Reusable Chrome
+
+struct Card<Content: View>: View {
+    var title: String? = nil
+    var symbol: String? = nil
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let title {
+                Label(title, systemImage: symbol ?? "square")
+                    .font(.headline)
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(.primary)
+            }
+            content
         }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06))
+        )
+    }
+}
+
+struct StatusPill: View {
+    let text: String
+    let color: Color
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(text).font(.caption.weight(.semibold)).lineLimit(1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(color.opacity(0.12), in: Capsule())
+    }
+}
+
+struct KeyValueRow: View {
+    let key: String
+    let value: String
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(key).foregroundStyle(.secondary).frame(width: 140, alignment: .leading)
+            Text(value).monospacedDigit().textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+        .font(.callout)
+    }
+}
+
+struct SectionHeader: View {
+    let section: AppSection
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: section.symbol)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(Color.brandTeal)
+                .frame(width: 44, height: 44)
+                .background(Color.brandTeal.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(section.title).font(.title2.weight(.semibold))
+                Text(section.subtitle).font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.bottom, 4)
+    }
+}
+
+struct ErrorBanner: View {
+    let message: String
+    let dismiss: () -> Void
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            Text(message).font(.callout).textSelection(.enabled)
+            Spacer()
+            Button(action: dismiss) { Image(systemName: "xmark") }
+                .buttonStyle(.borderless)
+                .help("Đóng thông báo")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.12))
+        .overlay(alignment: .bottom) { Divider() }
+    }
+}
+
+struct WorkerStatusCard: View {
+    @EnvironmentObject var state: AppState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                if state.isStartingWorker {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Circle().fill(state.isWorkerConnected ? Color.green : Color.red).frame(width: 8, height: 8)
+                }
+                Text(state.isStartingWorker ? "Đang khởi động…" : (state.isWorkerConnected ? "Worker sẵn sàng" : "Worker ngắt kết nối"))
+                    .font(.caption.weight(.semibold))
+            }
+            if state.isWorkerConnected {
+                Text("PID \(state.workerPid) · Python \(state.pythonVersion)")
+                    .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct StatusBar: View {
+    @EnvironmentObject var state: AppState
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(state.statusMessage).lineLimit(1).truncationMode(.middle)
+            Spacer()
+            Text("100% local · 24 fps · 9:16").foregroundStyle(.tertiary)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+}
+
+// MARK: - Sections
+
+struct LocalImagePreview: View {
+    let path: String
+
+    var body: some View {
+        if let image = NSImage(contentsOfFile: path) {
+            VStack(alignment: .leading, spacing: 6) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 220)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.1))
+                    )
+                HStack {
+                    Text("\(Int(image.size.width)) × \(Int(image.size.height)) pt")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+            }
+        } else {
+            HStack {
+                Spacer()
+                VStack(spacing: 8) {
+                    Image(systemName: "photo")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.secondary)
+                    Text("Không thể mở bản xem trước")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.vertical, 20)
+        }
+    }
+}
+
+struct MediaRowView: View {
+    let item: MediaSourceItem
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(item.kind == .video ? Color.brandTeal.opacity(0.15) : Color.indigo.opacity(0.15))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: item.kind.symbol)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(item.kind == .video ? Color.brandTeal : Color.indigo)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.name)
+                        .font(.body.weight(isSelected ? .semibold : .regular))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    HStack(spacing: 8) {
+                        Text(item.formattedSize)
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        if let date = item.modifiedDate {
+                            Text("·")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            Text(date, format: .dateTime.month().day().hour().minute())
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                if isSelected {
+                    Text("Đang xem")
+                        .font(.caption2.weight(.medium))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.brandTeal.opacity(0.15), in: Capsule())
+                        .foregroundStyle(Color.brandTeal)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? Color.brandTeal.opacity(0.12) : Color.primary.opacity(0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(isSelected ? Color.brandTeal.opacity(0.35) : Color.clear, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Mở bằng ứng dụng mặc định") {
+                NSWorkspace.shared.open(item.url)
+            }
+            Button("Hiện trong Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([item.url])
+            }
+            Divider()
+            Button("Sao chép đường dẫn") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(item.id, forType: .string)
+            }
+        }
+    }
+}
+
+struct MediaInspectorView: View {
+    @EnvironmentObject var state: AppState
+    let item: MediaSourceItem
+
+    var body: some View {
+        Card(title: item.kind == .video ? "Thông số kỹ thuật video" : "Thông tin ảnh tư liệu",
+             symbol: item.kind.symbol) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.name)
+                            .font(.headline)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(item.id)
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                    Spacer()
+                    Button {
+                        NSWorkspace.shared.open(item.url)
+                    } label: {
+                        Image(systemName: "arrow.up.forward.app")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Mở file bằng ứng dụng mặc định")
+                }
+
+                Divider()
+
+                if item.kind == .video {
+                    videoInspectorContent
+                } else {
+                    imageInspectorContent
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var videoInspectorContent: some View {
+        if state.isProbing {
+            VStack(spacing: 10) {
+                ProgressView("Đang phân tích media qua ffprobe…")
+                    .progressViewStyle(.linear)
+            }
+            .padding(.vertical, 16)
+        } else if let probe = state.probeResult, probe.filePath == item.id || state.selectedFilePath == item.id {
+            VStack(alignment: .leading, spacing: 8) {
+                KeyValueRow(key: "Định dạng", value: probe.formatName ?? "Unknown")
+                KeyValueRow(key: "Thời lượng", value: String(format: "%.2f s", probe.durationSeconds))
+                KeyValueRow(key: "Dung lượng", value: ByteCountFormatter.string(fromByteCount: Int64(probe.sizeBytes), countStyle: .file))
+
+                ForEach(probe.videoStreams, id: \.index) { v in
+                    let w = v.width.map { "\($0)" } ?? "0"
+                    let h = v.height.map { "\($0)" } ?? "0"
+                    let idx = v.index.map { "\($0)" } ?? "0"
+                    let fps = v.frameRate ?? "Unknown"
+                    KeyValueRow(key: "Video stream #\(idx)", value: "\(v.codecName ?? "Unknown") · \(w)×\(h) @ \(fps) fps · \(v.pixelFormat ?? "Unknown")")
+                }
+
+                ForEach(probe.audioStreams, id: \.index) { a in
+                    let idx = a.index.map { "\($0)" } ?? "0"
+                    let sr = a.sampleRate.map { "\($0) Hz" } ?? "N/A"
+                    let ch = a.channels.map { "\($0) kênh" } ?? "N/A"
+                    KeyValueRow(key: "Audio stream #\(idx)", value: "\(a.codecName ?? "Unknown") · \(sr) · \(ch)")
+                }
+
+                Divider().padding(.vertical, 4)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Button {
+                        Task { await state.runG2AnalysisOnSelectedSource() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if state.isRunningG2Analysis {
+                                ProgressView().controlSize(.small)
+                                Text("Đang phân tích G2 (Qwen3-VL 4B local)…")
+                            } else {
+                                Image(systemName: "sparkles.tv")
+                                Text("Chạy phân tích G2 trên video này")
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(state.isRunningG2Analysis || !state.isWorkerConnected)
+
+                    Text("Trích xuất frame offline, suy luận VLM Qwen3-VL 4B và đối chiếu fact claim để sinh Coverage Ledger.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            VStack(spacing: 12) {
+                Text("Chưa có thông số probe cho video này")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button("Phân tích video ngay") {
+                    Task { await state.probeFile(path: item.id) }
+                }
+                .buttonStyle(.bordered)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+        }
+    }
+
+    @ViewBuilder
+    private var imageInspectorContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            LocalImagePreview(path: item.id)
+
+            KeyValueRow(key: "Định dạng", value: item.url.pathExtension.uppercased())
+            KeyValueRow(key: "Dung lượng", value: item.formattedSize)
+            if let date = item.modifiedDate {
+                KeyValueRow(key: "Ngày sửa", value: date.formatted(date: .numeric, time: .standard))
+            }
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "photo.stack")
+                    .foregroundStyle(Color.brandTeal)
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Ảnh tư liệu đính kèm")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Ảnh tĩnh được lưu giữ cùng thư mục phục vụ tham chiếu bối cảnh, đạo cụ hoặc địa điểm cho kịch bản POV (G3).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(10)
+            .background(Color.brandTeal.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+}
+
+struct MediaSectionView: View {
+    @EnvironmentObject var state: AppState
+    @State private var isDropTargeted = false
+    @State private var searchText = ""
+
+    var displayedItems: [MediaSourceItem] {
+        let base = state.filteredMediaItems
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if query.isEmpty {
+            return base
+        }
+        return base.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
+
+    var selectedItem: MediaSourceItem? {
+        state.mediaItems.first(where: { $0.id == state.selectedFilePath })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            folderBannerCard
+
+            if state.isBookmarkStale {
+                Label("Quyền truy cập thư mục/file đã cũ. Vui lòng chọn lại thư mục để tái cấp quyền.", systemImage: "lock.trianglebadge.exclamationmark")
+                    .foregroundStyle(.orange)
+                    .font(.callout)
+            }
+
+            if state.mediaItems.isEmpty {
+                emptyMediaPlaceholder
+            } else {
+                mediaBrowserAndInspector
+            }
+        }
+    }
+
+    private var folderBannerCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 14) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.brandTeal.opacity(0.12))
+                            .frame(width: 50, height: 50)
+                        Image(systemName: state.mediaItems.isEmpty ? "folder.badge.plus" : "folder.fill")
+                            .font(.system(size: 24, weight: .medium))
+                            .foregroundStyle(Color.brandTeal)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(folderTitle)
+                            .font(.headline)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+
+                        if !state.selectedDirectoryPath.isEmpty {
+                            Text(state.selectedDirectoryPath)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                        } else {
+                            Text("Chưa chọn thư mục tư liệu nguồn (hỗ trợ nhiều video và ảnh đính kèm)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 8) {
+                        Button {
+                            state.selectSourceFolder()
+                        } label: {
+                            Label("Chọn thư mục…", systemImage: "folder.badge.plus")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .help("Chọn toàn bộ thư mục chứa video và ảnh (⌘O)")
+
+                        Button {
+                            state.selectFileAndProbe()
+                        } label: {
+                            Label("Chọn file…", systemImage: "doc.badge.plus")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                        .help("Chọn file video hoặc ảnh đơn lẻ (⇧⌘O)")
+
+                        if !state.selectedDirectoryPath.isEmpty {
+                            Button {
+                                state.refreshCurrentDirectory()
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
+                            .help("Quét lại thư mục")
+
+                            Button {
+                                let dirURL = URL(fileURLWithPath: state.selectedDirectoryPath)
+                                NSWorkspace.shared.activateFileViewerSelecting([dirURL])
+                            } label: {
+                                Image(systemName: "macwindow")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
+                            .help("Mở thư mục trong Finder")
+                        }
+                    }
+                }
+
+                if !state.mediaItems.isEmpty {
+                    Divider()
+                    HStack(spacing: 10) {
+                        StatusPill(text: "\(state.videoCount) video", color: .brandTeal)
+                        StatusPill(text: "\(state.imageCount) ảnh đính kèm", color: state.imageCount > 0 ? .indigo : .secondary)
+                        StatusPill(text: "Tổng: \(ByteCountFormatter.string(fromByteCount: state.totalFolderBytes, countStyle: .file))", color: .secondary)
+                        Spacer()
+                        if state.isSecurityScoped {
+                            HStack(spacing: 4) {
+                                Image(systemName: "lock.shield.fill").foregroundStyle(.green)
+                                Text("Security-Scoped Sandbox Active").font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(
+                        isDropTargeted ? Color.brandTeal : Color.secondary.opacity(0.2),
+                        style: StrokeStyle(lineWidth: isDropTargeted ? 2 : 1, dash: isDropTargeted ? [6, 3] : [])
+                    )
+            )
+            .dropDestination(for: URL.self) { urls, _ in
+                let validURLs = urls.filter { $0.isFileURL }
+                guard !validURLs.isEmpty else { return false }
+                if validURLs.count == 1 {
+                    state.handleSelectedURL(validURLs[0])
+                } else {
+                    state.handleSelectedURLs(validURLs)
+                }
+                return true
+            } isTargeted: { isDropTargeted = $0 }
+        }
+    }
+
+    private var folderTitle: String {
+        if !state.selectedDirectoryPath.isEmpty {
+            return URL(fileURLWithPath: state.selectedDirectoryPath).lastPathComponent
+        }
+        return "Thư mục tư liệu nguồn"
+    }
+
+    private var emptyMediaPlaceholder: some View {
+        Card {
+            VStack(spacing: 16) {
+                Image(systemName: "arrow.down.doc")
+                    .font(.system(size: 42, weight: .thin))
+                    .foregroundStyle(Color.brandTeal.opacity(0.7))
+                VStack(spacing: 6) {
+                    Text("Kéo thả thư mục hoặc file tư liệu vào đây")
+                        .font(.headline)
+                    Text("Hệ thống sẽ tự động quét toàn bộ video (.mp4, .mov, .m4v, .mkv, .avi, .webm) và ảnh đính kèm (.jpg, .png, .heic, .webp...)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 520)
+                }
+                HStack(spacing: 12) {
+                    Button("Chọn thư mục tư liệu…") { state.selectSourceFolder() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                    Button("Chọn file riêng lẻ…") { state.selectFileAndProbe() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 36)
+        }
+    }
+
+    private var mediaBrowserAndInspector: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Picker("Lọc", selection: $state.mediaFilter) {
+                    ForEach(MediaFilter.allCases) { filter in
+                        Text(filterLabel(for: filter)).tag(filter)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 340)
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Tìm theo tên file…", text: $searchText)
+                        .textFieldStyle(.plain)
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .frame(maxWidth: 240)
+            }
+
+            HStack(alignment: .top, spacing: 16) {
+                Card(title: "Danh sách tư liệu (\(displayedItems.count))", symbol: "folder.fill") {
+                    if displayedItems.isEmpty {
+                        VStack(spacing: 10) {
+                            Image(systemName: "doc.text.magnifyingglass")
+                                .font(.system(size: 32))
+                                .foregroundStyle(.secondary)
+                            Text("Không tìm thấy file phù hợp")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 180)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 6) {
+                                ForEach(displayedItems) { item in
+                                    MediaRowView(
+                                        item: item,
+                                        isSelected: item.id == state.selectedFilePath,
+                                        onSelect: {
+                                            state.selectItemForInspection(item)
+                                        }
+                                    )
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                        .frame(minHeight: 280, maxHeight: 420)
+                    }
+                }
+                .frame(minWidth: 320, maxWidth: 440)
+
+                if let item = selectedItem {
+                    MediaInspectorView(item: item)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                } else {
+                    Card(title: "Chi tiết tư liệu", symbol: "info.circle") {
+                        VStack(spacing: 12) {
+                            Image(systemName: "hand.tap")
+                                .font(.system(size: 36))
+                                .foregroundStyle(.secondary)
+                            Text("Chọn một video hoặc ảnh trong danh sách để xem thông số chi tiết")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 220)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+            }
+        }
+    }
+
+    private func filterLabel(for filter: MediaFilter) -> String {
+        switch filter {
+        case .all: return "Tất cả (\(state.mediaItems.count))"
+        case .videos: return "Video (\(state.videoCount))"
+        case .images: return "Ảnh (\(state.imageCount))"
+        }
+    }
+}
+
+struct ModelSectionView: View {
+    @EnvironmentObject var state: AppState
+
+    private var statusColor: Color {
+        if state.isRunningModelInfer { return .blue }
+        if state.modelInferResult != nil { return .green }
+        guard let status = state.modelStatus else { return .gray }
+        switch status.status {
+        case .availableUnloaded: return .brandTeal
+        case .invalidAssets, .runtimeUnavailable: return .red
+        case .notConfigured, .notInstalled: return .orange
+        }
+    }
+
+    private var statusLabel: String {
+        if state.isRunningModelInfer { return "Đang chạy model" }
+        if state.modelInferResult != nil { return "Đã nhận kết quả từ model local" }
         guard let status = state.modelStatus else {
-            return "Chưa cài model kiểm thử"
+            return state.isWorkerConnected ? "Đang kiểm tra model…" : "Chưa kết nối worker"
         }
         switch status.status {
-        case .availableUnloaded:
-            return "Đã kiểm tra file — chưa chạy suy luận"
-        case .invalidAssets:
-            return "Model thiếu hoặc hỏng file"
-        case .runtimeUnavailable:
-            return "Runtime chưa sẵn sàng"
-        case .notConfigured, .notInstalled:
-            return "Chưa cài model kiểm thử"
+        case .availableUnloaded: return "Đã kiểm tra file — chưa chạy suy luận"
+        case .invalidAssets: return "Model thiếu hoặc hỏng file"
+        case .runtimeUnavailable: return "Runtime chưa sẵn sàng"
+        case .notConfigured, .notInstalled: return "Chưa cài model kiểm thử"
         }
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header Bar
-            HStack(spacing: 12) {
-                Image(systemName: "video.badge.waveform")
-                    .font(.system(size: 24))
-                    .foregroundColor(.accentColor)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("AIVideo v3.1")
-                        .font(.headline)
-                    Text("Trợ lý phân tích & dựng video POV tiếng Việt (macOS Native arm64)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: 16) {
+            Card(title: "Trạng thái", symbol: "gauge.with.dots.needle.33percent") {
+                HStack {
+                    StatusPill(text: statusLabel, color: statusColor)
+                    Spacer()
+                    Button("Kiểm tra lại") { Task { await state.refreshModelStatus() } }
+                        .disabled(!state.isWorkerConnected || state.isRunningModelInfer)
                 }
-                Spacer()
-
-                // Worker Connection Badge
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(state.isWorkerConnected ? Color.green : Color.red)
-                        .frame(width: 8, height: 8)
-                    Text(state.isWorkerConnected ? "Worker PID \(state.workerPid) (Python \(state.pythonVersion))" : "Worker Disconnected")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                if let details = state.modelStatus?.details, !details.isEmpty {
+                    Text(details).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(Color(NSColor.controlBackgroundColor))
-                .cornerRadius(6)
+                Text("Profile G0 chỉ là fixture kiểm tra IPC và Apple Metal; không thay thế model sản phẩm.")
+                    .font(.caption).foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color(NSColor.windowBackgroundColor))
 
-            Divider()
+            Card(title: "Chạy thử", symbol: "play.circle") {
+                TextField("Prompt brief thử nghiệm…", text: $state.modelPrompt, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(2...5)
+                HStack {
+                    Button("Chạy kiểm thử model") { Task { await state.runModelInference() } }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(!state.isWorkerConnected || state.modelStatus?.status != .availableUnloaded || state.isRunningModelInfer)
+                    if state.isRunningModelInfer {
+                        ProgressView().controlSize(.small)
+                        Text("Đang nạp và chạy model local…").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
 
-            // Main Scrollable Area
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    // System Notification
-                    if let err = state.errorMessage {
-                        HStack {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.yellow)
-                            Text(err)
-                                .font(.callout)
-                                .foregroundColor(.red)
-                        }
+            if let res = state.modelInferResult {
+                Card(title: "Kết quả", symbol: "text.bubble") {
+                    if let promptUsed = state.lastRunPrompt {
+                        Text("Brief: “\(promptUsed)”").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(res.outputText)
+                        .textSelection(.enabled)
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.red.opacity(0.1))
-                        .cornerRadius(6)
+                        .background(.background, in: RoundedRectangle(cornerRadius: 8))
+                    KeyValueRow(key: "Model", value: "\(res.modelId) (\(res.profileId))")
+                    KeyValueRow(key: "Tokens", value: "\(res.inputTokenCount) vào / \(res.outputTokenCount) ra · \(res.finishReason)")
+                    if let loadMs = res.loadTimeMs, let genMs = res.generationTimeMs {
+                        KeyValueRow(key: "Thời gian", value: String(format: "Nạp %.0f ms · Sinh %.0f ms", loadMs, genMs))
                     }
-
-                    // Section 1: Media Source Inspector
-                    GroupBox(label: Label("1. Kiểm tra tư liệu nguồn (Media Probe)", systemImage: "film")) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Button("Chọn file video/ảnh...") {
-                                    state.selectFileAndProbe()
-                                }
-                                .buttonStyle(.borderedProminent)
-
-                                if !state.selectedFilePath.isEmpty {
-                                    Text(URL(fileURLWithPath: state.selectedFilePath).lastPathComponent)
-                                        .font(.subheadline)
-                                        .truncationMode(.middle)
-                                }
-                                Spacer()
-                            }
-
-                            if state.isBookmarkStale {
-                                Text("⚠️ Quyền truy cập file đã cũ. Vui lòng bấm 'Chọn file' để tái cấp quyền.")
-                                    .font(.caption)
-                                    .foregroundColor(.orange)
-                            }
-
-                            if state.isProbing {
-                                ProgressView("Đang phân tích media qua ffprobe...")
-                                    .progressViewStyle(.linear)
-                            } else if let probe = state.probeResult {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Định dạng: \(probe.formatName ?? "N/A") · Thời lượng: \(String(format: "%.2f", probe.durationSeconds))s · Kích thước: \(probe.sizeBytes / 1024 / 1024) MB")
-                                        .font(.system(size: 12, weight: .medium))
-
-                                    ForEach(probe.videoStreams, id: \.index) { v in
-                                        Text("• Video: \(v.codecName ?? "N/A") \(v.width ?? 0)x\(v.height ?? 0) @ \(v.frameRate ?? "N/A") fps (Pixel: \(v.pixelFormat ?? "N/A"))")
-                                            .font(.system(size: 11, design: .monospaced))
-                                            .foregroundColor(.secondary)
-                                    }
-                                    ForEach(probe.audioStreams, id: \.index) { a in
-                                        Text("• Audio: \(a.codecName ?? "N/A") \(a.sampleRate ?? "N/A") Hz, \(a.channels ?? 0) channels")
-                                            .font(.system(size: 11, design: .monospaced))
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                .padding(8)
-                                .background(Color(NSColor.textBackgroundColor).opacity(0.5))
-                                .cornerRadius(6)
-                            }
-                        }
-                        .padding(8)
-                    }
-
-                    // Section 2: Kiểm tra model local (Gate G0 Text Smoke)
-                    GroupBox(label: Label("Kiểm tra Worker Model Fixture (G0 Smoke Test Only)", systemImage: "cpu")) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Lưu ý: Model sản phẩm (Qwen-VL, Whisper, VieNeu-TTS, DINOv2) chưa được tải (NOT_INSTALLED). Profile này chỉ dùng làm fixture kiểm tra IPC và Apple Metal.")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-
-                            // Status Banner
-                            HStack(spacing: 8) {
-                                Circle()
-                                    .fill(statusColor)
-                                    .frame(width: 10, height: 10)
-                                Text(statusLabel)
-                                    .font(.system(size: 12, weight: .semibold))
-                                Spacer()
-                                Button("Kiểm tra lại model") {
-                                    Task {
-                                        await state.refreshModelStatus()
-                                    }
-                                }
-                                .disabled(!state.isWorkerConnected || state.isRunningModelInfer)
-                            }
-                            .padding(8)
-                            .background(statusColor.opacity(0.1))
-                            .cornerRadius(6)
-
-                            if let status = state.modelStatus, let details = status.details, !details.isEmpty {
-                                Text(details)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-
-                            TextField("Prompt brief thử nghiệm...", text: $state.modelPrompt)
-                                .textFieldStyle(.roundedBorder)
-
-                            HStack {
-                                Button("Chạy kiểm thử model") {
-                                    Task {
-                                        await state.runModelInference()
-                                    }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(!state.isWorkerConnected || state.modelStatus?.status != .availableUnloaded || state.isRunningModelInfer)
-
-                                if state.isRunningModelInfer {
-                                    ProgressView("Đang nạp và chạy model local...")
-                                        .progressViewStyle(.linear)
-                                }
-                            }
-
-                            // Model Inference Result
-                            if let res = state.modelInferResult {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    if let promptUsed = state.lastRunPrompt {
-                                        Text("Brief đã chạy: \"\(promptUsed)\"")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    Text("Kết quả từ model:")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    Text(res.outputText)
-                                        .font(.system(size: 12))
-                                        .padding(6)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(Color(NSColor.textBackgroundColor))
-                                        .cornerRadius(4)
-
-                                    HStack(spacing: 12) {
-                                        Text("Model: \(res.modelId) (\(res.profileId))")
-                                        Text("Tokens: \(res.inputTokenCount) in / \(res.outputTokenCount) out")
-                                        Text("Finish: \(res.finishReason)")
-                                    }
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(.secondary)
-
-                                    if let loadMs = res.loadTimeMs, let genMs = res.generationTimeMs {
-                                        Text("Nạp: \(String(format: "%.1f", loadMs)) ms · Sinh: \(String(format: "%.1f", genMs)) ms")
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                .padding(8)
-                                .background(Color.accentColor.opacity(0.08))
-                                .cornerRadius(6)
-                            }
-                        }
-                        .padding(8)
-                    }
-
-                    // Section 3: DaVinci Resolve Status & Spike
-                    GroupBox(label: Label("3. Tích hợp DaVinci Resolve Studio (Gate G0)", systemImage: "film.stack")) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            if let resolve = state.resolveStatus {
-                                HStack {
-                                    Circle()
-                                        .fill(resolve.connected ? Color.green : Color.orange)
-                                        .frame(width: 8, height: 8)
-                                    Text(resolve.connected ? "Đã kết nối: \(resolve.productName ?? "DaVinci Resolve") v\(resolve.version ?? "")" : (resolve.error ?? "DaVinci Resolve chưa mở"))
-                                        .font(.system(size: 12))
-                                    Spacer()
-                                    Button("Làm mới") {
-                                        Task {
-                                            await state.checkResolveStatus()
-                                        }
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
-                            }
-
-                            Button("Chạy G0 10s Timeline Spike") {
-                                Task {
-                                    await state.runResolveSpike()
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(state.isRunningResolveSpike || !(state.resolveStatus?.connected ?? false))
-
-                            if state.isRunningResolveSpike {
-                                ProgressView("Đang thiết lập timeline 2160x3840 24fps trong Resolve...")
-                            } else if let spike = state.resolveSpikeResult {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Spike: \(spike.success == true ? "Hoàn tất" : "Đạt") · Timeline: \(spike.timelineResolution) @ \(String(format: "%.1f", spike.timelineFps))fps")
-                                        .font(.system(size: 11, weight: .bold))
-                                    Text("Frames: \(spike.timelineStartFrame)..\(spike.timelineEndFrame) (Tổng: \(spike.timelineTotalFrames) frames = 10s @ 24fps)")
-                                        .font(.system(size: 11, design: .monospaced))
-                                    Text("DRP Export: \(spike.drpExported ? "Thành công" : "Lỗi") (\(spike.drpPath))")
-                                        .font(.system(size: 10, design: .monospaced))
-                                }
-                                .padding(8)
-                                .background(Color.blue.opacity(0.1))
-                                .cornerRadius(6)
-                            }
-                        }
-                        .padding(8)
-                    }
-
-                    // Section 4: Gate G1 ProjectStore, ACK-based Editor & Portable Backup
-                    GroupBox(label: Label("4. Quản lý Dữ liệu & Phục hồi (Gate G1 — ProjectStore SQLite WAL)", systemImage: "externaldrive.badge.checkmark")) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Text("Dự án: \(state.g1Project?.name ?? "Đang mở...") · Revision: \(state.g1Project?.currentRevision ?? 1)")
-                                    .font(.system(size: 12, weight: .semibold))
-                                Spacer()
-                                Text("Trạng thái lưu: \(state.g1SaveStatus)")
-                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                    .foregroundColor(state.g1SaveStatus.hasPrefix("Lưu lỗi") ? .red : (state.g1SaveStatus.hasPrefix("Đang lưu") ? .blue : .green))
-                            }
-
-                            if !state.g1ReconciliationSummary.isEmpty {
-                                Text("Startup Reconciler (S08): \(state.g1ReconciliationSummary)")
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundColor(.secondary)
-                            }
-
-                            HStack {
-                                TextField("Nhập ghi chú/dữ kiện ngày làm việc (Brief/Fact)...", text: $state.g1DraftFactText)
-                                    .textFieldStyle(.roundedBorder)
-                                Button("Lưu nháp (ACK)") {
-                                    Task {
-                                        await state.saveDraftFactToStore()
-                                    }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                Button("Tạo Portable Backup (S09)") {
-                                    Task {
-                                        await state.createPortableBackupFromUI()
-                                    }
-                                }
-                                .buttonStyle(.bordered)
-                            }
-
-                            if !state.g1LastBackupInfo.isEmpty {
-                                Text(state.g1LastBackupInfo)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(.blue)
-                            }
-
-                            if !state.g1Claims.isEmpty {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("Danh sách Claims/Facts hiện hành (\(state.g1Claims.count)):")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    ForEach(state.g1Claims) { c in
-                                        HStack {
-                                            Text("• [\(c.origin.rawValue)/\(c.epistemicStatus.rawValue)] \(c.text)")
-                                                .font(.system(size: 11))
-                                            Spacer()
-                                            Text(c.reviewStatus.rawValue.uppercased())
-                                                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                                .foregroundColor(c.reviewStatus == .confirmed ? .green : .orange)
-                                            if c.reviewStatus != .confirmed {
-                                                Button("Xác nhận Fact") {
-                                                    Task {
-                                                        await state.confirmFactInStore(claimId: c.claimId)
-                                                    }
-                                                }
-                                                .controlSize(.small)
-                                            }
-                                        }
-                                    }
-                                }
-                                .padding(8)
-                                .background(Color(NSColor.textBackgroundColor).opacity(0.5))
-                                .cornerRadius(6)
-                            }
-                        }
-                        .padding(8)
-                    }
-
-                    // Section 5: Capabilities Matrix (Gate G0 & Gate G1 Completed)
-                    GroupBox(label: Label("5. Bản đồ năng lực hệ thống (Capabilities Matrix)", systemImage: "checklist")) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Trạng thái triển khai trung thực theo đặc tả AIVideo v3.1:")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            HStack {
-                                Text("• Worker JSON-RPC 2.0 stdio & Media Inspector (ffprobe):")
-                                Spacer()
-                                Text("IMPLEMENTED (G0)").font(.caption).foregroundColor(.green)
-                            }
-                            HStack {
-                                Text("• Local Neural Model Smoke & DaVinci Resolve Adapter:")
-                                Spacer()
-                                Text("IMPLEMENTED (G0)").font(.caption).foregroundColor(.green)
-                            }
-                            HStack {
-                                Text("• Single-writer ProjectStore (SQLite WAL & Revision History):")
-                                Spacer()
-                                Text("IMPLEMENTED (G1 — S04/S06)").font(.caption).foregroundColor(.green)
-                            }
-                            HStack {
-                                Text("• APFS Source Snapshot & 4-State Artifact Publication Engine:")
-                                Spacer()
-                                Text("IMPLEMENTED (G1 — S05/S08)").font(.caption).foregroundColor(.green)
-                            }
-                            HStack {
-                                Text("• Global Heavy Lease Governor, Fencing & Online Backup/Restore:")
-                                Spacer()
-                                Text("IMPLEMENTED (G1 — S07/S09)").font(.caption).foregroundColor(.green)
-                            }
-                            HStack {
-                                Text("• VFR PTS Indexer, Production Models & Full-Frame Analysis:")
-                                Spacer()
-                                Text("IMPLEMENTED (G2 — S10..S12)").font(.caption).foregroundColor(.green)
-                            }
-                            HStack {
-                                Text("• Semantic Claim Verifier, Event Graph, Targeted Review & G2 Benchmark:")
-                                Spacer()
-                                Text("IMPLEMENTED (G2 — S13..S15)").font(.caption).foregroundColor(.green)
-                            }
-                            HStack {
-                                Text("• Storyboard Outline, VieNeu-TTS Trial & Beam Search Cut Solver:")
-                                Spacer()
-                                Text("PLANNED (Gate G3 — S16..S19)").font(.caption).foregroundColor(.orange)
-                            }
-                        }
-                        .padding(8)
-                    }
-
-                    // Section 6: Gate G2 Targeted Review & Scope Impact View (S12..S15)
-                    G2ReviewSectionView(state: state)
                 }
-                .padding(16)
             }
-
-            Divider()
-
-            // Status Footer
-            HStack {
-                Text(state.statusMessage)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
-            .background(Color(NSColor.windowBackgroundColor))
         }
-        .frame(minWidth: 700, minHeight: 650)
+    }
+}
+
+struct ResolveSectionView: View {
+    @EnvironmentObject var state: AppState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Card(title: "Kết nối", symbol: "link") {
+                HStack {
+                    if let resolve = state.resolveStatus {
+                        StatusPill(
+                            text: resolve.connected ? "\(resolve.productName ?? "DaVinci Resolve") \(resolve.version ?? "")" : (resolve.error ?? "DaVinci Resolve chưa mở"),
+                            color: resolve.connected ? .green : .orange
+                        )
+                    } else {
+                        StatusPill(text: "Chưa kiểm tra", color: .gray)
+                    }
+                    Spacer()
+                    Button("Làm mới") { Task { await state.checkResolveStatus() } }
+                        .disabled(!state.isWorkerConnected)
+                }
+            }
+            Card(title: "G0 Timeline Spike (10 s @ 24 fps)", symbol: "timeline.selection") {
+                Button("Chạy spike") { Task { await state.runResolveSpike() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(state.isRunningResolveSpike || !(state.resolveStatus?.connected ?? false))
+                if state.isRunningResolveSpike {
+                    ProgressView("Đang thiết lập timeline 2160×3840 24 fps trong Resolve…").progressViewStyle(.linear)
+                } else if let spike = state.resolveSpikeResult {
+                    StatusPill(text: spike.success == true ? "Hoàn tất" : "Thất bại", color: spike.success == true ? .green : .red)
+                    KeyValueRow(key: "Timeline", value: "\(spike.timelineResolution) @ \(String(format: "%.0f", spike.timelineFps)) fps")
+                    KeyValueRow(key: "Frames", value: "\(spike.timelineStartFrame)…\(spike.timelineEndFrame) (\(spike.timelineTotalFrames))")
+                    KeyValueRow(key: "DRP", value: spike.drpExported ? spike.drpPath : "Xuất lỗi")
+                }
+            }
+        }
+    }
+}
+
+struct DataSectionView: View {
+    @EnvironmentObject var state: AppState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Card(title: "Dự án", symbol: "folder") {
+                KeyValueRow(key: "Tên", value: state.g1Project?.name ?? "Đang mở…")
+                KeyValueRow(key: "Revision", value: state.g1Project.map { "\($0.currentRevision)" } ?? "—")
+                HStack {
+                    Text("Trạng thái lưu").foregroundStyle(.secondary).frame(width: 140, alignment: .leading)
+                    StatusPill(
+                        text: state.g1SaveStatus,
+                        color: state.g1SaveStatus.hasPrefix("Lưu lỗi") ? .red : (state.g1SaveStatus.hasPrefix("Đang lưu") ? .blue : .green)
+                    )
+                }.font(.callout)
+                if !state.g1ReconciliationSummary.isEmpty {
+                    KeyValueRow(key: "Reconciler S08", value: state.g1ReconciliationSummary)
+                }
+            }
+
+            Card(title: "Ghi chú / Fact", symbol: "square.and.pencil") {
+                HStack {
+                    TextField("Nhập dữ kiện ngày làm việc (Brief/Fact)…", text: $state.g1DraftFactText)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { Task { await state.saveDraftFactToStore() } }
+                    Button("Lưu (ACK)") { Task { await state.saveDraftFactToStore() } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(state.projectStore == nil || state.g1DraftFactText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                if state.g1Claims.isEmpty {
+                    Text("Chưa có claim nào.").font(.callout).foregroundStyle(.secondary)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(state.g1Claims) { c in
+                            HStack(spacing: 10) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(c.text).font(.callout)
+                                    Text("\(c.origin.rawValue) · \(c.epistemicStatus.rawValue)").font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                StatusPill(text: c.reviewStatus.rawValue.uppercased(), color: c.reviewStatus == .confirmed ? .green : .orange)
+                                if c.reviewStatus != .confirmed {
+                                    Button("Xác nhận") { Task { await state.confirmFactInStore(claimId: c.claimId) } }
+                                        .controlSize(.small)
+                                }
+                            }
+                            .padding(.vertical, 8)
+                            if c.id != state.g1Claims.last?.id { Divider() }
+                        }
+                    }
+                }
+            }
+
+            Card(title: "Backup", symbol: "externaldrive") {
+                HStack {
+                    Button("Tạo Portable Backup (S09)") { Task { await state.createPortableBackupFromUI() } }
+                        .disabled(state.projectStore == nil)
+                    if !state.g1LastBackupInfo.isEmpty {
+                        Text(state.g1LastBackupInfo).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct CapabilitiesSectionView: View {
+    @EnvironmentObject var state: AppState
+
+    private static let groups: [(String, String)] = [
+        ("G0 · Hệ thống & media probe", "media."),
+        ("G0 · Model local", "ai."),
+        ("G0 · DaVinci Resolve", "resolve."),
+        ("G2 · Phân tích full-frame & review", "g2."),
+        ("G3 · Kịch bản, TTS trial, SEARCH-v1, duyệt", "g3."),
+        ("G4 · Preview 1080×1920 & QC", "g4."),
+        ("G5 · Final 4K, handoff & release audit", "g5."),
+    ]
+
+    var body: some View {
+        Card(title: "Năng lực worker công bố (initialize)", symbol: "checklist") {
+            if state.capabilities.isEmpty {
+                Text(state.isWorkerConnected ? "Worker không công bố năng lực nào." : "Chưa kết nối worker — không thể xác minh năng lực.")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(Self.groups, id: \.1) { title, prefix in
+                let caps = state.capabilities.filter { $0.hasPrefix(prefix) }
+                HStack {
+                    Text(title)
+                    Spacer()
+                    StatusPill(text: caps.isEmpty ? "KHÔNG CÓ" : "\(caps.count) RPC", color: caps.isEmpty ? .gray : .green)
+                }
+                .font(.callout)
+            }
+            if !state.capabilities.isEmpty {
+                DisclosureGroup("Chi tiết (\(state.capabilities.count))") {
+                    Text(state.capabilities.sorted().joined(separator: "\n"))
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            Text("Ma trận này phản ánh RPC mà worker thực sự đăng ký, không phải tuyên bố tĩnh.")
+                .font(.caption).foregroundStyle(.tertiary)
+        }
     }
 }
 

@@ -504,15 +504,15 @@ public actor ProjectStore {
         sqlite3_bind_text(stmt, 1, id.uuidString, -1, SQLITE_TRANSIENT)
 
         if sqlite3_step(stmt) == SQLITE_ROW {
-            let pidStr = String(cString: sqlite3_column_text(stmt, 0))
-            let name = String(cString: sqlite3_column_text(stmt, 1))
+            let pidStr = colText(stmt, 0)
+            let name = colText(stmt, 1)
             let rev = Int(sqlite3_column_int(stmt, 2))
-            let createdStr = String(cString: sqlite3_column_text(stmt, 3))
-            let updatedStr = String(cString: sqlite3_column_text(stmt, 4))
+            let createdStr = colText(stmt, 3)
+            let updatedStr = colText(stmt, 4)
 
             let created = DataContractDateFormatters.date(from: createdStr) ?? Date()
             let updated = DataContractDateFormatters.date(from: updatedStr) ?? Date()
-            return ProjectRecord(projectId: UUID(uuidString: pidStr)!, name: name, currentRevision: rev, createdAt: created, updatedAt: updated)
+            return ProjectRecord(projectId: try requireUUID(pidStr), name: name, currentRevision: rev, createdAt: created, updatedAt: updated)
         }
         return nil
     }
@@ -567,16 +567,15 @@ public actor ProjectStore {
                 let checkSql = "SELECT result_payload FROM idempotency_journal WHERE operation_id = ?;"
                 var checkStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, checkSql, -1, &checkStmt, nil) == SQLITE_OK {
+                    defer { sqlite3_finalize(checkStmt) }
                     sqlite3_bind_text(checkStmt, 1, ikey, -1, SQLITE_TRANSIENT)
                     if sqlite3_step(checkStmt) == SQLITE_ROW {
-                        let payload = String(cString: sqlite3_column_text(checkStmt, 0))
-                        sqlite3_finalize(checkStmt)
+                        let payload = colText(checkStmt, 0)
                         if let data = payload.data(using: .utf8),
                            let cached = try? JSONDecoder().decode(ClaimRecord.self, from: data) {
                             return cached
                         }
                     }
-                    sqlite3_finalize(checkStmt)
                 }
             }
 
@@ -592,9 +591,9 @@ public actor ProjectStore {
             guard sqlite3_step(projStmt) == SQLITE_ROW else {
                 throw ProjectStoreError.workdayNotFound(claim.workdayId)
             }
-            let projectIdStr = String(cString: sqlite3_column_text(projStmt, 0))
+            let projectIdStr = colText(projStmt, 0)
             let currentRev = Int(sqlite3_column_int(projStmt, 1))
-            let projectId = UUID(uuidString: projectIdStr)!
+            let projectId = try requireUUID(projectIdStr)
 
             if let expected = expectedRevision, expected != currentRev {
                 throw ProjectStoreError.revisionConflict(expected: expected, actual: currentRev)
@@ -709,16 +708,15 @@ public actor ProjectStore {
                 let checkSql = "SELECT result_payload FROM idempotency_journal WHERE operation_id = ?;"
                 var checkStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, checkSql, -1, &checkStmt, nil) == SQLITE_OK {
+                    defer { sqlite3_finalize(checkStmt) }
                     sqlite3_bind_text(checkStmt, 1, ikey, -1, SQLITE_TRANSIENT)
                     if sqlite3_step(checkStmt) == SQLITE_ROW {
-                        let payload = String(cString: sqlite3_column_text(checkStmt, 0))
-                        sqlite3_finalize(checkStmt)
+                        let payload = colText(checkStmt, 0)
                         if let data = payload.data(using: .utf8),
                            let cached = try? JSONDecoder().decode(ClaimRecord.self, from: data) {
                             return cached
                         }
                     }
-                    sqlite3_finalize(checkStmt)
                 }
             }
 
@@ -743,19 +741,19 @@ public actor ProjectStore {
                 throw ProjectStoreError.claimNotFound(claimId)
             }
 
-            let revId = UUID(uuidString: String(cString: sqlite3_column_text(qStmt, 0)))!
-            let cId = UUID(uuidString: String(cString: sqlite3_column_text(qStmt, 1)))!
-            let wId = UUID(uuidString: String(cString: sqlite3_column_text(qStmt, 2)))!
-            let text = String(cString: sqlite3_column_text(qStmt, 3))
-            let origin = Origin(rawValue: String(cString: sqlite3_column_text(qStmt, 4)))!
-            let epistemic = EpistemicStatus(rawValue: String(cString: sqlite3_column_text(qStmt, 5)))!
-            let review = ReviewStatus(rawValue: String(cString: sqlite3_column_text(qStmt, 6)))!
-            let support = SupportStatus(rawValue: String(cString: sqlite3_column_text(qStmt, 7)))!
-            let allowed = AllowedUse(rawValue: String(cString: sqlite3_column_text(qStmt, 8)))!
+            let revId = try colUUID(qStmt, 0)
+            let cId = try colUUID(qStmt, 1)
+            let wId = try colUUID(qStmt, 2)
+            let text = colText(qStmt, 3)
+            let origin = try colEnum(Origin.self, qStmt, 4)
+            let epistemic = try colEnum(EpistemicStatus.self, qStmt, 5)
+            let review = try colEnum(ReviewStatus.self, qStmt, 6)
+            let support = try colEnum(SupportStatus.self, qStmt, 7)
+            let allowed = try colEnum(AllowedUse.self, qStmt, 8)
 
             var sourceRev: UUID? = nil
             if sqlite3_column_type(qStmt, 9) != SQLITE_NULL {
-                sourceRev = UUID(uuidString: String(cString: sqlite3_column_text(qStmt, 9)))
+                sourceRev = UUID(uuidString: colText(qStmt, 9))
             }
 
             var tr: TimeRange? = nil
@@ -794,7 +792,7 @@ public actor ProjectStore {
             if sqlite3_prepare_v2(db, getProjSql, -1, &projStmt, nil) == SQLITE_OK {
                 sqlite3_bind_text(projStmt, 1, wId.uuidString, -1, SQLITE_TRANSIENT)
                 if sqlite3_step(projStmt) == SQLITE_ROW {
-                    let pId = UUID(uuidString: String(cString: sqlite3_column_text(projStmt, 0)))!
+                    let pId = try colUUID(projStmt, 0)
 
                     // 4. Record in Approvals Table
                     let appSql = "INSERT INTO approvals (approval_id, project_id, approval_type, target_revision_id, approved_by) VALUES (?, ?, 'fact_confirmation', ?, ?);"
@@ -856,24 +854,24 @@ public actor ProjectStore {
 
         var list: [ClaimRecord] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let revId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0)))!
-            let cId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
-            let wId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 2)))!
-            let text = String(cString: sqlite3_column_text(stmt, 3))
-            let origin = Origin(rawValue: String(cString: sqlite3_column_text(stmt, 4)))!
-            let epistemic = EpistemicStatus(rawValue: String(cString: sqlite3_column_text(stmt, 5)))!
-            let review = ReviewStatus(rawValue: String(cString: sqlite3_column_text(stmt, 6)))!
-            let support = SupportStatus(rawValue: String(cString: sqlite3_column_text(stmt, 7)))!
-            let allowed = AllowedUse(rawValue: String(cString: sqlite3_column_text(stmt, 8)))!
+            let revId = try colUUID(stmt, 0)
+            let cId = try colUUID(stmt, 1)
+            let wId = try colUUID(stmt, 2)
+            let text = colText(stmt, 3)
+            let origin = try colEnum(Origin.self, stmt, 4)
+            let epistemic = try colEnum(EpistemicStatus.self, stmt, 5)
+            let review = try colEnum(ReviewStatus.self, stmt, 6)
+            let support = try colEnum(SupportStatus.self, stmt, 7)
+            let allowed = try colEnum(AllowedUse.self, stmt, 8)
 
             var sourceRev: UUID? = nil
             if sqlite3_column_type(stmt, 9) != SQLITE_NULL {
-                sourceRev = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 9)))
+                sourceRev = UUID(uuidString: colText(stmt, 9))
             }
 
             var tr: TimeRange? = nil
             if sqlite3_column_type(stmt, 10) != SQLITE_NULL {
-                let start = Int(sqlite3_column_int(stmt, 10))
+                let start = Int(sqlite3_column_int64(stmt, 10))
                 let end = Int(sqlite3_column_int(stmt, 11))
                 let num = Int(sqlite3_column_int(stmt, 12))
                 let den = Int(sqlite3_column_int(stmt, 13))
@@ -882,7 +880,7 @@ public actor ProjectStore {
 
             var confId: UUID? = nil
             if sqlite3_column_type(stmt, 14) != SQLITE_NULL {
-                confId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 14)))
+                confId = UUID(uuidString: colText(stmt, 14))
             }
 
             var confRaw: Double? = nil
@@ -890,7 +888,7 @@ public actor ProjectStore {
                 confRaw = sqlite3_column_double(stmt, 15)
             }
 
-            let dateStr = String(cString: sqlite3_column_text(stmt, 16))
+            let dateStr = colText(stmt, 16)
             let created = DataContractDateFormatters.date(from: dateStr) ?? Date()
 
             list.append(ClaimRecord(
@@ -959,15 +957,15 @@ public actor ProjectStore {
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_text(stmt, 1, id.uuidString, -1, SQLITE_TRANSIENT)
         if sqlite3_step(stmt) == SQLITE_ROW {
-            let jId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0)))!
-            let pId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
-            let jType = String(cString: sqlite3_column_text(stmt, 2))
-            let fp = String(cString: sqlite3_column_text(stmt, 3))
-            let st = JobStatus(rawValue: String(cString: sqlite3_column_text(stmt, 4))) ?? .queued
-            let created = DataContractDateFormatters.date(from: String(cString: sqlite3_column_text(stmt, 5))) ?? Date()
+            let jId = try colUUID(stmt, 0)
+            let pId = try colUUID(stmt, 1)
+            let jType = colText(stmt, 2)
+            let fp = colText(stmt, 3)
+            let st = JobStatus(rawValue: colText(stmt, 4)) ?? .queued
+            let created = DataContractDateFormatters.date(from: colText(stmt, 5)) ?? Date()
             var completed: Date? = nil
             if sqlite3_column_type(stmt, 6) != SQLITE_NULL {
-                completed = DataContractDateFormatters.date(from: String(cString: sqlite3_column_text(stmt, 6)))
+                completed = DataContractDateFormatters.date(from: colText(stmt, 6))
             }
             return JobRecord(jobId: jId, projectId: pId, jobType: jType, inputFingerprint: fp, status: st, createdAt: created, completedAt: completed)
         }
@@ -1095,8 +1093,8 @@ public actor ProjectStore {
         }
 
         let storedFence = Int(sqlite3_column_int(stmt, 0))
-        let storedSession = String(cString: sqlite3_column_text(stmt, 1))
-        let status = String(cString: sqlite3_column_text(stmt, 2))
+        let storedSession = colText(stmt, 1)
+        let status = colText(stmt, 2)
         let revoked = sqlite3_column_int(stmt, 3) != 0
         let maxFence = Int(sqlite3_column_int(stmt, 4))
 
@@ -1228,7 +1226,7 @@ public actor ProjectStore {
             }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_text(stmt, 1, sha256, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_int(stmt, 2, Int32(byteSize))
+            sqlite3_bind_int64(stmt, 2, Int64(byteSize))
             sqlite3_bind_text(stmt, 3, publicationId.uuidString, -1, SQLITE_TRANSIENT)
             if sqlite3_step(stmt) != SQLITE_DONE {
                 throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
@@ -1327,25 +1325,25 @@ public actor ProjectStore {
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_text(stmt, 1, id.uuidString, -1, SQLITE_TRANSIENT)
         if sqlite3_step(stmt) == SQLITE_ROW {
-            return parsePublicationRow(stmt)
+            return try parsePublicationRow(stmt)
         }
         return nil
     }
 
-    private func parsePublicationRow(_ stmt: OpaquePointer?) -> ArtifactPublicationRecord {
-        let pubId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0)))!
-        let projId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
-        let jobId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 2)))!
-        let attId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 3)))!
+    private func parsePublicationRow(_ stmt: OpaquePointer?) throws -> ArtifactPublicationRecord {
+        let pubId = try colUUID(stmt, 0)
+        let projId = try colUUID(stmt, 1)
+        let jobId = try colUUID(stmt, 2)
+        let attId = try colUUID(stmt, 3)
         let fence = Int(sqlite3_column_int(stmt, 4))
-        let aType = String(cString: sqlite3_column_text(stmt, 5))
-        let state = ArtifactPublicationState(rawValue: String(cString: sqlite3_column_text(stmt, 6))) ?? .prepared
-        let tempPath = sqlite3_column_type(stmt, 7) != SQLITE_NULL ? String(cString: sqlite3_column_text(stmt, 7)) : nil
-        let canonPath = sqlite3_column_type(stmt, 8) != SQLITE_NULL ? String(cString: sqlite3_column_text(stmt, 8)) : nil
-        let sha = sqlite3_column_type(stmt, 9) != SQLITE_NULL ? String(cString: sqlite3_column_text(stmt, 9)) : nil
-        let bSize = sqlite3_column_type(stmt, 10) != SQLITE_NULL ? Int(sqlite3_column_int(stmt, 10)) : nil
-        let created = DataContractDateFormatters.date(from: String(cString: sqlite3_column_text(stmt, 11))) ?? Date()
-        let updated = DataContractDateFormatters.date(from: String(cString: sqlite3_column_text(stmt, 12))) ?? Date()
+        let aType = colText(stmt, 5)
+        let state = ArtifactPublicationState(rawValue: colText(stmt, 6)) ?? .prepared
+        let tempPath = sqlite3_column_type(stmt, 7) != SQLITE_NULL ? colText(stmt, 7) : nil
+        let canonPath = sqlite3_column_type(stmt, 8) != SQLITE_NULL ? colText(stmt, 8) : nil
+        let sha = sqlite3_column_type(stmt, 9) != SQLITE_NULL ? colText(stmt, 9) : nil
+        let bSize = sqlite3_column_type(stmt, 10) != SQLITE_NULL ? Int(sqlite3_column_int64(stmt, 10)) : nil
+        let created = DataContractDateFormatters.date(from: colText(stmt, 11)) ?? Date()
+        let updated = DataContractDateFormatters.date(from: colText(stmt, 12)) ?? Date()
 
         return ArtifactPublicationRecord(
             publicationId: pubId,
@@ -1384,7 +1382,7 @@ public actor ProjectStore {
         sqlite3_bind_text(stmt, 1, projectId.uuidString, -1, SQLITE_TRANSIENT)
         var list: [ArtifactPublicationRecord] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            list.append(parsePublicationRow(stmt))
+            list.append(try parsePublicationRow(stmt))
         }
         return list
     }
@@ -1434,7 +1432,7 @@ public actor ProjectStore {
         sqlite3_bind_text(stmt, 1, projectId.uuidString, -1, SQLITE_TRANSIENT)
         var ids = Set<UUID>()
         while sqlite3_step(stmt) == SQLITE_ROW {
-            if let uid = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0))) {
+            if let uid = UUID(uuidString: colText(stmt, 0)) {
                 ids.insert(uid)
             }
         }
@@ -1534,7 +1532,7 @@ public actor ProjectStore {
         }
         defer { sqlite3_finalize(stmt) }
         if sqlite3_step(stmt) == SQLITE_ROW {
-            let res = String(cString: sqlite3_column_text(stmt, 0))
+            let res = colText(stmt, 0)
             if res.lowercased() != "ok" {
                 throw ProjectStoreError.integrityViolation("integrity_check failed: \(res)")
             }
@@ -1547,7 +1545,7 @@ public actor ProjectStore {
         }
         defer { sqlite3_finalize(fkStmt) }
         if sqlite3_step(fkStmt) == SQLITE_ROW {
-            let tbl = String(cString: sqlite3_column_text(fkStmt, 0))
+            let tbl = colText(fkStmt, 0)
             throw ProjectStoreError.integrityViolation("foreign_key_check violation on table \(tbl)")
         }
 
@@ -1614,13 +1612,13 @@ public actor ProjectStore {
         sqlite3_bind_text(stmt, 1, projectId.uuidString, -1, SQLITE_TRANSIENT)
         var list: [ApprovalRecord] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let aId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0)))!
-            let pId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
-            let aType = String(cString: sqlite3_column_text(stmt, 2))
-            let tRev = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 3)))!
+            let aId = try colUUID(stmt, 0)
+            let pId = try colUUID(stmt, 1)
+            let aType = colText(stmt, 2)
+            let tRev = try colUUID(stmt, 3)
             let sup = sqlite3_column_int(stmt, 4) != 0
-            let by = String(cString: sqlite3_column_text(stmt, 5))
-            let at = DataContractDateFormatters.date(from: String(cString: sqlite3_column_text(stmt, 6))) ?? Date()
+            let by = colText(stmt, 5)
+            let at = DataContractDateFormatters.date(from: colText(stmt, 6)) ?? Date()
             list.append(ApprovalRecord(approvalId: aId, projectId: pId, approvalType: aType, targetRevisionId: tRev, isSuperseded: sup, approvedBy: by, approvedAt: at))
         }
         return list
@@ -1721,17 +1719,17 @@ public actor ProjectStore {
         sqlite3_bind_text(stmt, 1, workdayId.uuidString, -1, SQLITE_TRANSIENT)
         var items: [TargetedReviewRecord] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let rId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0)))!
-            let pId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
-            let wId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 2)))!
-            let tRev = sqlite3_column_type(stmt, 3) != SQLITE_NULL ? UUID(uuidString: String(cString: sqlite3_column_text(stmt, 3))) : nil
-            let scopeRev = String(cString: sqlite3_column_text(stmt, 4))
-            let kind = ReviewEvidenceKind(rawValue: String(cString: sqlite3_column_text(stmt, 5))) ?? .briefSpan
+            let rId = try colUUID(stmt, 0)
+            let pId = try colUUID(stmt, 1)
+            let wId = try colUUID(stmt, 2)
+            let tRev = sqlite3_column_type(stmt, 3) != SQLITE_NULL ? UUID(uuidString: colText(stmt, 3)) : nil
+            let scopeRev = colText(stmt, 4)
+            let kind = ReviewEvidenceKind(rawValue: colText(stmt, 5)) ?? .briefSpan
             let crit = sqlite3_column_int(stmt, 6) != 0
-            let qText = String(cString: sqlite3_column_text(stmt, 7))
-            let status = String(cString: sqlite3_column_text(stmt, 8))
-            let resAct = sqlite3_column_type(stmt, 9) != SQLITE_NULL ? ReviewResolutionAction(rawValue: String(cString: sqlite3_column_text(stmt, 9))) : nil
-            let resUse = sqlite3_column_type(stmt, 10) != SQLITE_NULL ? AllowedUse(rawValue: String(cString: sqlite3_column_text(stmt, 10))) : nil
+            let qText = colText(stmt, 7)
+            let status = colText(stmt, 8)
+            let resAct = sqlite3_column_type(stmt, 9) != SQLITE_NULL ? ReviewResolutionAction(rawValue: colText(stmt, 9)) : nil
+            let resUse = sqlite3_column_type(stmt, 10) != SQLITE_NULL ? AllowedUse(rawValue: colText(stmt, 10)) : nil
             if let rec = try? TargetedReviewRecord(
                 reviewItemId: rId,
                 projectId: pId,
@@ -1769,16 +1767,16 @@ public actor ProjectStore {
         sqlite3_bind_text(stmt, 1, projectId.uuidString, -1, SQLITE_TRANSIENT)
         var records: [CoverageLedgerRecord] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let covId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0)))!
-            let pId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
-            let sRevId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 2)))!
-            let profId = String(cString: sqlite3_column_text(stmt, 3))
-            let fp = String(cString: sqlite3_column_text(stmt, 4))
+            let covId = try colUUID(stmt, 0)
+            let pId = try colUUID(stmt, 1)
+            let sRevId = try colUUID(stmt, 2)
+            let profId = colText(stmt, 3)
+            let fp = colText(stmt, 4)
             let totalDecl = Int(sqlite3_column_int(stmt, 5))
             let validDec = Int(sqlite3_column_int(stmt, 6))
             let uniqueProcCount = Int(sqlite3_column_int(stmt, 7))
-            let audioSt = AudioBranchState(rawValue: String(cString: sqlite3_column_text(stmt, 8))) ?? .speechDetected
-            let passSt = String(cString: sqlite3_column_text(stmt, 9))
+            let audioSt = AudioBranchState(rawValue: colText(stmt, 8)) ?? .speechDetected
+            let passSt = colText(stmt, 9)
             let uniqueIds = uniqueProcCount > 0 ? Array(0..<uniqueProcCount) : []
             records.append(
                 CoverageLedgerRecord(
@@ -1857,21 +1855,21 @@ public actor ProjectStore {
         sqlite3_bind_text(stmt, 1, sourceRevisionId.uuidString, -1, SQLITE_TRANSIENT)
         var list: [RawObservationArtifact] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
-            let obsId = String(cString: sqlite3_column_text(stmt, 0))
-            let sRevId = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1)))!
+            let obsId = colText(stmt, 0)
+            let sRevId = try colUUID(stmt, 1)
             let winIdx = Int(sqlite3_column_int(stmt, 2))
-            let role = ObservationPassRole(rawValue: String(cString: sqlite3_column_text(stmt, 3))) ?? .rawIndependent
-            let orig = Origin(rawValue: String(cString: sqlite3_column_text(stmt, 4))) ?? .visualModel
-            let ep = EpistemicStatus(rawValue: String(cString: sqlite3_column_text(stmt, 5))) ?? .observed
-            let framesStr = String(cString: sqlite3_column_text(stmt, 6))
+            let role = ObservationPassRole(rawValue: colText(stmt, 3)) ?? .rawIndependent
+            let orig = Origin(rawValue: colText(stmt, 4)) ?? .visualModel
+            let ep = EpistemicStatus(rawValue: colText(stmt, 5)) ?? .observed
+            let framesStr = colText(stmt, 6)
             let frames = (try? JSONDecoder().decode([Int].self, from: Data(framesStr.utf8))) ?? []
             let sPts = sqlite3_column_int64(stmt, 7)
             let ePts = sqlite3_column_int64(stmt, 8)
-            let text = String(cString: sqlite3_column_text(stmt, 9))
-            let ocrStr = String(cString: sqlite3_column_text(stmt, 10))
+            let text = colText(stmt, 9)
+            let ocrStr = colText(stmt, 10)
             let ocrTokens = (try? JSONDecoder().decode([String].self, from: Data(ocrStr.utf8))) ?? []
             let ocrUnc = sqlite3_column_int(stmt, 11) != 0
-            let gRef = sqlite3_column_type(stmt, 12) != SQLITE_NULL ? String(cString: sqlite3_column_text(stmt, 12)) : nil
+            let gRef = sqlite3_column_type(stmt, 12) != SQLITE_NULL ? colText(stmt, 12) : nil
             if let art = try? RawObservationArtifact(
                 observationId: obsId,
                 sourceRevisionId: sRevId,
@@ -1896,3 +1894,31 @@ public actor ProjectStore {
 
 // SQLITE_TRANSIENT helper:
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+// MARK: - Crash-safe column readers
+// sqlite3_column_text returns NULL for NULL cells; String(cString:) on NULL traps, and `!` on a
+// malformed UUID/enum row would take the whole app down. Surface both as integrityViolation instead.
+
+func colText(_ stmt: OpaquePointer?, _ idx: Int32) -> String {
+    guard let p = sqlite3_column_text(stmt, idx) else { return "" }
+    return String(cString: p)
+}
+
+func requireUUID(_ s: String) throws -> UUID {
+    guard let id = UUID(uuidString: s) else {
+        throw ProjectStoreError.integrityViolation("Invalid UUID in row: '\(s)'")
+    }
+    return id
+}
+
+func colUUID(_ stmt: OpaquePointer?, _ idx: Int32) throws -> UUID {
+    try requireUUID(colText(stmt, idx))
+}
+
+func colEnum<T: RawRepresentable>(_ type: T.Type, _ stmt: OpaquePointer?, _ idx: Int32) throws -> T where T.RawValue == String {
+    let raw = colText(stmt, idx)
+    guard let v = T(rawValue: raw) else {
+        throw ProjectStoreError.integrityViolation("Invalid \(T.self) value in row: '\(raw)'")
+    }
+    return v
+}

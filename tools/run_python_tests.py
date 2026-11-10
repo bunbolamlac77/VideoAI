@@ -37,6 +37,28 @@ def requirement_id(test_id: str) -> str:
         return "AI-09"
     if "test_s15_g2_benchmark" in test_id:
         return "AI-05"
+    if "test_s16_to_s19_g3" in test_id:
+        if "s16" in test_id:
+            return "STORY-01"
+        if "s17" in test_id:
+            return "AUD-01"
+        if "s18" in test_id:
+            return "EDIT-01"
+        return "STORY-03"
+    if "test_g3_security_rpc" in test_id:
+        return "INV-03"
+    if "test_s20_s21_g4" in test_id:
+        return "RES-02"
+    if "test_s22_to_s26_g5" in test_id:
+        if "s22" in test_id:
+            return "RES-03"
+        if "s23" in test_id:
+            return "REL-06"
+        return "REL-03"
+    if "test_readiness_security" in test_id:
+        return "SEC-01"
+    if "test_p0_integrity_gates" in test_id:
+        return "SEC-02"
     return "JOB-04"
 
 

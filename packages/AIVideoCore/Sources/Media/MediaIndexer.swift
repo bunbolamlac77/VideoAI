@@ -195,6 +195,10 @@ public enum MediaIndexer {
         let durationSec = try RationalTime(Int64(timelineFrameCount), 24)
         let shotEndSec = sourceStartSec + durationSec
 
+        // startSec/endSec use try! — reject malformed time bases (ffprobe can emit 0/0) before touching them.
+        if let bad = ptsIndex.first(where: { $0.timeBaseDen <= 0 || $0.durationPts < 0 }) {
+            throw MediaMappingError.invalidRationalTimeBase(num: bad.timeBaseNum, den: bad.timeBaseDen)
+        }
         let overlapping = ptsIndex.filter { $0.endSec > sourceStartSec && $0.startSec < shotEndSec }
         var entries: [TimelineFrameMapEntry] = []
         var counts: [Int: Int] = [:]

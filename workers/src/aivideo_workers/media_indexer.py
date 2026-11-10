@@ -695,7 +695,8 @@ def probe_and_index_real_video(
         "json",
         str(path),
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30)
+    # Allow generous timeout for full-frame packet inspection on long source videos
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=180)
     if res.returncode != 0:
         raise MediaMappingError(f"ffprobe failed on {path}: {res.stderr.strip()}")
 

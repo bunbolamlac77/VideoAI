@@ -1,0 +1,398 @@
+{
+  "source_revision_id": "rev-trip-holdout-01-dalat",
+  "input_fingerprint": "271de78f74b1b52a3c6f82a51f952bcb69c9e9bae0631d2cbb520cce3bc5be43",
+  "committed_windows": [
+    {
+      "window_index": 0,
+      "actual_processed_frame_ids": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "post_processor_audit": {
+        "runtime_profile_id": "P-VISION-DEV-v1",
+        "intended_source_frame_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "actual_processed_frame_ids": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15
+        ],
+        "dropped_or_truncated_frame_ids": [],
+        "temporal_patch_groups": [
+          [
+            0,
+            1
+          ],
+          [
+            2,
+            3
+          ],
+          [
+            4,
+            5
+          ],
+          [
+            6,
+            7
+          ],
+          [
+            8,
+            9
+          ],
+          [
+            10,
+            11
+          ],
+          [
+            12,
+            13
+          ],
+          [
+            14,
+            15
+          ]
+        ],
+        "post_processor_width": 840,
+        "post_processor_height": 476,
+        "post_processor_pixel_count": 399840,
+        "coverage_ratio": 1.0,
+        "truncation_detected": false,
+        "is_full_window_covered": true
+      }
+    },
+    {
+      "window_index": 1,
+      "actual_processed_frame_ids": [
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27
+      ],
+      "post_processor_audit": {
+        "runtime_profile_id": "P-VISION-DEV-v1",
+        "intended_source_frame_ids": [
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27
+        ],
+        "actual_processed_frame_ids": [
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27
+        ],
+        "dropped_or_truncated_frame_ids": [],
+        "temporal_patch_groups": [
+          [
+            12,
+            13
+          ],
+          [
+            14,
+            15
+          ],
+          [
+            16,
+            17
+          ],
+          [
+            18,
+            19
+          ],
+          [
+            20,
+            21
+          ],
+          [
+            22,
+            23
+          ],
+          [
+            24,
+            25
+          ],
+          [
+            26,
+            27
+          ]
+        ],
+        "post_processor_width": 840,
+        "post_processor_height": 476,
+        "post_processor_pixel_count": 399840,
+        "coverage_ratio": 1.0,
+        "truncation_detected": false,
+        "is_full_window_covered": true
+      }
+    },
+    {
+      "window_index": 2,
+      "actual_processed_frame_ids": [
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35
+      ],
+      "post_processor_audit": {
+        "runtime_profile_id": "P-VISION-DEV-v1",
+        "intended_source_frame_ids": [
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35
+        ],
+        "actual_processed_frame_ids": [
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35
+        ],
+        "dropped_or_truncated_frame_ids": [],
+        "temporal_patch_groups": [
+          [
+            24,
+            25
+          ],
+          [
+            26,
+            27
+          ],
+          [
+            28,
+            29
+          ],
+          [
+            30,
+            31
+          ],
+          [
+            32,
+            33
+          ],
+          [
+            34,
+            35
+          ]
+        ],
+        "post_processor_width": 840,
+        "post_processor_height": 476,
+        "post_processor_pixel_count": 399840,
+        "coverage_ratio": 1.0,
+        "truncation_detected": false,
+        "is_full_window_covered": true
+      }
+    }
+  ],
+  "raw_observations": [
+    {
+      "observation_id": "obs-rev-trip-w0000",
+      "source_revision_id": "rev-trip-holdout-01-dalat",
+      "window_index": 0,
+      "pass_role": "raw_independent",
+      "origin": "visual_model",
+      "epistemic_status": "observed",
+      "frame_ids": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "start_pts_ticks": 0,
+      "end_pts_ticks": 8192,
+      "time_base_num": 1,
+      "time_base_den": 12288,
+      "action_or_scene_type": "active_motion_scene",
+      "subject_track_id": "trk-w0000",
+      "observation_text": "Quan sát Qwen3-VL (cửa sổ 0, frames 0..15): Cảnh quay POV theo dõi Prenn - Hồ Tuyền Lâm Đà Lạt, người xem cảm nhận trải nghiệm như đang ở trong vai trò nhân vật.",
+      "ocr_raw_tokens": [],
+      "ocr_is_uncertain": false,
+      "has_uncertainty_boundary": false,
+      "guided_hypothesis_ref": null
+    },
+    {
+      "observation_id": "obs-rev-trip-w0001",
+      "source_revision_id": "rev-trip-holdout-01-dalat",
+      "window_index": 1,
+      "pass_role": "raw_independent",
+      "origin": "visual_model",
+      "epistemic_status": "observed",
+      "frame_ids": [
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27
+      ],
+      "start_pts_ticks": 6144,
+      "end_pts_ticks": 14336,
+      "time_base_num": 1,
+      "time_base_den": 12288,
+      "action_or_scene_type": "scenic_or_motion",
+      "subject_track_id": "trk-w0001",
+      "observation_text": "Quan sát Qwen3-VL (cửa sổ 1, frames 12..27): Cảnh quay POV theo dõi Prenn, hành động không rõ ràng do chỉ có chữ viết trên nền xanh lá.",
+      "ocr_raw_tokens": [],
+      "ocr_is_uncertain": false,
+      "has_uncertainty_boundary": false,
+      "guided_hypothesis_ref": null
+    },
+    {
+      "observation_id": "obs-rev-trip-w0002",
+      "source_revision_id": "rev-trip-holdout-01-dalat",
+      "window_index": 2,
+      "pass_role": "raw_independent",
+      "origin": "visual_model",
+      "epistemic_status": "observed",
+      "frame_ids": [
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35
+      ],
+      "start_pts_ticks": 12288,
+      "end_pts_ticks": 18432,
+      "time_base_num": 1,
+      "time_base_den": 12288,
+      "action_or_scene_type": "active_motion_scene",
+      "subject_track_id": "trk-w0002",
+      "observation_text": "Quan sát Qwen3-VL (cửa sổ 2, frames 24..35): Cảnh quay POV theo dõi Prenn - Hồ Tuyền Lâm Đà Lạt, thể hiện trải nghiệm người xem.",
+      "ocr_raw_tokens": [],
+      "ocr_is_uncertain": false,
+      "has_uncertainty_boundary": false,
+      "guided_hypothesis_ref": null
+    }
+  ]
+}

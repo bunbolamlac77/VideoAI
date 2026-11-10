@@ -6,6 +6,9 @@
 
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
 SDK_CANDIDATES=(
     "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
     "/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk"
@@ -157,7 +160,7 @@ swiftc -sdk "$SDK_PATH" \
 
 ./build/tests/test_s10_s11_g2_foundations
 
-echo "=== [11/11] Running Swift Gate G2 S12..S15 Analysis, Verifier & Review Closure Tests ==="
+echo "=== [11/15] Running Swift Gate G2 S12..S15 Analysis, Verifier & Review Closure Tests ==="
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
@@ -171,5 +174,87 @@ swiftc -sdk "$SDK_PATH" \
   -o build/tests/test_s12_to_s15_g2_closure
 
 TEST_RECORDS_OUT="build/reports/swift_s12_s15_records.jsonl" ./build/tests/test_s12_to_s15_g2_closure
+
+echo "=== [12/15] Running Swift Gate G3 S19 Approval Transaction Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DomainModels.swift \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
+  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
+  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  tests/test_s19_g3_approval.swift \
+  -o build/tests/test_s19_g3_approval
+
+TEST_RECORDS_OUT="build/reports/swift_s19_g3_records.jsonl" ./build/tests/test_s19_g3_approval
+
+echo "=== [13/15] Running Swift Gate G3 Independent Approval Guard Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DomainModels.swift \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
+  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
+  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  tests/test_g3_approval_guard.swift \
+  -o build/tests/test_g3_approval_guard
+
+TEST_RECORDS_OUT="build/reports/swift_g3_guard_records.jsonl" ./build/tests/test_g3_approval_guard
+
+echo "=== [14/15] Running Swift Gate G4 S21 Preview Approval & Demux Guard Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DomainModels.swift \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
+  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
+  packages/AIVideoCore/Sources/Storage/G4ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G4S21Guard.swift \
+  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  packages/AIVideoCore/Sources/Publication/G4FilePublisher.swift \
+  tests/test_g4_approval.swift \
+  -o build/tests/test_g4_approval
+
+TEST_RECORDS_OUT="build/reports/swift_g4_s21_records.jsonl" ./build/tests/test_g4_approval
+
+echo "=== [15/15] Running Swift Gate G5 S22..S26 Final 4K, Handoff, IME & Cache Quota Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DomainModels.swift \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
+  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
+  packages/AIVideoCore/Sources/Storage/G4ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G4S21Guard.swift \
+  packages/AIVideoCore/Sources/Storage/G5ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G5S22Guard.swift \
+  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  packages/AIVideoCore/Sources/Publication/G4FilePublisher.swift \
+  tests/test_g5_final_and_release.swift \
+  -o build/tests/test_g5_final_and_release
+
+TEST_RECORDS_OUT="build/reports/swift_g5_s22_s26_records.jsonl" ./build/tests/test_g5_final_and_release
+
+echo "=== [Final Step] Re-signing and Verifying App Bundle Integrity ==="
+find "$ROOT_DIR/apps/macos/build/AIVideo.app" -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find "$ROOT_DIR/apps/macos/build/AIVideo.app" -name "*.pyc" -delete 2>/dev/null || true
+codesign -s - --force --deep "$ROOT_DIR/apps/macos/build/AIVideo.app"
+codesign --verify --deep --strict "$ROOT_DIR/apps/macos/build/AIVideo.app"
 
 echo "=== ALL REGRESSION TEST SUITES EXECUTED SUCCESSFULLY ==="

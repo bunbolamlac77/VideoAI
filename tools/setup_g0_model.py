@@ -181,7 +181,7 @@ def execute_plan(app_support_dir: str) -> int:
 
 # MARK: - Mode 2: Install
 
-def execute_install(app_support_dir: str, python_runtime_path: Optional[str] = None) -> int:
+def execute_install(app_support_dir: str, python_runtime_path: Optional[str] = None, force: bool = False) -> int:
     print("=======================================================")
     print("AIVIDEO G0 MODEL SETUP — INSTALLATION (--install)")
     print("=======================================================")
@@ -190,11 +190,19 @@ def execute_install(app_support_dir: str, python_runtime_path: Optional[str] = N
     target_model_dir = os.path.join(app_support_dir, "Models", "g0-text", G0_MODEL_REVISION)
     if os.path.lexists(target_model_dir):
         if not verify_existing_pinned_install(target_model_dir):
-            print(
-                "BLOCKED: Existing model does not match "
-                "pinned manifest. No files were modified."
-            )
-            return 2
+            if force:
+                print(f"⚠️ Model directory exists but does not match pinned manifest. --force provided: removing {target_model_dir} for clean reinstallation...")
+                if os.path.isdir(target_model_dir):
+                    shutil.rmtree(target_model_dir)
+                else:
+                    os.remove(target_model_dir)
+            else:
+                print(
+                    "BLOCKED: Existing model does not match "
+                    "pinned manifest. No files were modified.\n"
+                    "Tip: Re-run with --force to remove corrupted files and perform a clean reinstallation."
+                )
+                return 2
 
     env_info = check_system_environment()
     if not env_info["is_arm64"]:
@@ -225,11 +233,18 @@ def execute_install(app_support_dir: str, python_runtime_path: Optional[str] = N
 
         if os.path.lexists(target_model_dir):
             if not verify_existing_pinned_install(target_model_dir):
-                print(
-                    "BLOCKED: Existing model does not match "
-                    "pinned manifest. No files were modified."
-                )
-                return 2
+                if force:
+                    print(f"Removing invalid target directory {target_model_dir}...")
+                    if os.path.isdir(target_model_dir):
+                        shutil.rmtree(target_model_dir)
+                    else:
+                        os.remove(target_model_dir)
+                else:
+                    print(
+                        "BLOCKED: Existing model does not match "
+                        "pinned manifest. No files were modified."
+                    )
+                    return 2
 
             with open(get_contracts_lock_path(), "r", encoding="utf-8") as f:
                 pinned = json.load(f)
@@ -501,6 +516,7 @@ def main():
 
     parser.add_argument("--app-support", type=str, default=None, help="Custom Application Support root directory")
     parser.add_argument("--python-path", type=str, default=None, help="Custom Python runtime path")
+    parser.add_argument("--force", "--reinstall", dest="force", action="store_true", help="Force reinstall even if model already exists or is mismatched")
 
     args = parser.parse_args()
     app_support = resolve_app_support_dir(args.app_support) if args.app_support else get_default_app_support()
@@ -508,7 +524,7 @@ def main():
     if args.plan:
         sys.exit(execute_plan(app_support))
     elif args.install:
-        sys.exit(execute_install(app_support, args.python_path))
+        sys.exit(execute_install(app_support, args.python_path, force=args.force))
     elif args.verify:
         sys.exit(execute_verify(app_support))
 

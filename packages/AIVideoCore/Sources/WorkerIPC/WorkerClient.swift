@@ -355,12 +355,43 @@ public actor WorkerClient {
         proc.arguments = ["-u", scriptPath]
 
         var env = ProcessInfo.processInfo.environment
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
+        // Apps launched from Finder/Spotlight inherit launchd's minimal PATH
+        // (/usr/bin:/bin:/usr/sbin:/sbin), so Homebrew ffmpeg/ffprobe would be
+        // invisible to the worker. Prepend the standard local tool locations.
+        let basePath = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        let extraPaths = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"]
+            .filter { !basePath.split(separator: ":").map(String.init).contains($0) }
+        env["PATH"] = (extraPaths + [basePath]).joined(separator: ":")
         if let resURL = Bundle.main.resourceURL {
             env["AIVIDEO_APP_RESOURCES"] = resURL.path
             let contractsDir = resURL.appendingPathComponent("contracts").path
             if FileManager.default.fileExists(atPath: contractsDir) {
                 env["AIVIDEO_CONTRACTS_DIR"] = contractsDir
             }
+        }
+        // G3 file writes are restricted to an app-owned staging directory.
+        if let support = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first {
+            let staging = support.appendingPathComponent(
+                "AIVideo/G3/staging", isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: staging, withIntermediateDirectories: true
+            )
+            env["AIVIDEO_G3_STAGING_ROOT"] = staging.path
+        }
+        // A single app-owned G4 staging/journal root. Never derive it from RPC.
+        if let support = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first {
+            let g4 = support.appendingPathComponent("AIVideo/G4", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: g4, withIntermediateDirectories: true
+            )
+            env["AIVIDEO_G4_WORK_ROOT"] = g4.path
         }
         proc.environment = env
 
@@ -383,7 +414,9 @@ public actor WorkerClient {
         // Setup ordered stdout AsyncStream to guarantee FIFO chunk handling with bounded queue
         let (stream, continuation) = AsyncStream.makeStream(
             of: Data.self,
-            bufferingPolicy: .bufferingNewest(500)
+            // Never drop stdout chunks: dropping would splice JSON lines and
+            // corrupt framing. Per-line size is already bounded by the parser.
+            bufferingPolicy: .unbounded
         )
         self.stdoutStreamContinuation = continuation
 
@@ -765,7 +798,8 @@ public actor WorkerClient {
             workdayId: workdayId,
             briefText: briefText
         )
-        return try await sendRequest(method: "g2.analyze_source", params: params, timeoutSeconds: 60.0)
+        // Full-frame G2 analysis is proportional to clip length; 60 s timed out on real footage.
+        return try await sendRequest(method: "g2.analyze_source", params: params, timeoutSeconds: 1800.0)
     }
 
     public func getRecentStderrLines() -> [String] {

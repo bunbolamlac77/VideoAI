@@ -190,21 +190,33 @@ class TestS15G2Benchmark(unittest.TestCase):
 
     def test_s15_real_video_corpus_holdout_benchmark_end_to_end(self) -> None:
         """
-        S15 Real Video Corpus Benchmark:
-        Runs real Rec.709 MP4 video clips across all 5 held-out trip groups through
-        probe_and_index_real_video -> build_offline_visual_window_inspector -> FullFrameAnalysisPipeline -> S15 benchmark.
+        S15.T4: Real video corpus benchmark rejects synthetic generation and requires genuine artifacts.
         """
         import tempfile
         from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmp:
-            rep = run_real_video_corpus_g2_benchmark(work_dir=Path(tmp))
-            self.assertTrue(rep["real_video_corpus_verified"])
-            self.assertEqual(rep["real_video_groups_count"], 5)
-            self.assertEqual(rep["metrics"]["frame_input_coverage"]["point_estimate"], 1.0)
-            self.assertEqual(rep["metrics"]["frame_input_coverage"]["numerator"], 120)
-            self.assertEqual(rep["metrics"]["frame_input_coverage"]["denominator"], 120)
-            self.assertEqual(rep["g2_gate_decision"], "PASS")
+            with self.assertRaises(G2BenchmarkError) as ctx:
+                run_real_video_corpus_g2_benchmark(work_dir=Path(tmp))
+            self.assertIn(ctx.exception.code, ("REAL_CORPUS_REQUIRED", "MODEL_NOT_INSTALLED"))
+
+    def test_s15_real_video_corpus_passes_with_verified_held_out_clips(self) -> None:
+        """
+        S15 Gate G2 Closure: Genuine Rec.709 5 held-out trips processed via offline Qwen3-VL
+        full-frame pipeline pass all acceptance-targets-v0.1 without data leakage.
+        """
+        from pathlib import Path
+        corpus_dir = Path(__file__).resolve().parents[1] / "fixtures" / "corpus"
+        models_root = Path.home() / "Library/Application Support/AIVideo/Models"
+        if not corpus_dir.is_dir() or not (models_root / "visual_analysis_primary" / "model.safetensors").is_file():
+            self.skipTest("Real corpus or model not installed")
+        report = run_real_video_corpus_g2_benchmark(corpus_dir, models_root_dir=models_root)
+        self.assertEqual(report["g2_gate_decision"], "PASS")
+        self.assertTrue(report["real_video_corpus_verified"])
+        self.assertEqual(report["real_video_groups_count"], 5)
+        self.assertEqual(report["metrics"]["accepted_claim_support_precision"]["point_estimate"], 1.0)
+        self.assertEqual(report["metrics"]["frame_input_coverage"]["point_estimate"], 1.0)
+
 
 
 import dataclasses

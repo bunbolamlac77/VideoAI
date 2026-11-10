@@ -921,10 +921,8 @@ def run_real_video_corpus_g2_benchmark(
 ) -> Dict[str, Any]:
     """
     S15 Real Video Corpus Benchmark Mode:
-    Generates real Rec.709 MP4 video clips for all 5 independent held-out trip groups,
-    runs each clip through `probe_and_index_real_video`, `S11ModelRegistryAndAdapters.build_offline_visual_window_inspector`,
-    and `FullFrameAnalysisPipeline.run_or_resume_analysis`, and binds the actual decoded `frame_coverage_by_group`
-    and `RawObservationRecord` evidence IDs into `run_g2_analysis_eligible_benchmark`.
+    Requires genuine Rec.709 MP4 field video clips for all 5 independent held-out trip groups,
+    and genuine offline visual model weights. Synthetic testsrc generation and dummy weights are forbidden.
     """
     from pathlib import Path
     import subprocess
@@ -935,50 +933,33 @@ def run_real_video_corpus_g2_benchmark(
     wdir = Path(work_dir).resolve()
     wdir.mkdir(parents=True, exist_ok=True)
 
-    # Prepare offline visual adapter directory if not overridden
     if models_root_dir is None:
-        mroot = wdir / "models"
-        vis_dir = mroot / "visual_analysis_primary"
-        vis_dir.mkdir(parents=True, exist_ok=True)
-        (vis_dir / "config.json").write_text(
-            '{"model_type":"qwen3_vl","_name_or_path":"Qwen3-VL-4B-Instruct-4bit"}',
-            encoding="utf-8",
+        raise G2BenchmarkError(
+            "MODEL_NOT_INSTALLED",
+            "Genuine Qwen-VL offline model weights required for S15 real video benchmark. Fake weights are forbidden.",
         )
-        (vis_dir / "model.safetensors").write_bytes(b"SAFETENSORS_LOCAL_BENCHMARK_WEIGHTS")
-    else:
-        mroot = Path(models_root_dir)
+    mroot = Path(models_root_dir)
 
-    s11_reg = S11ModelRegistryAndAdapters(models_root_dir=mroot)
     base_fx = build_canonical_g2_benchmark_fixture()
     manifest: FrozenG2EvaluationManifest = base_fx["manifest"]
+
+    missing_clips = [
+        hg for hg in manifest.holdout_trip_group_ids if not (wdir / f"{hg}.mp4").is_file()
+    ]
+    if missing_clips:
+        raise G2BenchmarkError(
+            "REAL_CORPUS_REQUIRED",
+            f"Real video corpus benchmark requires genuine field video files; missing: {missing_clips}. Synthetic testsrc generation is forbidden.",
+            {"missing_clips": missing_clips},
+        )
+
+    s11_reg = S11ModelRegistryAndAdapters(models_root_dir=mroot)
 
     real_coverage_by_group: Dict[str, Tuple[int, int]] = {}
     group_observations: Dict[str, List[str]] = {}
 
     for g_idx, hg in enumerate(manifest.holdout_trip_group_ids):
         clip_path = wdir / f"{hg}.mp4"
-        if not clip_path.is_file():
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-nostdin",
-                    "-y",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    f"testsrc=duration=1:size=320x180:rate=24",
-                    "-c:v",
-                    "libx264",
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-x264-params",
-                    "colorprim=bt709:transfer=bt709:colormatrix=bt709",
-                    str(clip_path),
-                ],
-                check=True,
-                capture_output=True,
-                timeout=30,
-            )
 
         probed = probe_and_index_real_video(clip_path)
         pts_entries = [
