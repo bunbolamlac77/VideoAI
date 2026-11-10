@@ -9,10 +9,11 @@
 - **Engine**: `mlx_vlm` (v0.7.10) kết hợp Metal GPU backend (`AGXMetalG13X`).
 - **Dung lượng mô hình**: 2.88 GB (4-bit quant, 1220 tensors safetensors).
 - **Thời gian nạp trọng số lần đầu**: ~2.4 giây; được lưu trong `_VLM_MODEL_CACHE` để tái sử dụng xuyên suốt phiên làm việc mà không nạp lại.
-- **Tốc độ suy luận**:
-  - Prompt processing: ~25.2 tokens/s.
-  - Token generation: **60.37 tokens/s**.
-  - Trung bình thời gian sinh nhãn 25 từ tiếng Việt cho 1 sliding window (16 frames): **~0.28 giây**.
+- **Tốc độ suy luận (đo lại 2026-11-10, `mlx_vlm` 0.7.12, nguồn 1080×1920 24fps):**
+  - Prompt processing: ~25 tok/s (số cũ, không tái lập được).
+  - **Thời gian thực tế cho 1 cửa sổ 16 frame**: 1 ảnh ≈ **12.6 s**, 2 ảnh ≈ **24 s**, 4 ảnh ≈ **53 s** (prefill ảnh chiếm gần như toàn bộ).
+  - Pipeline 36 frame (3 cửa sổ, 2 ảnh/cửa sổ): **92.6 s**, trả 3 observation. Suy ra video 60 s ≈ 2.5 giờ ở mức 2 ảnh/cửa sổ.
+  - **Số cũ "0.28 giây/cửa sổ 16 frame" là sai** (nhiều khả năng đo khi model đã cache và không tính prefill ảnh); đã sửa để không dùng cho sizing.
 - **Mức chiếm dụng bộ nhớ (RSS)**:
   - Base Python Worker: ~85 MB.
   - Sau khi nạp model và chạy Metal buffer: **~3.45 GB peak RSS**.
@@ -81,3 +82,11 @@
   - Đã chuyển sang tải ảnh bất đồng bộ qua `Task.detached` với `@State private var image: NSImage?` gắn vào modifier `.task(id: path)`.
 - **An toàn luồng điều khiển `runResolveSpike`**:
   - Bổ sung `defer { self.isRunningResolveSpike = false }` đảm bảo cờ bận không bị treo vĩnh viễn khi có lỗi ngoại lệ hoặc huỷ tác vụ.
+
+## 9. Hợp Đồng Lấy Mẫu Khai Báo (ECC fix wave, 2026-11-10)
+- **Vấn đề gốc**: inspector chỉ gửi 1 frame/cửa sổ nhưng pipeline audit đủ 16 frame → `POST_PROCESSOR_TRUNCATION` ở cửa sổ đầu tiên. G2 không chạy được với model thật.
+- **Hợp đồng mới**: inspector trả `planned_frame_ids` (đúng tập sẽ gửi) + `accepted_frame_ids` (đúng tập đã gửi). Pipeline audit trên `planned`, báo `vlm_frame_coverage` riêng với `decode_coverage_ratio`. Mặc định `vision_sample_count = 2` (RPC cho phép 1..16).
+- **Fail-closed mới**: payload rỗng/thiếu `observation_text`/thiếu frame ids → `INVALID_VISUAL_PAYLOAD`; frame accepted không nằm trong planned → `VISUAL_COVERAGE_MISMATCH`; index > declared hoặc thiếu > 5% → `INDEX_DENOMINATOR_MISMATCH`.
+- **Payload budget**: frame-id list > 4096 phần tử được thay bằng `frame_id_ranges` + `frame_ids_truncated = true`; Swift DTO mở rộng range trước khi lưu SQLite.
+- **Checkpoint**: fingerprint tăng `schema_version = 2` + `analysis_contract = "declared-sampling-v2"`, nên checkpoint cũ không thể resume âm thầm với kết quả của hợp đồng cũ.
+- **Benchmark**: bỏ hằng số coverage `(1200, 1200)` khỏi fixture (đổi tên `synthetic_coverage_by_group`); real-corpus chỉ là `SMOKE_ONLY`, `real_video_corpus_verified = False`, `acceptance_eligible = False`. Test real-corpus nặng chỉ chạy khi `AIVIDEO_RUN_HEAVY_G2=1`.

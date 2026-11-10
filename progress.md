@@ -207,3 +207,23 @@
 - Biên dịch Swift 6 arm64: **PASS** (Zero warnings, Zero errors).
 - Đóng gói và cài đặt: Đã cài `/Applications/AIVideo.app`, đăng ký Spotlight.
 - Bộ kiểm thử hồi quy: **156/156 Python tests PASS**, **5/5 Swift S06 ProjectStore tests PASS**.
+
+## 2026-11-10 — ECC Debug Wave A+B (orch-fix-defect): G2 chạy thật & benchmark trung thực
+
+**Gate 1 (đã duyệt)**: Wave A+B, sampling 8 frame → điều chỉnh còn 2 frame sau khi đo thực tế; benchmark hạ về smoke; revert 3 file evidence về HEAD.
+
+**Thay đổi**
+- `pipeline_adapters.py`: thêm `sample_window_frame_ids`; inspector giải mã N frame trong **một** lời gọi ffmpeg (`select` + `fps_mode passthrough`), gửi multi-image vào `mlx_vlm.generate`, trả `planned_frame_ids`/`accepted_frame_ids`/`has_uncertainty_boundary`.
+- `full_frame_pipeline.py`: audit theo tập `planned`; reject payload rỗng/thiếu mô tả; kiểm tra mẫu số từ container (`INDEX_DENOMINATOR_MISMATCH`), clamp mọi tỉ lệ về [0,1]; thêm `vlm_frame_coverage`; `compact_coverage_ledger_payload` + `encode_frame_id_ranges`; fingerprint schema v2.
+- `main_g2.py`: chặn `_inspector_fn` qua RPC (`INSPECTOR_OVERRIDE_FORBIDDEN`), thay bằng seam `inspector_factory=`; tham số `vision_sample_count` (1..16, mặc định 2); coverage ledger nén range.
+- `media_indexer.py`: ffprobe lấy `nb_frames`/`duration`; `declared_source_frame_count()` fail-closed khi index lệch > 5%.
+- `g2_benchmark_runner.py`: `label_source`, `acceptance_eligible`, `acceptance_gate_decision`; real-corpus → `SMOKE_ONLY`; checkpoint `ckpt_v2_*`.
+- Swift: `G2AnalyzeCoverageDTO` nhận `frame_id_ranges`/`frame_ids_truncated` và mở rộng range; `AppState` dùng id đã resolve.
+
+**Bằng chứng**
+- Python: **168 tests, 0 fail, 0 error, 1 skip** (`build/reports/python_test_summary.json`).
+- Thêm `tests/test_g2_window_contract.py` (12 test) và `tests/test_g2_coverage_dto.swift`.
+- Probe thật trên `trip-holdout-01-dalat.mp4` (1080×1920): pipeline `completed`, 3 observation, coverage **0.167** (2/16 mỗi cửa sổ), 92.6 s.
+- Đo lại suy luận: 1 ảnh ≈ 12.6 s, 2 ảnh ≈ 24 s, 4 ảnh ≈ 53 s → **0.28 s/cửa sổ trong findings cũ là sai**.
+
+**Còn mở**: benchmark vẫn chấm claim/event trên nhãn synthetic (chưa có nhãn người); throughput 2 ảnh/cửa sổ ≈ 2.5 giờ cho clip 60 s.
