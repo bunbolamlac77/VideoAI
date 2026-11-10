@@ -122,7 +122,8 @@ jobs:
       - name: Run Full Regression Matrix (Python + 17 Swift suites)
         shell: bash
         run: |
-          ./tools/run_tests.sh
+          set -o pipefail
+          ./tools/run_tests.sh 2>&1 | tee build/reports/full-matrix.log
 
       - name: Verify No Model Binaries Tracked by Git
         run: |
@@ -149,7 +150,7 @@ jobs:
                 .filter((r) => r.status !== 'PASS');
               add('non-PASS records', JSON.stringify(records, null, 1));
             } catch (e) { parts.push('### non-PASS records (unavailable)'); }
-            for (const path of ['build/reports/python-regression.log', 'build/app-build.log']) {
+            for (const path of ['build/reports/full-matrix.log', 'build/reports/python-regression.log', 'build/app-build.log']) {
               try {
                 const lines = fs.readFileSync(path, 'utf8').split('\n');
                 add(`${path} (tail)`, lines.slice(-150).join('\n'));
