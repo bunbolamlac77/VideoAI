@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import platform
 import shutil
 import subprocess
 import sys
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "apps/macos/build/AIVideo.app"
@@ -40,7 +42,20 @@ def command(
 def check_toolchain() -> dict[str, Any]:
     system = platform.system()
     machine = platform.machine()
-    py_ver = sys.version_info
+    # Verify the worker runtime selected by the app, not merely this script's Python.
+    support_python = Path.home() / "Library/Application Support/AIVideo/Runtimes/g0-mlx-runtime/bin/python3"
+    local_python = ROOT / "workers/.venv/bin/python3"
+    chosen_python = next(
+        (str(p) for p in (Path(os.environ.get("AIVIDEO_PYTHON_PATH", "/no-such-python")),
+                                 support_python, local_python) if p.is_file() and os.access(p, os.X_OK)),
+        sys.executable,
+    )
+    py_probe_ok, py_output = command([chosen_python, "-c", "import sys; print(*sys.version_info[:3], sep='.')"])
+    py_parts = py_output.splitlines()[0].strip().split(".") if py_probe_ok else []
+    try:
+        py_version = tuple(int(x) for x in py_parts)
+    except ValueError:
+        py_version = ()
 
     ffmpeg_bin = shutil.which("ffmpeg")
     ffprobe_bin = shutil.which("ffprobe")
@@ -51,7 +66,7 @@ def check_toolchain() -> dict[str, Any]:
     swift_ok, swift_ver = command(["swift", "--version"]) if swift_bin else (False, "missing")
 
     is_darwin_arm64 = (system == "Darwin") and (machine in ("arm64", "aarch64"))
-    py_ok = py_ver >= (3, 10)
+    py_ok = len(py_version) >= 2 and py_version[:2] == (3, 12)
 
     pass_all = bool(is_darwin_arm64 and py_ok and ffmpeg_ok and ffprobe_ok and swift_ok)
 
@@ -60,7 +75,8 @@ def check_toolchain() -> dict[str, Any]:
         "os": system,
         "arch": machine,
         "is_darwin_arm64": is_darwin_arm64,
-        "python_version": f"{py_ver.major}.{py_ver.minor}.{py_ver.micro}",
+        "python_version": py_output.splitlines()[0] if py_probe_ok else "UNKNOWN",
+        "python_path": chosen_python,
         "python_ok": py_ok,
         "ffmpeg": {"installed": bool(ffmpeg_bin), "version": ffmpeg_ver.split("\n")[0] if ffmpeg_ok else ffmpeg_ver},
         "ffprobe": {"installed": bool(ffprobe_bin), "version": ffprobe_ver.split("\n")[0] if ffprobe_ok else ffprobe_ver},
@@ -106,7 +122,7 @@ def check_contracts_and_registry() -> dict[str, Any]:
         shutter_disabled = exact_photo.get("status") == "disabled"
 
         return {
-            "passed": True,
+            "passed": shutter_disabled,
             "registry_path": str(reg_path),
             "capabilities_count": len(caps),
             "exact_photo_shutter_match_status": exact_photo.get("status"),
@@ -120,22 +136,33 @@ def check_contracts_and_registry() -> dict[str, Any]:
 
 
 def check_models_presence() -> dict[str, Any]:
-    models_root = Path.home() / "Library" / "Application Support" / "AIVideo" / "Models"
-    vis_dir = models_root / "visual_analysis_primary"
-    safetensors = vis_dir / "model.safetensors"
+    """Fail closed if the real weights or pinned local artifact manifest are unverified.
 
-    installed = False
-    size_bytes = 0
-    if safetensors.is_file():
-        size_bytes = safetensors.stat().st_size
-        installed = size_bytes >= 1_000_000_000  # Genuine 4-bit Qwen3-VL is ~2.5GB
-
-    return {
-        "models_root": str(models_root),
-        "visual_model_installed": installed,
-        "weights_byte_size": size_bytes,
-        "status": "INSTALLED" if installed else "NOT_INSTALLED",
-    }
+    Checking `stat().st_size >= 1GB` previously let any large junk file pass.
+    """
+    tools_dir = str(ROOT / "tools")
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    try:
+        from setup_s11_model import get_target_dir, verify_model_directory
+        target = get_target_dir()
+        result = verify_model_directory(target)
+        return {
+            "models_root": str(target.parent),
+            "visual_model_installed": True,
+            "weights_byte_size": result["weights_bytes"],
+            "pinned_model_revision": result["revision"],
+            "status": "VERIFIED_PINNED_LOCAL",
+        }
+    except (OSError, ValueError, ImportError, RuntimeError) as exc:
+        # Never mistake a corrupted/partial installation for a ready model.
+        return {
+            "models_root": str(Path.home() / "Library/Application Support/AIVideo/Models"),
+            "visual_model_installed": False,
+            "weights_byte_size": 0,
+            "status": "NOT_VERIFIED",
+            "reason": str(exc),
+        }
 
 
 def check_resolve_installation() -> dict[str, Any]:
@@ -186,23 +213,27 @@ def run_preflight() -> int:
     blockers: list[str] = []
 
     if not toolchain["passed"]:
-        blockers.append("TOOLCHAIN_NOT_MET: Required macOS arm64, python>=3.10, ffmpeg, ffprobe, and swift")
+        blockers.append("TOOLCHAIN_NOT_MET: Required macOS arm64, worker Python 3.12, ffmpeg, ffprobe, and swift")
 
     if not app_info["passed"]:
         blockers.append(f"APP_BUNDLE_NOT_VERIFIED: {app_info['codesign_detail']}")
 
     if not contracts["passed"]:
-        blockers.append(f"REGISTRY_ERROR: {contracts.get('error')}")
+        blockers.append(f"REGISTRY_OR_CAPABILITY_GATE_ERROR: {contracts.get('error') or 'disabled capability was unexpectedly enabled'}")
 
     if not models["visual_model_installed"]:
-        blockers.append("REAL_QWEN_VL_WEIGHTS_MISSING: Qwen3-VL-4B offline weights not installed in Application Support")
+        blockers.append("REAL_QWEN_VL_WEIGHTS_UNVERIFIED: pinned offline model not verified (missing/corrupt/unsupported install)")
+
+    if not resolve["installed"]:
+        blockers.append("DAVINCI_RESOLVE_NOT_INSTALLED: Resolve Studio must be present for the production workflow")
 
     if not field_corpus["live_field_corpus_certified"]:
         blockers.append("UNVERIFIED_INPUT_REQUIRES_SIGNED_FIELD_CORPUS: E0/E1 real video held-out runs require signed field corpus")
 
     report = {
         "schema": "aivideo-readiness-preflight-v1",
-        "timestamp": platform.platform(),
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "platform": platform.platform(),
         "ready_for_production_release": len(blockers) == 0,
         "blockers": blockers,
         "toolchain": toolchain,

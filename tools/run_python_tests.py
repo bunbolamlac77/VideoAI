@@ -19,6 +19,10 @@ DISCOVERY_PATTERN = "test_*.py"
 
 
 def requirement_id(test_id: str) -> str:
+    if "test_rpc_strict_json" in test_id:
+        return "INV-03"
+    if "test_s11_install_and_release_preflight" in test_id:
+        return "OFF-01"
     if "test_s05_snapshot" in test_id:
         return "DATA-01"
     if "test_g1_contracts" in test_id:

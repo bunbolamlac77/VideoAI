@@ -35,6 +35,34 @@ for _p in (_FILE_DIR, _SRC_DIR):
 
 PROTOCOL_VERSION = "2.0"
 WORKER_VERSION = "0.2.1"
+
+
+def _reject_duplicate_keys(pairs):
+    """Reject ambiguous JSON-RPC envelopes (Python json ordinarily takes last key)."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_nonfinite_constant(value):
+    raise ValueError(f"Non-JSON numeric constant: {value}")
+
+
+def _assert_json_numbers_finite(obj):
+    """Catch numerical overflow, e.g. 1e999 parsed to float('inf')."""
+    if isinstance(obj, float):
+        if not math.isfinite(obj):
+            raise ValueError("Non-finite JSON number")
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            _assert_json_numbers_finite(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            _assert_json_numbers_finite(value)
+
 MAX_FRAME_BYTES = 1024 * 1024 # 1 MiB strict limit
 
 # Tracked child subprocesses spawned by this worker (handles + process groups)
@@ -139,7 +167,16 @@ def _isolate_protocol_stdout():
 def send_response(response: dict):
     """Serialize and write a single JSON line to the RPC channel. Protected against BrokenPipeError."""
     try:
-        line = json.dumps(response, ensure_ascii=False)
+        try:
+            line = json.dumps(response, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError):
+            # Never emit malformed JSON, even when an adapter returns NaN or a
+            # non-serializable object. Surface the failure to the RPC caller.
+            line = json.dumps({
+                "jsonrpc": PROTOCOL_VERSION,
+                "id": response.get("id"),
+                "error": {"code": -32603, "message": "Worker result is not valid JSON"},
+            }, ensure_ascii=False, allow_nan=False)
         if len(line.encode("utf-8")) + 1 > MAX_FRAME_BYTES and response.get("result") is not None:
             # Never emit a frame the client must reject; fail only this request, explicitly.
             line = json.dumps({
@@ -543,8 +580,13 @@ def validate_and_dispatch(line_bytes: bytes):
         return
 
     try:
-        req = json.loads(raw_str)
-    except json.JSONDecodeError as err:
+        req = json.loads(
+            raw_str,
+            object_pairs_hook=_reject_duplicate_keys,
+            parse_constant=_reject_nonfinite_constant,
+        )
+        _assert_json_numbers_finite(req)
+    except (json.JSONDecodeError, ValueError) as err:
         send_response({
             "jsonrpc": PROTOCOL_VERSION,
             "id": None,

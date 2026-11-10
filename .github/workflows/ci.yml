@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   test-and-lint:
-    name: G0 and G1 Regression
+    name: Python Full Regression + Swift Contracts
     runs-on: macos-26
     timeout-minutes: 25
     steps:
@@ -35,7 +35,8 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install \
             "huggingface-hub" \
-            "jsonschema>=4.23,<5"
+            "jsonschema>=4.23,<5" \
+            "cryptography>=42"
 
       - name: Validate JSON Contracts and Schemas
         run: |
@@ -56,24 +57,34 @@ jobs:
           print(f"PASS: {len(paths)} JSON files validated")
           PY
 
-      - name: Run G0 IPC Framing and Resilience Tests
+      - name: Compile Python Sources (syntax)
+        run: |
+          python3 -m compileall -q workers/src tools tests
+
+      - name: Run All Python Regression Suites
         shell: bash
         run: |
           mkdir -p build/reports
           set -o pipefail
-          python3 -m unittest -v \
-            tests/test_framing_resilience.py \
-            2>&1 | tee build/reports/g0-framing.log
+          python3 tools/run_python_tests.py 2>&1 | tee build/reports/python-regression.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          s = json.loads(Path("build/reports/python_test_summary.json").read_text())
+          assert s["successful"] and s["failures"] == 0 and s["errors"] == 0, s
+          assert s["tests_run"] >= 140, "Unexpected loss of test coverage"
+          # Real model/corpus tests are intentionally unavailable on hosted CI.
+          assert s["skipped"] <= 3, "Unexpectedly skipped tests"
+          PY
 
-      - name: Run G0 Model Setup Tests
+      - name: Test Local Bridge (separate non-model suite)
         run: |
-          python3 -m unittest -v \
-            tests/test_model_setup.py
+          python3 -m unittest discover -s tools/autobridge/tests -p 'test_*.py' -v
 
-      - name: Run G1 Python Contract Tests
+      - name: Parse All Swift Sources (syntax-only)
         run: |
-          python3 -m unittest -v \
-            tests/test_g1_contracts.py
+          swiftc -frontend -parse apps/macos/Sources/*.swift \
+            packages/AIVideoCore/Sources/*/*.swift tests/*.swift
 
       - name: Run G1 Swift Contract Tests
         run: |

@@ -145,13 +145,44 @@ if [ "$INSTALL_APP" -eq 1 ]; then
     mkdir -p "$DEST_DIR"
     DEST="$DEST_DIR/AIVideo.app"
     osascript -e 'tell application id "com.phuthanh.aivideo" to quit' >/dev/null 2>&1 || true
-    rm -rf "$DEST"
-    ditto "$APP_BUNDLE" "$DEST"
+
+    # Install into a private staging directory on the destination filesystem.
+    # In particular, NEVER rm -rf the installed app before a verified copy
+    # exists. The previous app remains recoverable on any copy/rename error.
+    INSTALL_STAGE="$(mktemp -d "$DEST_DIR/.aivideo-install.XXXXXXXX")"
+    STAGED_APP="$INSTALL_STAGE/AIVideo.app"
+    BACKUP_APP="$INSTALL_STAGE/AIVideo.previous.app"
+    cleanup_installer() {
+        if [ -e "$BACKUP_APP" ] && [ ! -e "$DEST" ]; then
+            mv "$BACKUP_APP" "$DEST" || echo "CRITICAL: Restore old app manually from $BACKUP_APP" >&2
+        fi
+        if [ -e "$BACKUP_APP" ]; then
+            echo "WARNING: Previous app backup retained at $BACKUP_APP" >&2
+        else
+            rm -rf "$INSTALL_STAGE"
+        fi
+    }
+    trap cleanup_installer EXIT
+
+    ditto "$APP_BUNDLE" "$STAGED_APP"
+    test -x "$STAGED_APP/Contents/MacOS/AIVideo"
+    codesign --verify --deep --strict "$STAGED_APP"
+
+    if [ -e "$DEST" ]; then
+        mv "$DEST" "$BACKUP_APP"
+    fi
+    mv "$STAGED_APP" "$DEST"
+
     LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-    # Drop the build-dir copy from LaunchServices so Spotlight resolves the installed one.
     "$LSREGISTER" -u "$ROOT_DIR/$APP_BUNDLE" >/dev/null 2>&1 || true
-    "$LSREGISTER" -f "$DEST"
+    "$LSREGISTER" -f "$DEST" >/dev/null 2>&1 || echo "WARNING: Spotlight registration failed" >&2
     mdimport "$DEST" >/dev/null 2>&1 || true
     touch "$DEST"
     echo "=== INSTALLED: $DEST (Spotlight: gõ \"AIVideo\") ==="
+
+    if [ -e "$BACKUP_APP" ]; then
+        rm -rf "$BACKUP_APP" || echo "WARNING: Could not clean up old app at $BACKUP_APP" >&2
+    fi
+    trap - EXIT
+    cleanup_installer
 fi

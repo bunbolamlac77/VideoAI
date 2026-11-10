@@ -157,9 +157,14 @@ def execute_plan(app_support_dir: str) -> int:
     for art in REQUIRED_ARTIFACTS:
         print(f"  • {art}")
 
-    # Check disk space on target filesystem
-    os.makedirs(app_support_dir, exist_ok=True)
-    disk_stat = shutil.disk_usage(app_support_dir)
+    # Read-only planning must not create Application Support on the user's disk.
+    disk_anchor = os.path.abspath(app_support_dir)
+    while not os.path.exists(disk_anchor):
+        parent = os.path.dirname(disk_anchor)
+        if parent == disk_anchor:
+            break
+        disk_anchor = parent
+    disk_stat = shutil.disk_usage(disk_anchor)
     free_gib = disk_stat.free / (1024 ** 3)
     needed_gib = MINIMUM_REQUIRED_DISK_BYTES / (1024 ** 3)
     print(f"\n[Disk Space Assessment]")
@@ -186,23 +191,16 @@ def execute_install(app_support_dir: str, python_runtime_path: Optional[str] = N
     print("AIVIDEO G0 MODEL SETUP — INSTALLATION (--install)")
     print("=======================================================")
 
-    # 1. Check if model already exists: always check tampering BEFORE arch/disk checks!
+    # An invalid previous install is preserved until a new verified snapshot
+    # has been completely downloaded. --force authorizes replacement, not loss.
     target_model_dir = os.path.join(app_support_dir, "Models", "g0-text", G0_MODEL_REVISION)
-    if os.path.lexists(target_model_dir):
-        if not verify_existing_pinned_install(target_model_dir):
-            if force:
-                print(f"⚠️ Model directory exists but does not match pinned manifest. --force provided: removing {target_model_dir} for clean reinstallation...")
-                if os.path.isdir(target_model_dir):
-                    shutil.rmtree(target_model_dir)
-                else:
-                    os.remove(target_model_dir)
-            else:
-                print(
-                    "BLOCKED: Existing model does not match "
-                    "pinned manifest. No files were modified.\n"
-                    "Tip: Re-run with --force to remove corrupted files and perform a clean reinstallation."
-                )
-                return 2
+    if os.path.islink(target_model_dir):
+        print("BLOCKED: Refusing to operate on a model target symlink")
+        return 2
+    if os.path.lexists(target_model_dir) and not verify_existing_pinned_install(target_model_dir) and not force:
+        print("BLOCKED: Existing model does not match pinned manifest. No files were modified. "
+              "Use --force to stage a verified replacement without deleting the old copy first.")
+        return 2
 
     env_info = check_system_environment()
     if not env_info["is_arm64"]:
@@ -232,29 +230,20 @@ def execute_install(app_support_dir: str, python_runtime_path: Optional[str] = N
         os.makedirs(staging_parent, exist_ok=True)
 
         if os.path.lexists(target_model_dir):
-            if not verify_existing_pinned_install(target_model_dir):
-                if force:
-                    print(f"Removing invalid target directory {target_model_dir}...")
-                    if os.path.isdir(target_model_dir):
-                        shutil.rmtree(target_model_dir)
-                    else:
-                        os.remove(target_model_dir)
-                else:
-                    print(
-                        "BLOCKED: Existing model does not match "
-                        "pinned manifest. No files were modified."
-                    )
-                    return 2
-
-            with open(get_contracts_lock_path(), "r", encoding="utf-8") as f:
-                pinned = json.load(f)
-
-            return finalize_installation(
-                app_support_dir,
-                target_model_dir,
-                pinned["verified_artifacts"],
-                python_runtime_path
-            )
+            if os.path.islink(target_model_dir):
+                print("BLOCKED: Refusing to operate on a model target symlink")
+                return 2
+            if verify_existing_pinned_install(target_model_dir):
+                with open(get_contracts_lock_path(), "r", encoding="utf-8") as f:
+                    pinned = json.load(f)
+                return finalize_installation(
+                    app_support_dir, target_model_dir,
+                    pinned["verified_artifacts"], python_runtime_path
+                )
+            if not force:
+                print("BLOCKED: Existing model is unverified; old files preserved")
+                return 2
+            print("--force: keeping previous install until the new snapshot passes verification")
 
         # 2. Download into unique staging directory on SAME filesystem
         staging_dir = os.path.join(staging_parent, f".staging_{G0_MODEL_REVISION}_{uuid.uuid4().hex[:8]}")
@@ -317,17 +306,49 @@ def execute_install(app_support_dir: str, python_runtime_path: Optional[str] = N
                             shutil.rmtree(staging_dir, ignore_errors=True)
                             return 1
 
-        # 4. Atomic publish: Move staging to target directory (never delete existing model dir)
-        print(f"Publishing model atomically to: {target_model_dir}")
-        if os.path.lexists(target_model_dir):
-            print(f"❌ ERROR: Target model directory already exists: '{target_model_dir}'. Refusing to overwrite.")
-            shutil.rmtree(staging_dir, ignore_errors=True)
+        # Publish a verified stage. Preserve the previous model in a separate
+        # on-disk backup until registry finalization completes.
+        print(f"Publishing verified staged model to: {target_model_dir}")
+        backup_dir = None
+        try:
+            if os.path.lexists(target_model_dir):
+                if not force or os.path.islink(target_model_dir):
+                    print("BLOCKED: Model target changed or is symlinked during download")
+                    return 2
+                backup_dir = os.path.join(
+                    staging_parent, f".g0-backup_{G0_MODEL_REVISION}_{uuid.uuid4().hex[:12]}"
+                )
+                os.replace(target_model_dir, backup_dir)
+            os.replace(staging_dir, target_model_dir)
+            try:
+                result = finalize_installation(
+                    app_support_dir, target_model_dir, artifact_manifest, python_runtime_path
+                )
+                if result != 0:
+                    raise RuntimeError(f"Model registry finalization returned {result}")
+            except Exception:
+                # Restore a previous install rather than leave a partly
+                # registered replacement. The registry must be reverified.
+                if backup_dir and os.path.exists(backup_dir):
+                    shutil.rmtree(target_model_dir)
+                    os.replace(backup_dir, target_model_dir)
+                    backup_dir = None
+                raise
+            print("✅ Verified model published and registered.")
+            if backup_dir:
+                try:
+                    shutil.rmtree(backup_dir)
+                except OSError as cleanup_error:
+                    print(f"WARNING: previous model backup requires manual cleanup: {cleanup_error}")
+            return 0
+        except Exception as error:
+            if backup_dir and os.path.exists(backup_dir) and not os.path.lexists(target_model_dir):
+                os.replace(backup_dir, target_model_dir)
+            print(f"❌ ERROR: Model publication failed; previous install preserved: {error}")
             return 1
-
-        os.replace(staging_dir, target_model_dir)
-
-        print("✅ Model published to destination directory.")
-        return finalize_installation(app_support_dir, target_model_dir, artifact_manifest, python_runtime_path)
+        finally:
+            if os.path.isdir(staging_dir):
+                shutil.rmtree(staging_dir, ignore_errors=True)
     finally:
         try:
             import fcntl
