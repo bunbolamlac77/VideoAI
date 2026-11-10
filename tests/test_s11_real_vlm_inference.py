@@ -77,9 +77,12 @@ class TestRealVLMInference(unittest.TestCase):
             win0 = WindowStub(0, list(range(16)))
             res = inspector_fn(win0)
 
-            # Assertions on schema and provenance (honest frame provenance: only midpoint frame processed)
-            self.assertEqual(res["accepted_frame_ids"], [8])
+            # Assertions on schema and provenance: the declared 8-frame sample is submitted,
+            # and the observation only claims those frames (never the full 16-frame window).
+            self.assertEqual(res["accepted_frame_ids"], [0, 8])
+            self.assertEqual(res["planned_frame_ids"], [0, 8])
             self.assertTrue(res["has_uncertainty_boundary"])
+            self.assertIn("2/16", res["observation_text"])
             self.assertIn(
                 res["action_or_scene_type"],
                 ("active_motion_scene", "scenic_or_motion", "steady_visual_scene"),

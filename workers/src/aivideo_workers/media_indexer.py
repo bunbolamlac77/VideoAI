@@ -690,7 +690,7 @@ def probe_and_index_real_video(
         "-v",
         "error",
         "-show_entries",
-        "stream=index,codec_type,time_base,r_frame_rate,avg_frame_rate,width,height,sample_rate,channels,color_primaries,color_transfer,color_space,color_range:stream_side_data=rotation:frame=media_type,stream_index,pts,pkt_duration,key_frame",
+        "stream=index,codec_type,time_base,r_frame_rate,avg_frame_rate,width,height,sample_rate,channels,color_primaries,color_transfer,color_space,color_range,nb_frames,duration:stream_side_data=rotation:frame=media_type,stream_index,pts,pkt_duration,key_frame",
         "-of",
         "json",
         str(path),
@@ -765,6 +765,27 @@ def probe_and_index_real_video(
         has_validated_hdr_tonemap_fixture=has_validated_hdr_tonemap_fixture,
     )
 
+    container_frame_count: Optional[int] = None
+    try:
+        nb = stream.get("nb_frames")
+        if nb not in (None, "N/A"):
+            candidate = int(nb)
+            if candidate > 0:
+                container_frame_count = candidate
+    except (TypeError, ValueError):
+        container_frame_count = None
+    if container_frame_count is None:
+        # Fallback: derive the declared frame count from duration × frame rate.
+        try:
+            duration_s = float(stream.get("duration"))
+            fps_expr = str(stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "")
+            num_s, _, den_s = fps_expr.partition("/")
+            fps = float(num_s) / float(den_s or 1)
+            if duration_s > 0 and fps > 0:
+                container_frame_count = int(round(duration_s * fps))
+        except (TypeError, ValueError, ZeroDivisionError):
+            container_frame_count = None
+
     return {
         "video_path": str(path),
         "width": int(stream.get("width", 0)),
@@ -775,6 +796,41 @@ def probe_and_index_real_video(
         "has_audio_stream": len(audio_streams) > 0,
         "audio_streams_count": len(audio_streams),
         "frame_count": len(pts_index),
+        "container_frame_count": container_frame_count,
+        "indexed_frame_count": len(pts_index),
         "pts_index": [e.to_dict() for e in pts_index],
         "color_decision": color_decision.to_dict(),
     }
+
+
+def declared_source_frame_count(
+    probed: Dict[str, Any],
+    *,
+    indexed_count: Optional[int] = None,
+    tolerance: float = 0.05,
+) -> int:
+    """
+    2026-11-10 fix (D04): return the coverage denominator from container metadata.
+
+    `probe_and_index_real_video` used to be the only source of the denominator, which made
+    the coverage ratio circular (indexed / indexed = 1.0 by construction). When the container
+    reports a frame count, it becomes the denominator; a >5% mismatch with the PTS index is a
+    hard failure instead of a silently optimistic ratio.
+    """
+    indexed = int(indexed_count if indexed_count is not None else probed.get("indexed_frame_count") or 0)
+    declared = probed.get("container_frame_count")
+    if declared is None or int(declared) <= 0:
+        if indexed <= 0:
+            raise MediaMappingError("Cannot determine declared frame count: no container metadata and empty PTS index.")
+        return indexed
+
+    declared = int(declared)
+    if indexed > declared:
+        raise MediaMappingError(
+            f"PTS index ({indexed}) exceeds container frame count ({declared}); index is inconsistent."
+        )
+    if indexed < int(declared * (1.0 - tolerance)):
+        raise MediaMappingError(
+            f"PTS index covers {indexed}/{declared} frames (>5% missing); refusing to compute coverage on an incomplete index."
+        )
+    return declared

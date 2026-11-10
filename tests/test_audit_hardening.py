@@ -40,17 +40,21 @@ class AuditGateTests(unittest.TestCase):
             backend.generate = lambda *a, **kw: calls.append(kw["image"]) or types.SimpleNamespace(text="Duong deo va xe may")
 
             def fake_decode(cmd, **kwargs):
-                Path(cmd[-1]).write_bytes(b"fake-jpeg")
-                return types.SimpleNamespace(returncode=0)
+                vf = cmd[cmd.index("-vf") + 1]
+                for i in range(1, vf.count("eq(n") + 1):
+                    Path(cmd[-1].replace("%04d", f"{i:04d}")).write_bytes(b"fake-jpeg")
+                return types.SimpleNamespace(returncode=0, stderr=b"")
 
             pipeline_adapters._VLM_MODEL_CACHE.clear()
             with mock.patch.dict(sys.modules, {"mlx_vlm": backend}), mock.patch.object(pipeline_adapters.subprocess, "run", fake_decode):
                 inspector = S11ModelRegistryAndAdapters(models_root_dir=root / "models").build_offline_visual_window_inspector(video)
                 output = inspector(types.SimpleNamespace(window_index=0, intended_frame_ids=list(range(16))))
-                self.assertEqual(output["accepted_frame_ids"], [8])
+                self.assertEqual(output["accepted_frame_ids"], [0, 8])
+                self.assertEqual(output["planned_frame_ids"], [0, 8])
                 self.assertEqual(len(calls), 1)
-                self.assertEqual(len(calls[0]), 1)
+                self.assertEqual(len(calls[0]), 2)
                 self.assertTrue(output["has_uncertainty_boundary"])
+                self.assertIn("2/16", output["observation_text"])
                 backend.generate = lambda *a, **kw: types.SimpleNamespace(text="")
                 with self.assertRaises(PipelineAdapterError) as raised:
                     inspector(types.SimpleNamespace(window_index=1, intended_frame_ids=list(range(16))))

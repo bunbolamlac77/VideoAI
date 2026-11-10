@@ -359,7 +359,8 @@ class TestS12FullFramePipeline(unittest.TestCase):
             self.assertEqual(res_stub["coverage_ledger"]["detailed_pass_status"], "blocked_model_unavailable")
             self.assertEqual(res_stub["coverage_ledger"]["frame_input_coverage"], 0.0)
 
-            # 3) When an authorized fixture inspector is provided, pipeline runs to completion
+            # 3) When a Python-level inspector factory is injected (test seam, never RPC params),
+            # the pipeline runs to completion.
             def mock_inspector(win: Any) -> dict:
                 return {
                     "accepted_frame_ids": list(win.intended_frame_ids),
@@ -379,8 +380,8 @@ class TestS12FullFramePipeline(unittest.TestCase):
                     "brief_text": "Đi qua cầu lúc 9h. Mưa lớn làm đường trơn.",
                     "models_root_dir": str(installed_models_root),
                     "checkpoint_dir": str(tmp_path / "ckpt_fixture"),
-                    "_inspector_fn": mock_inspector,
-                }
+                },
+                inspector_factory=lambda _path: mock_inspector,
             )
             self.assertTrue(res_fixture["vision_model_installed"])
             self.assertEqual(res_fixture["coverage_ledger"]["detailed_pass_status"], "completed")

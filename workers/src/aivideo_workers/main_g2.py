@@ -25,7 +25,8 @@ import math
 import hashlib
 import threading
 import traceback
-from typing import Dict, Any, Optional, Set
+from pathlib import Path
+from typing import Callable, Dict, Any, Optional, Set
 
 _FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 _SRC_DIR = os.path.dirname(_FILE_DIR)
@@ -390,7 +391,7 @@ def handle_media_index_and_proxy(params: dict) -> dict:
     )
 
 
-def handle_g2_analyze_source(params: dict) -> dict:
+def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callable[[Path], Callable[[Any], dict]]] = None) -> dict:
     """
     S10..S14 End-to-End G2 Worker RPC (`g2.analyze_source`):
     1. Probes real video file via ffprobe (`probe_and_index_real_video`).
@@ -399,16 +400,31 @@ def handle_g2_analyze_source(params: dict) -> dict:
        and 0 fabricated observations when the visual model is not installed; decodes real source window frames and
        runs offline visual window inspection when installed).
     4. Parses optional user brief via `parse_user_brief` and evaluates claims via `evaluate_claim_decision_table` (S13).
+
+    `inspector_factory` is a Python-level test seam only. It is deliberately NOT
+    read from `params`: a JSON-RPC caller must never be able to substitute the
+    vision model and still be told `vision_model_installed = True` (D03).
     """
+    if "_inspector_fn" in params:
+        raise ValueError(
+            "INSPECTOR_OVERRIDE_FORBIDDEN: g2.analyze_source does not accept an injectable "
+            "inspector over JSON-RPC; vision provenance must come from the installed offline model."
+        )
+
     from pathlib import Path
     import tempfile
     from aivideo_workers.media_indexer import (
         SourceFrameEntry,
         _compute_file_sha256,
+        declared_source_frame_count,
         probe_and_index_real_video,
     )
     from aivideo_workers.pipeline_adapters import PipelineAdapterError, S11ModelRegistryAndAdapters
-    from aivideo_workers.full_frame_pipeline import BoundedPipelineConfig, FullFrameAnalysisPipeline
+    from aivideo_workers.full_frame_pipeline import (
+        BoundedPipelineConfig,
+        FullFrameAnalysisPipeline,
+        compact_coverage_ledger_payload,
+    )
     from aivideo_workers.semantic_verifier import (
         decompose_causal_or_compound_statement,
         evaluate_claim_support_and_use,
@@ -443,6 +459,7 @@ def handle_g2_analyze_source(params: dict) -> dict:
         for f in probed["pts_index"]
     ]
     src_sha256 = _compute_file_sha256(src_path)
+    declared_frames = declared_source_frame_count(probed, indexed_count=len(pts_entries))
 
     # Check if S11 visual model adapter is installed offline and build real window inspector
     models_root_override = params.get("models_root_dir")
@@ -454,8 +471,16 @@ def handle_g2_analyze_source(params: dict) -> dict:
             role="visual_analysis_primary",
             required_files=["config.json", "model.safetensors"],
         )
+        if inspector_factory is not None:
+            inspector_fn = inspector_factory(src_path)
+        else:
+            sample_count = int(params.get("vision_sample_count", 2))
+            if not 1 <= sample_count <= 16:
+                raise ValueError("vision_sample_count must be between 1 and 16")
+            inspector_fn = s11_reg.build_offline_visual_window_inspector(
+                src_path, sample_count=sample_count
+            )
         vision_installed = True
-        inspector_fn = params.get("_inspector_fn") or s11_reg.build_offline_visual_window_inspector(src_path)
     except PipelineAdapterError:
         vision_installed = False
         inspector_fn = None
@@ -469,7 +494,7 @@ def handle_g2_analyze_source(params: dict) -> dict:
         source_revision_id=source_rev_id,
         source_sha256=src_sha256,
         pts_index=pts_entries,
-        total_declared_source_frames=len(pts_entries),
+        total_declared_source_frames=declared_frames,
         checkpoint_path=ckpt_path,
         has_audio_stream=bool(probed.get("has_audio_stream", False)),
         window_inspector_fn=inspector_fn,
@@ -524,7 +549,7 @@ def handle_g2_analyze_source(params: dict) -> dict:
         "source_sha256": src_sha256,
         "vision_model_installed": vision_installed,
         "color_decision": probed["color_decision"],
-        "coverage_ledger": ledger.to_dict(),
+        "coverage_ledger": compact_coverage_ledger_payload(ledger.to_dict()),
         "raw_observations_count": len(raw_obs),
         "raw_observations": [o.to_dict() for o in raw_obs],
         "audio_branch_state": audio_res.audio_state,

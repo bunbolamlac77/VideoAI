@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import resource
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -115,6 +116,44 @@ def measure_current_process_memory(
         budget_limit_bytes=budget_limit_bytes,
         within_budget=peak_rss <= budget_limit_bytes,
     )
+
+
+def sample_window_frame_ids(
+    intended_frame_ids: Sequence[int],
+    sample_count: int,
+) -> List[int]:
+    """
+    S12.1 (revised 2026-11-10): Deterministic, evenly spaced sampling of a window.
+
+    The vision model never receives all 16 frames of a window on a 16 GB M1 Pro.
+    Rather than silently submitting one midpoint frame and then claiming full
+    coverage, the caller must declare the exact set it will submit. The pipeline
+    audits *that* set (see `audit_vision_processor_coverage`) and reports the
+    sample ratio separately from decode coverage.
+    """
+    if sample_count <= 0:
+        raise PipelineAdapterError("INVALID_SAMPLE_COUNT", "sample_count must be positive")
+    unique = list(dict.fromkeys(int(x) for x in intended_frame_ids))
+    if not unique:
+        raise PipelineAdapterError("EMPTY_WINDOW", "intended_frame_ids cannot be empty")
+    if sample_count >= len(unique):
+        return unique
+    if sample_count == 1:
+        return [unique[len(unique) // 2]]
+
+    n = len(unique)
+    if n % sample_count == 0:
+        step = n // sample_count
+        return [unique[i * step] for i in range(sample_count)]
+
+    step = (n - 1) / float(sample_count - 1)
+    picked: List[int] = []
+    for i in range(sample_count):
+        idx = int(round(i * step))
+        idx = min(max(idx, 0), n - 1)
+        if unique[idx] not in picked:
+            picked.append(unique[idx])
+    return picked
 
 
 def audit_vision_processor_coverage(
@@ -471,6 +510,7 @@ class S11ModelRegistryAndAdapters:
         video_path: str | Path,
         role: str = "visual_analysis_primary",
         required_files: Sequence[str] = ("config.json", "model.safetensors"),
+        sample_count: int = 2,
     ) -> Callable[[Any], Dict[str, Any]]:
         """
         S11.2 / S12.3 Production Offline Visual Window Inspector Factory:
@@ -530,12 +570,13 @@ class S11ModelRegistryAndAdapters:
 
             start_fid = intended_ids[0]
             end_fid_inc = intended_ids[-1]
-            midpoint_fid = intended_ids[len(intended_ids) // 2]
+            planned_ids = sample_window_frame_ids(intended_ids, sample_count)
 
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_f:
-                frame_jpg = Path(tmp_f.name)
+            work_dir = Path(tempfile.mkdtemp(prefix="aivideo_g2_win_"))
+            frame_jpgs: List[Path] = []
 
             try:
+                select_expr = "+".join(f"eq(n\\,{fid})" for fid in planned_ids)
                 cmd = [
                     "ffmpeg",
                     "-nostdin",
@@ -545,40 +586,29 @@ class S11ModelRegistryAndAdapters:
                     "-i",
                     str(vpath),
                     "-vf",
-                    f"select='eq(n\\,{midpoint_fid})'",
-                    "-vframes",
-                    "1",
+                    f"select='{select_expr}'",
+                    "-fps_mode",
+                    "passthrough",
                     "-q:v",
                     "2",
-                    str(frame_jpg),
+                    str(work_dir / "frame_%04d.jpg"),
                 ]
-                res = subprocess.run(cmd, capture_output=True, check=False, timeout=30)
-                if res.returncode != 0 or not frame_jpg.is_file() or frame_jpg.stat().st_size == 0:
-                    cmd_fallback = [
-                        "ffmpeg",
-                        "-nostdin",
-                        "-v",
-                        "error",
-                        "-y",
-                        "-i",
-                        str(vpath),
-                        "-vf",
-                        f"select='eq(n\\,{start_fid})'",
-                        "-vframes",
-                        "1",
-                        "-q:v",
-                        "2",
-                        str(frame_jpg),
-                    ]
-                    res_fb = subprocess.run(cmd_fallback, capture_output=True, check=False, timeout=30)
-                    if res_fb.returncode != 0 or not frame_jpg.is_file() or frame_jpg.stat().st_size == 0:
-                        raise PipelineAdapterError(
-                            "FFMPEG_WINDOW_DECODE_FAILED",
-                            f"Failed to decode window {win.window_index} frames [{start_fid}..{end_fid_inc}]: {res.stderr.decode('utf-8', errors='replace')}",
-                        )
+                res = subprocess.run(cmd, capture_output=True, check=False, timeout=60)
+                frame_jpgs = sorted(work_dir.glob("frame_*.jpg"))
+                if res.returncode != 0 or len(frame_jpgs) != len(planned_ids):
+                    raise PipelineAdapterError(
+                        "FFMPEG_WINDOW_DECODE_FAILED",
+                        f"Decoded {len(frame_jpgs)}/{len(planned_ids)} sampled frames for window "
+                        f"{win.window_index} [{start_fid}..{end_fid_inc}]: "
+                        f"{res.stderr.decode('utf-8', errors='replace')[:400]}",
+                        {"planned_frame_ids": planned_ids, "decoded_count": len(frame_jpgs)},
+                    )
 
-                # Real Qwen3-VL local neural multimodal inference
-                prompt_text = "Mô tả ngắn gọn cảnh quay và hành động diễn ra trong khung hình (tối đa 25 từ tiếng Việt)."
+                # Real Qwen3-VL local neural multimodal inference over the declared sample
+                prompt_text = (
+                    f"Mô tả ngắn gọn diễn biến của {len(frame_jpgs)} khung hình theo đúng thứ tự thời gian "
+                    "(tối đa 40 từ tiếng Việt)."
+                )
                 vlm_config = getattr(vlm_model, "config", None)
                 if vlm_config is None and hasattr(mlx_vlm, "load_config"):
                     try:
@@ -589,21 +619,21 @@ class S11ModelRegistryAndAdapters:
                     vlm_processor,
                     config=vlm_config,
                     prompt=prompt_text,
-                    num_images=1,
+                    num_images=len(frame_jpgs),
                 )
                 vlm_out = mlx_vlm.generate(
                     vlm_model,
                     vlm_processor,
                     prompt=formatted_prompt,
-                    image=[str(frame_jpg)],
-                    max_tokens=50,
+                    image=[str(p) for p in frame_jpgs],
+                    max_tokens=80,
                     verbose=False,
                 )
                 raw_text = getattr(vlm_out, "text", str(vlm_out)).strip().replace("\ufffd", "").replace("\x00", "")
                 if not raw_text:
                     raise PipelineAdapterError(
                         "INVALID_VLM_OUTPUT",
-                        f"VLM returned empty output for window {win.window_index} frame {midpoint_fid}",
+                        f"VLM returned empty output for window {win.window_index} frames {planned_ids}",
                     )
 
                 lower_text = raw_text.lower()
@@ -614,13 +644,19 @@ class S11ModelRegistryAndAdapters:
                 else:
                     scene_type = "steady_visual_scene"
 
-                # Honest frame provenance: only record frame(s) actually processed by the neural vision model
-                submitted_frame_ids = [midpoint_fid]
+                # Honest frame provenance: record exactly the frames that were sent to the model,
+                # and declare them as the planned sample so the pipeline audits the same set.
+                submitted_frame_ids = list(planned_ids)
                 has_uncertainty = len(submitted_frame_ids) < len(intended_ids)
 
                 obs_payload = {
-                    "observation_text": f"Quan sát Qwen3-VL (cửa sổ {win.window_index}, frames {start_fid}..{end_fid_inc}): {raw_text}",
+                    "observation_text": (
+                        f"Quan sát Qwen3-VL (cửa sổ {win.window_index}, mẫu "
+                        f"{len(submitted_frame_ids)}/{len(intended_ids)} frame, "
+                        f"frames {start_fid}..{end_fid_inc}): {raw_text}"
+                    ),
                     "frame_ids": submitted_frame_ids,
+                    "planned_frame_ids": submitted_frame_ids,
                     "origin": "visual_model",
                     "epistemic_status": "observed",
                     "action_or_scene_type": scene_type,
@@ -634,6 +670,7 @@ class S11ModelRegistryAndAdapters:
                 )
                 return {
                     "accepted_frame_ids": validated["frame_ids"],
+                    "planned_frame_ids": list(planned_ids),
                     "action_or_scene_type": validated["action_or_scene_type"],
                     "subject_track_id": validated.get("subject_track_id"),
                     "observation_text": validated["observation_text"],
@@ -642,10 +679,6 @@ class S11ModelRegistryAndAdapters:
                     "has_uncertainty_boundary": bool(validated.get("has_uncertainty_boundary", False)),
                 }
             finally:
-                if frame_jpg.is_file():
-                    try:
-                        frame_jpg.unlink()
-                    except Exception:
-                        pass
+                shutil.rmtree(work_dir, ignore_errors=True)
 
         return _inspect_window

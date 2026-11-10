@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -194,6 +195,10 @@ class AssetCoverageLedger:
     audio_analysis_status: str
     omission_audit_status: str
     semantic_understanding_certified: bool = False  # Always False at S12: frame input != semantic truth!
+    # 2026-11-10 fix: frames actually submitted to the vision model / total declared source frames.
+    # Bounded vision models only see a declared sample of each window, so this must be
+    # reported separately from decode coverage instead of being called "100% input coverage".
+    vlm_frame_coverage: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -281,9 +286,10 @@ def compute_pipeline_input_fingerprint(
     """Canonical SHA-256 fingerprint for S12 checkpoint validation (prevents mixing old/new profiles on resume)."""
     canonical = json.dumps(
         {
+            "analysis_contract": "declared-sampling-v2",
             "overlap": overlap,
             "runtime_profile_id": runtime_profile_id,
-            "schema_version": 1,
+            "schema_version": 2,
             "source_revision_id": source_revision_id,
             "source_sha256": source_sha256,
             "total_declared_frames": total_declared_frames,
@@ -293,6 +299,56 @@ def compute_pipeline_input_fingerprint(
         separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def encode_frame_id_ranges(frame_ids: Sequence[int]) -> List[List[int]]:
+    """Compact a sorted frame-id list into inclusive [start, end] ranges."""
+    ordered = sorted({int(x) for x in frame_ids})
+    if not ordered:
+        return []
+    ranges: List[List[int]] = []
+    start = prev = ordered[0]
+    for fid in ordered[1:]:
+        if fid == prev + 1:
+            prev = fid
+            continue
+        ranges.append([start, prev])
+        start = prev = fid
+    ranges.append([start, prev])
+    return ranges
+
+
+def compact_coverage_ledger_payload(
+    payload: Dict[str, Any],
+    *,
+    max_inline_ids: int = 4096,
+) -> Dict[str, Any]:
+    """
+    Keep `g2.analyze_source` under the 1 MiB JSON-RPC frame for long sources.
+
+    Frame-id lists are always mirrored as inclusive ranges. When a list exceeds
+    `max_inline_ids` it is replaced by an empty list plus an explicit
+    `frame_ids_truncated = True` flag and a `*_count`, so no consumer can mistake
+    an omitted list for "zero frames processed".
+    """
+    compact = dict(payload)
+    unique_ids = list(compact.get("unique_post_processor_frame_ids") or [])
+    valid_ids = list(compact.get("valid_decoded_frame_ids") or [])
+    truncated = len(unique_ids) > max_inline_ids or len(valid_ids) > max_inline_ids
+
+    compact["frame_ids_truncated"] = truncated
+    compact["frame_id_ranges"] = {
+        "unique_post_processor": encode_frame_id_ranges(unique_ids),
+        "valid_decoded": encode_frame_id_ranges(valid_ids),
+    }
+    compact["unique_post_processor_frame_count"] = len(unique_ids)
+    compact["valid_decoded_frame_count"] = len(valid_ids)
+
+    if truncated:
+        compact["unique_post_processor_frame_ids"] = []
+        compact["valid_decoded_frame_ids"] = []
+
+    return compact
 
 
 def merge_window_observations(
@@ -434,6 +490,28 @@ class FullFrameAnalysisPipeline:
 
         corrupted_set = {int(x) for x in corrupted_decode_frame_ids}
         valid_pts_records = [r for r in pts_index if r.frame_id not in corrupted_set]
+
+        # 2026-11-10 fix (D04): the coverage denominator must be the container's declared
+        # frame count, not the length of the very list we are about to divide by.
+        if total_declared_source_frames <= 0:
+            raise FullFramePipelineError(
+                "INVALID_DECLARED_FRAME_COUNT",
+                "total_declared_source_frames must be positive.",
+            )
+        if len(pts_index) > total_declared_source_frames:
+            raise FullFramePipelineError(
+                "INDEX_DENOMINATOR_MISMATCH",
+                f"PTS index has {len(pts_index)} frames but the container declares only "
+                f"{total_declared_source_frames}; refusing to compute a coverage ratio above 100%.",
+                {"indexed_frames": len(pts_index), "declared_frames": total_declared_source_frames},
+            )
+        if len(pts_index) < int(total_declared_source_frames * 0.95):
+            raise FullFramePipelineError(
+                "INDEX_DENOMINATOR_MISMATCH",
+                f"PTS index covers {len(pts_index)}/{total_declared_source_frames} declared frames "
+                "(more than 5% missing); the media index is incomplete.",
+                {"indexed_frames": len(pts_index), "declared_frames": total_declared_source_frames},
+            )
         windows = generate_overlapping_windows(
             valid_pts_records,
             window_size=self.config.window_size_frames,
@@ -504,18 +582,57 @@ class FullFrameAnalysisPipeline:
                 break
 
             insp = window_inspector_fn(win)
+            if not isinstance(insp, dict):
+                raise FullFramePipelineError(
+                    "INVALID_VISUAL_PAYLOAD",
+                    f"Window {win.window_index} inspector returned {type(insp).__name__}, expected a mapping.",
+                )
 
             # Enforce S12.3 / AI-02: raw pass must never inject brief hypothesis
-            if "guided_hypothesis_ref" in insp and insp["guided_hypothesis_ref"] is not None:
+            if insp.get("guided_hypothesis_ref") is not None:
                 raise FullFramePipelineError(
                     "BRIEF_LEAKAGE_IN_RAW_PASS",
                     "Window inspector attempted to inject brief hypothesis during raw_independent pass.",
                 )
 
-            accepted_ids = insp.get("accepted_frame_ids", list(win.intended_frame_ids))
+            # 2026-11-10 fix (D02): never default to the full window. The inspector must
+            # declare the exact frames it planned to submit; missing/empty evidence is a
+            # hard failure, not a fabricated observation at 100% coverage.
+            planned_raw = insp.get("planned_frame_ids")
+            if planned_raw is None:
+                planned_raw = insp.get("accepted_frame_ids")
+            accepted_raw = insp.get("accepted_frame_ids")
+            if not planned_raw or not accepted_raw:
+                raise FullFramePipelineError(
+                    "INVALID_VISUAL_PAYLOAD",
+                    f"Window {win.window_index} inspector returned no planned/accepted frame ids.",
+                )
+            planned_ids = [int(x) for x in planned_raw]
+            accepted_ids = [int(x) for x in accepted_raw]
+            if not set(accepted_ids).issubset(set(planned_ids)):
+                raise FullFramePipelineError(
+                    "VISUAL_COVERAGE_MISMATCH",
+                    f"Window {win.window_index} accepted frames {sorted(set(accepted_ids) - set(planned_ids))} "
+                    "were never declared as planned samples.",
+                    {"window_index": win.window_index},
+                )
+
+            observation_text = str(insp.get("observation_text") or "").strip()
+            scene_type = insp.get("action_or_scene_type")
+            if not observation_text:
+                raise FullFramePipelineError(
+                    "INVALID_VISUAL_PAYLOAD",
+                    f"Window {win.window_index} inspector returned an empty observation_text.",
+                )
+            if not isinstance(scene_type, str) or not re.fullmatch(r"[a-z0-9_]{1,64}", scene_type):
+                raise FullFramePipelineError(
+                    "INVALID_VISUAL_PAYLOAD",
+                    f"Window {win.window_index} inspector returned invalid action_or_scene_type {scene_type!r}.",
+                )
+
             audit: PostProcessorFrameAudit = audit_vision_processor_coverage(
                 runtime_profile_id=self.config.runtime_profile_id,
-                intended_frame_ids=win.intended_frame_ids,
+                intended_frame_ids=planned_ids,
                 processor_accepted_frame_ids=accepted_ids,
                 temporal_patch_size=self.config.temporal_patch_size,
                 input_width=1920,
@@ -525,7 +642,7 @@ class FullFrameAnalysisPipeline:
             if audit.truncation_detected:
                 raise FullFramePipelineError(
                     "POST_PROCESSOR_TRUNCATION",
-                    f"Window {win.window_index} dropped frames {audit.dropped_or_truncated_frame_ids} after processor.",
+                    f"Window {win.window_index} dropped declared frames {audit.dropped_or_truncated_frame_ids} after processor.",
                     {"window_index": win.window_index, "dropped": audit.dropped_or_truncated_frame_ids},
                 )
 
@@ -541,9 +658,9 @@ class FullFrameAnalysisPipeline:
                 end_pts_ticks=win.end_pts_ticks,
                 time_base_num=win.time_base_num,
                 time_base_den=win.time_base_den,
-                action_or_scene_type=str(insp.get("action_or_scene_type", "scenic_or_motion")),
+                action_or_scene_type=scene_type,
                 subject_track_id=insp.get("subject_track_id"),
-                observation_text=str(insp.get("observation_text", "")),
+                observation_text=observation_text,
                 ocr_raw_tokens=list(insp.get("ocr_raw_tokens", [])),
                 ocr_is_uncertain=bool(insp.get("ocr_is_uncertain", False)),
                 has_uncertainty_boundary=bool(insp.get("has_uncertainty_boundary", False)),
@@ -552,6 +669,7 @@ class FullFrameAnalysisPipeline:
             raw_observations.append(obs)
             committed_windows[win.window_index] = {
                 "window_index": win.window_index,
+                "planned_frame_ids": list(planned_ids),
                 "actual_processed_frame_ids": list(audit.actual_processed_frame_ids),
                 "post_processor_audit": audit.to_dict(),
             }
@@ -606,9 +724,12 @@ class FullFrameAnalysisPipeline:
         unique_sorted = sorted(unique_processed)
 
         denom_total = max(1, total_declared_source_frames)
-        decode_cov = len(valid_decoded_ids) / float(denom_total)
-        frame_input_cov = len(unique_sorted) / float(denom_total)
-        valid_input_cov = len(unique_sorted) / float(max(1, len(valid_decoded_ids)))
+        # 2026-11-10 fix (D04): clamp every ratio to [0, 1]. The declared denominator is
+        # the container frame count, so a partial or corrupt index can no longer inflate it.
+        decode_cov = min(1.0, len(valid_decoded_ids) / float(denom_total))
+        frame_input_cov = min(1.0, len(unique_sorted) / float(denom_total))
+        valid_input_cov = min(1.0, len(unique_sorted) / float(max(1, len(valid_decoded_ids))))
+        vlm_cov = min(1.0, len(unique_sorted) / float(denom_total))
 
         all_windows_done = len(committed_windows) == len(windows)
         if blocked_model_unavailable:
@@ -644,6 +765,7 @@ class FullFrameAnalysisPipeline:
             decode_coverage_ratio=round(decode_cov, 6),
             frame_input_coverage=round(frame_input_cov, 6),
             valid_frame_input_coverage=round(valid_input_cov, 6),
+            vlm_frame_coverage=round(vlm_cov, 6),
             completed_window_indices=sorted(committed_windows.keys()),
             total_windows=len(windows),
             visual_scan_status=detailed_status,
