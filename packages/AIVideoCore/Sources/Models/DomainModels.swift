@@ -457,24 +457,48 @@ public struct ResolveSpikeResult: Codable, Sendable {
 
 // MARK: - Gate G2 Source Analysis RPC DTOs
 
+public struct G2PrefilterParams: Codable, Sendable {
+    public let enabled: Bool
+    public let motionThreshold: Double?
+
+    public enum CodingKeys: String, CodingKey {
+        case enabled
+        case motionThreshold = "motion_threshold"
+    }
+
+    public init(enabled: Bool, motionThreshold: Double? = nil) {
+        self.enabled = enabled
+        self.motionThreshold = motionThreshold
+    }
+}
+
 public struct G2AnalyzeSourceParams: Codable, Sendable {
     public let filePath: String
     public let sourceRevisionId: String
     public let workdayId: String
     public let briefText: String
+    public let prefilter: G2PrefilterParams?
 
     public enum CodingKeys: String, CodingKey {
         case filePath = "file_path"
         case sourceRevisionId = "source_revision_id"
         case workdayId = "workday_id"
         case briefText = "brief_text"
+        case prefilter
     }
 
-    public init(filePath: String, sourceRevisionId: String, workdayId: String, briefText: String) {
+    public init(
+        filePath: String,
+        sourceRevisionId: String,
+        workdayId: String,
+        briefText: String,
+        prefilter: G2PrefilterParams? = nil
+    ) {
         self.filePath = filePath
         self.sourceRevisionId = sourceRevisionId
         self.workdayId = workdayId
         self.briefText = briefText
+        self.prefilter = prefilter
     }
 }
 

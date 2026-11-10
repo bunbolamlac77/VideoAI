@@ -797,12 +797,19 @@ public actor WorkerClient {
         return try await sendRequest(method: "resolve.spike_timeline", params: params, timeoutSeconds: 60.0)
     }
 
-    public func analyzeG2Source(filePath: String, sourceRevisionId: String, workdayId: String, briefText: String) async throws -> G2AnalyzeSourceResult {
+    public func analyzeG2Source(
+        filePath: String,
+        sourceRevisionId: String,
+        workdayId: String,
+        briefText: String,
+        prefilterEnabled: Bool = false
+    ) async throws -> G2AnalyzeSourceResult {
         let params = G2AnalyzeSourceParams(
             filePath: filePath,
             sourceRevisionId: sourceRevisionId,
             workdayId: workdayId,
-            briefText: briefText
+            briefText: briefText,
+            prefilter: prefilterEnabled ? G2PrefilterParams(enabled: true) : nil
         )
         // Full-frame G2 analysis is proportional to clip length; 60 s timed out on real footage.
         return try await sendRequest(method: "g2.analyze_source", params: params, timeoutSeconds: 1800.0)

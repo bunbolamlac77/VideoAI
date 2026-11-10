@@ -128,6 +128,7 @@ swiftc -sdk "$SDK_PATH" \
   packages/AIVideoCore/Sources/Adapters/ModelAdapterContracts.swift \
   packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
   packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
+  apps/macos/Sources/AppState.swift \
   apps/macos/Sources/AIVideoApp.swift \
   apps/macos/Sources/G3ConsoleView.swift \
   apps/macos/Sources/G4ConsoleView.swift \

@@ -268,6 +268,10 @@ struct S02ManualVerification {
     }
 
     private static func resolvePythonPath() -> String {
+        if let override = ProcessInfo.processInfo.environment["AIVIDEO_PYTHON"],
+           FileManager.default.isExecutableFile(atPath: override) {
+            return override
+        }
         let candidates = [
             (FileManager.default.homeDirectoryForCurrentUser.path as NSString)
                 .appendingPathComponent("Library/Application Support/AIVideo/Runtimes/g0-mlx-runtime/bin/python3"),
