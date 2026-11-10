@@ -10,6 +10,32 @@
 
 import Foundation
 
+/// Resolve a Python interpreter for tests: explicit override, managed runtime,
+/// Homebrew, then PATH. Hosted runners do not have /opt/homebrew/bin/python3.12.
+func aivideo_test_python_path() -> String {
+    let env = ProcessInfo.processInfo.environment
+    let fm = FileManager.default
+    if let override = env["AIVIDEO_PYTHON"], fm.isExecutableFile(atPath: override) {
+        return override
+    }
+    let home = fm.homeDirectoryForCurrentUser.path
+    var candidates = [
+        "\(home)/Library/Application Support/AIVideo/Runtimes/g0-mlx-runtime/bin/python3",
+        "/opt/homebrew/bin/python3.12",
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+        "/usr/bin/python3"
+    ]
+    if let path = env["PATH"] {
+        for dir in path.split(separator: ":") {
+            candidates.append("\(dir)/python3")
+        }
+    }
+    return candidates.first { fm.isExecutableFile(atPath: $0) } ?? "/usr/bin/python3"
+}
+
+
+
 func recordResolveTestResult(
     testcaseId: String,
     requirementId: String,
@@ -75,7 +101,7 @@ struct TestResolveSpike {
 
         let client = WorkerClient()
         let workerScript = "workers/src/aivideo_workers/main.py"
-        let pythonPath = "/opt/homebrew/bin/python3.12"
+        let pythonPath = aivideo_test_python_path()
 
         do {
             _ = try await client.start(pythonPath: pythonPath, scriptPath: workerScript, timeoutSeconds: 5.0)

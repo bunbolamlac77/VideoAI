@@ -4,6 +4,32 @@
 
 import Foundation
 
+/// Resolve a Python interpreter for tests: explicit override, managed runtime,
+/// Homebrew, then PATH. Hosted runners do not have /opt/homebrew/bin/python3.12.
+func aivideo_test_python_path() -> String {
+    let env = ProcessInfo.processInfo.environment
+    let fm = FileManager.default
+    if let override = env["AIVIDEO_PYTHON"], fm.isExecutableFile(atPath: override) {
+        return override
+    }
+    let home = fm.homeDirectoryForCurrentUser.path
+    var candidates = [
+        "\(home)/Library/Application Support/AIVideo/Runtimes/g0-mlx-runtime/bin/python3",
+        "/opt/homebrew/bin/python3.12",
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+        "/usr/bin/python3"
+    ]
+    if let path = env["PATH"] {
+        for dir in path.split(separator: ":") {
+            candidates.append("\(dir)/python3")
+        }
+    }
+    return candidates.first { fm.isExecutableFile(atPath: $0) } ?? "/usr/bin/python3"
+}
+
+
+
 @main
 struct TestS12ToS15G2Closure {
     static func main() async {
@@ -258,7 +284,7 @@ struct TestS12ToS15G2Closure {
             ffProc.waitUntilExit()
 
             let client = WorkerClient()
-            let pyPath = "/opt/homebrew/bin/python3.12"
+            let pyPath = aivideo_test_python_path()
             _ = try await client.start(pythonPath: pyPath, scriptPath: "workers/src/aivideo_workers/main.py", timeoutSeconds: 8.0)
 
             let srcRevUUID = UUID()
