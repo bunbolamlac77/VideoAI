@@ -105,3 +105,13 @@
 - **TTS**: bỏ slider 0.8–1.2× (engine khoá 1.0×), hiển thị rõ profile và yêu cầu cài VieNeu offline.
 - **ASR**: `audio_analysis_status` không còn hard-code `completed`; không có transcript → `not_configured`, không có audio stream → `no_audio`.
 - **Child reaper**: mọi ffmpeg/ffprobe đi qua `run_tracked` (đăng ký process group, kill khi timeout, unregister sau khi xong); registry chuyển sang `child_process.py` để dùng chung.
+
+## 12. Prefilter chuyển động — cắt chi phí VLM (ECC add-feature, 2026-11-10)
+- **Động cơ**: 1 cửa sổ 16 frame ≈ 24 s prefill trên M1 Pro ⇒ clip 60 s (120 cửa sổ) ≈ 48 phút. Phần lớn cảnh POV tĩnh.
+- **Cơ chế**: `prefilter.scan_motion_profile` chạy **một** lượt ffmpeg `fps=2,scale=32x18,format=gray` rồi tính mean-abs-diff giữa sample liền kề (0..1). `build_window_prefilter` lấy **max** score trong cửa sổ và bỏ cửa sổ dưới `motion_threshold` (mặc định 0.02). Luôn phân tích cửa sổ đầu.
+- **Trung thực**: cửa sổ bị bỏ được lưu vào checkpoint + ledger (`skipped_window_indices`, `prefilter_skipped_count`), **không** sinh observation, **không** tính vào coverage; `detailed_pass_status = "completed_prefiltered"`.
+- **Đo thực tế** (M1 Pro, 2 ảnh/cửa sổ, ước tính 24 s/cửa sổ):
+  - Clip tĩnh 60 s: 120 cửa sổ → **1 phân tích, 119 bỏ**, scan 0.11 s ⇒ 48 phút → **~24 giây** VLM.
+  - Clip chuyển động 60 s (testsrc): 91 phân tích / 29 bỏ ⇒ 48 phút → **~36 phút** (−24%).
+  - 5 clip fixture 1.5 s: mỗi clip 3 cửa sổ, bỏ 2 (max-diff ≈ 0.0000 — các fixture gần như tĩnh, càng khẳng định benchmark cũ yếu).
+- **Mặc định TẮT**: chỉ bật qua `prefilter` trong `g2.analyze_source`; fingerprint checkpoint chỉ đổi khi bật, nên checkpoint cũ vẫn resume được.

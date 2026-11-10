@@ -245,3 +245,12 @@
 - **D15/D16**: bỏ slider TTS sai; ASR status `not_configured` thay vì `completed`.
 - **D17**: `child_process.py` + `run_tracked`; test `tests/test_worker_child_process.py`.
 - **Nghiệm thu**: chạy `run_tests.sh` sau khi hoàn tất (ghi ở mục dưới).
+
+## 2026-11-10 — ECC add-feature: prefilter chuyển động (opt-in)
+
+- Thêm `workers/src/aivideo_workers/prefilter.py` (scan 1 lượt ffmpeg, map score vào cửa sổ, quyết định bỏ).
+- `full_frame_pipeline`: `window_prefilter` + checkpoint `skipped_windows`; ledger thêm `skipped_window_indices`/`prefilter_skipped_count`; status `completed_prefiltered`; fingerprint chỉ đổi khi bật.
+- `main_g2`: tham số `prefilter` (enabled/sample_fps/motion_threshold/width/height), trả `prefilter` summary gồm danh sách cửa sổ bị bỏ.
+- Test: `tests/test_g2_prefilter.py` (15 ca: config, scan tĩnh/động, mapping, skip/first-window, resume, RPC, param sai).
+- Đo: clip tĩnh 60 s 48 phút → ~24 s VLM; clip động −24%; scan 0.11 s/clip.
+- **Nghiệm thu**: 199 Python PASS · 0 FAIL · 1 SKIP; ma trận `run_tests.sh` chạy sau khi hoàn tất.

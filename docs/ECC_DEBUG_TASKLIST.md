@@ -106,3 +106,13 @@ test(s02): stop self-certifying manual evidence                [T12]
 - Mỗi task: red test chạy fail trước, green sau, không regression 156 Python + 15 Swift.
 - Gate 2 chỉ commit sau khi user xem diff.
 - Không mở rộng sang tính năng mới (ASR, nhãn tay) nếu chưa được duyệt.
+
+
+## Feature bổ sung — Prefilter (orch-add-feature)
+| Task | Trạng thái |
+|---|---|
+| P1 `prefilter.py` (scan + select) | ✅ |
+| P2 nối pipeline + checkpoint + ledger | ✅ |
+| P3 tham số RPC `prefilter` | ✅ |
+| P4 test (15 ca) | ✅ |
+| P5 đo trên clip tĩnh/động | ✅ (48 phút → ~24 giây với clip tĩnh 60 s) |
