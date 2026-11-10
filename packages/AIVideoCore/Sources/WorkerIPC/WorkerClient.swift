@@ -383,7 +383,7 @@ public actor WorkerClient {
             )
             env["AIVIDEO_G3_STAGING_ROOT"] = staging.path
         }
-        // A single app-owned G4 staging/journal root. Never derive it from RPC.
+        // Dedicated app-owned G4 and G5 staging/journal roots. Never derive them from RPC.
         if let support = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first {
@@ -392,6 +392,12 @@ public actor WorkerClient {
                 at: g4, withIntermediateDirectories: true
             )
             env["AIVIDEO_G4_WORK_ROOT"] = g4.path
+
+            let g5 = support.appendingPathComponent("AIVideo/G5", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: g5, withIntermediateDirectories: true
+            )
+            env["AIVIDEO_G5_WORK_ROOT"] = g5.path
         }
         proc.environment = env
 

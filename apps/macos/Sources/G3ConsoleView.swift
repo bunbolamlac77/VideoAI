@@ -700,6 +700,7 @@ struct G3ConsoleView: View {
             let project = state.g1Project,
             let record = saved
         else {
+            output = "Lỗi: Chưa mở project hoặc chưa lưu bản nháp script để chọn."
             return
         }
 
@@ -755,10 +756,14 @@ struct G3ConsoleView: View {
         guard
             let store = state.projectStore,
             let project = state.g1Project,
-            let workday = state.g1Workday,
-            let record = saved,
-            selected
+            let workday = state.g1Workday
         else {
+            output = "Lỗi: Chưa mở project/workday trong tab Dự án (ProjectStore chưa sẵn sàng)."
+            return
+        }
+
+        guard let record = saved, selected else {
+            output = "Lỗi: Cần lưu và chọn bản nháp script (selected=true) trước khi phê duyệt."
             return
         }
 

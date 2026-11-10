@@ -666,10 +666,10 @@ public actor ProjectStore {
             let updateRevSql = "UPDATE projects SET current_revision = ?, updated_at = (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) WHERE project_id = ?;"
             var upStmt: OpaquePointer?
             if sqlite3_prepare_v2(db, updateRevSql, -1, &upStmt, nil) == SQLITE_OK {
+                defer { sqlite3_finalize(upStmt) }
                 sqlite3_bind_int(upStmt, 1, Int32(nextRev))
                 sqlite3_bind_text(upStmt, 2, projectId.uuidString, -1, SQLITE_TRANSIENT)
                 _ = sqlite3_step(upStmt)
-                sqlite3_finalize(upStmt)
             }
 
             // 5. Save to Idempotency Journal
@@ -677,6 +677,7 @@ public actor ProjectStore {
                 let idempSql = "INSERT INTO idempotency_journal (operation_id, project_id, fencing_token, result_payload) VALUES (?, ?, ?, ?);"
                 var idempStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, idempSql, -1, &idempStmt, nil) == SQLITE_OK {
+                    defer { sqlite3_finalize(idempStmt) }
                     let encoder = JSONEncoder()
                     if let encoded = try? encoder.encode(claim),
                        let payloadStr = String(data: encoded, encoding: .utf8) {
@@ -686,7 +687,6 @@ public actor ProjectStore {
                         sqlite3_bind_text(idempStmt, 4, payloadStr, -1, SQLITE_TRANSIENT)
                         _ = sqlite3_step(idempStmt)
                     }
-                    sqlite3_finalize(idempStmt)
                 }
             }
 
@@ -790,6 +790,7 @@ public actor ProjectStore {
             let getProjSql = "SELECT project_id FROM workdays WHERE workday_id = ?;"
             var projStmt: OpaquePointer?
             if sqlite3_prepare_v2(db, getProjSql, -1, &projStmt, nil) == SQLITE_OK {
+                defer { sqlite3_finalize(projStmt) }
                 sqlite3_bind_text(projStmt, 1, wId.uuidString, -1, SQLITE_TRANSIENT)
                 if sqlite3_step(projStmt) == SQLITE_ROW {
                     let pId = try colUUID(projStmt, 0)
@@ -798,12 +799,12 @@ public actor ProjectStore {
                     let appSql = "INSERT INTO approvals (approval_id, project_id, approval_type, target_revision_id, approved_by) VALUES (?, ?, 'fact_confirmation', ?, ?);"
                     var appStmt: OpaquePointer?
                     if sqlite3_prepare_v2(db, appSql, -1, &appStmt, nil) == SQLITE_OK {
+                        defer { sqlite3_finalize(appStmt) }
                         sqlite3_bind_text(appStmt, 1, confirmationId.uuidString, -1, SQLITE_TRANSIENT)
                         sqlite3_bind_text(appStmt, 2, pId.uuidString, -1, SQLITE_TRANSIENT)
                         sqlite3_bind_text(appStmt, 3, saved.revisionId.uuidString, -1, SQLITE_TRANSIENT)
                         sqlite3_bind_text(appStmt, 4, approvedBy, -1, SQLITE_TRANSIENT)
                         _ = sqlite3_step(appStmt)
-                        sqlite3_finalize(appStmt)
                     }
 
                     // 5. Record Idempotency Journal
@@ -811,6 +812,7 @@ public actor ProjectStore {
                         let idempSql = "INSERT INTO idempotency_journal (operation_id, project_id, fencing_token, result_payload) VALUES (?, ?, 0, ?);"
                         var idempStmt: OpaquePointer?
                         if sqlite3_prepare_v2(db, idempSql, -1, &idempStmt, nil) == SQLITE_OK {
+                            defer { sqlite3_finalize(idempStmt) }
                             if let encoded = try? JSONEncoder().encode(saved),
                                let payloadStr = String(data: encoded, encoding: .utf8) {
                                 sqlite3_bind_text(idempStmt, 1, ikey, -1, SQLITE_TRANSIENT)
@@ -818,11 +820,9 @@ public actor ProjectStore {
                                 sqlite3_bind_text(idempStmt, 3, payloadStr, -1, SQLITE_TRANSIENT)
                                 _ = sqlite3_step(idempStmt)
                             }
-                            sqlite3_finalize(idempStmt)
                         }
                     }
                 }
-                sqlite3_finalize(projStmt)
             }
 
             return saved
@@ -992,9 +992,9 @@ public actor ProjectStore {
             """
             var revStmt: OpaquePointer?
             if sqlite3_prepare_v2(db, revokeSql, -1, &revStmt, nil) == SQLITE_OK {
+                defer { sqlite3_finalize(revStmt) }
                 sqlite3_bind_text(revStmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
                 _ = sqlite3_step(revStmt)
-                sqlite3_finalize(revStmt)
             }
 
             // 2. Compute next global monotonic fencing token
@@ -1002,10 +1002,10 @@ public actor ProjectStore {
             let maxSql = "SELECT COALESCE(MAX(fencing_token), 0) FROM job_attempts;"
             var maxStmt: OpaquePointer?
             if sqlite3_prepare_v2(db, maxSql, -1, &maxStmt, nil) == SQLITE_OK {
+                defer { sqlite3_finalize(maxStmt) }
                 if sqlite3_step(maxStmt) == SQLITE_ROW {
                     nextFence = Int(sqlite3_column_int(maxStmt, 0)) + 1
                 }
-                sqlite3_finalize(maxStmt)
             }
 
             // 3. Insert new attempt and transition job to RUNNING
@@ -1029,9 +1029,9 @@ public actor ProjectStore {
             let upJobSql = "UPDATE jobs SET status = 'RUNNING' WHERE job_id = ?;"
             var upJobStmt: OpaquePointer?
             if sqlite3_prepare_v2(db, upJobSql, -1, &upJobStmt, nil) == SQLITE_OK {
+                defer { sqlite3_finalize(upJobStmt) }
                 sqlite3_bind_text(upJobStmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
                 _ = sqlite3_step(upJobStmt)
-                sqlite3_finalize(upJobStmt)
             }
 
             return JobAttemptRecord(
@@ -1276,17 +1276,17 @@ public actor ProjectStore {
                 let attSql = "UPDATE job_attempts SET status = 'SUCCEEDED', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE attempt_id = ?;"
                 var attStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, attSql, -1, &attStmt, nil) == SQLITE_OK {
+                    defer { sqlite3_finalize(attStmt) }
                     sqlite3_bind_text(attStmt, 1, attemptId.uuidString, -1, SQLITE_TRANSIENT)
                     _ = sqlite3_step(attStmt)
-                    sqlite3_finalize(attStmt)
                 }
 
                 let jobSql = "UPDATE jobs SET status = 'SUCCEEDED', completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE job_id = ?;"
                 var jobStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, jobSql, -1, &jobStmt, nil) == SQLITE_OK {
+                    defer { sqlite3_finalize(jobStmt) }
                     sqlite3_bind_text(jobStmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
                     _ = sqlite3_step(jobStmt)
-                    sqlite3_finalize(jobStmt)
                 }
             }
 
@@ -1294,6 +1294,7 @@ public actor ProjectStore {
                 let idempSql = "INSERT OR REPLACE INTO idempotency_journal (operation_id, project_id, fencing_token, result_payload) VALUES (?, ?, ?, ?);"
                 var idempStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, idempSql, -1, &idempStmt, nil) == SQLITE_OK {
+                    defer { sqlite3_finalize(idempStmt) }
                     if let encoded = try? JSONEncoder().encode(pub),
                        let payloadStr = String(data: encoded, encoding: .utf8) {
                         sqlite3_bind_text(idempStmt, 1, ikey, -1, SQLITE_TRANSIENT)
@@ -1302,7 +1303,6 @@ public actor ProjectStore {
                         sqlite3_bind_text(idempStmt, 4, payloadStr, -1, SQLITE_TRANSIENT)
                         _ = sqlite3_step(idempStmt)
                     }
-                    sqlite3_finalize(idempStmt)
                 }
             }
 
@@ -1482,11 +1482,10 @@ public actor ProjectStore {
                 let upSql = "UPDATE jobs SET status = 'SUCCEEDED', completed_at = COALESCE(completed_at, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) WHERE job_id = ? AND status != 'SUCCEEDED';"
                 var upStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, upSql, -1, &upStmt, nil) == SQLITE_OK {
+                    defer { sqlite3_finalize(upStmt) }
                     sqlite3_bind_text(upStmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
                     _ = sqlite3_step(upStmt)
-                    let changed = sqlite3_changes(db) > 0
-                    sqlite3_finalize(upStmt)
-                    return changed
+                    return sqlite3_changes(db) > 0
                 }
             }
             return false

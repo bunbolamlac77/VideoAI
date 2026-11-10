@@ -357,6 +357,11 @@ final class AppState: ObservableObject {
         }.value
     }
 
+    nonisolated static let skippedDirectoryNames: Set<String> = [
+        ".git", ".svn", ".hg", "CVS", ".venv", "venv", "node_modules",
+        "DerivedData", ".build", "build", "__pycache__", "Pods", "Carthage"
+    ]
+
     nonisolated static func scanDirectory(at dirURL: URL) -> [MediaSourceItem] {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey]
@@ -369,9 +374,17 @@ final class AppState: ObservableObject {
         }
 
         var items: [MediaSourceItem] = []
+        let maxItems = 5000
+
         for case let fileURL as URL in enumerator {
-            guard let resourceValues = try? fileURL.resourceValues(forKeys: Set(keys)),
-                  !(resourceValues.isDirectory ?? false) else {
+            guard let resourceValues = try? fileURL.resourceValues(forKeys: Set(keys)) else {
+                continue
+            }
+
+            if resourceValues.isDirectory ?? false {
+                if Self.skippedDirectoryNames.contains(fileURL.lastPathComponent) {
+                    enumerator.skipDescendants()
+                }
                 continue
             }
 
@@ -396,6 +409,9 @@ final class AppState: ObservableObject {
                     fileSize: size,
                     modifiedDate: date
                 ))
+                if items.count >= maxItems {
+                    break
+                }
             }
         }
 
