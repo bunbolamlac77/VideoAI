@@ -5,6 +5,8 @@
 **Size tier:** **large** — cross-cutting (Python pipeline contract, benchmark, Swift stores, tests, docs), có thay đổi contract nội bộ và open questions.
 **Phase mask:** 0 → 1 (light) → 2 → **GATE 1** → 4 (TDD) → 5 → 6 → **GATE 2**
 
+**Trạng thái:** Wave A+B hoàn tất (T01–T05, 4 commit). Wave C–E còn mở.
+
 ---
 
 ## Phase 1 — Research (kết quả, không đoán)
@@ -53,15 +55,15 @@
 ### Wave A — G2 chạy thật & trung thực (D01–D04, D08)
 | Task | Red test (mới) | Thay đổi | Nghiệm thu |
 |---|---|---|---|
-| **T01** Hợp đồng cửa sổ | `test_g2_window_contract.py::test_sampled_window_completes` + `test_inspector_underreports_frames_raises` | `pipeline_adapters`: decode N frame/cửa sổ (N=8, đều nhau, gồm midpoint), trả `accepted_frame_ids` = frame thật gửi; `full_frame_pipeline`: audit theo `planned_frame_ids` của inspector, không theo 16 frame; ledger tách `vlm_frame_coverage` vs `decode_coverage` | Pipeline với model thật trên `trip-holdout-01-dalat.mp4` → `completed`, ≥1 observation, không raise; coverage = 8/16 chứ không phải 1.0 |
-| **T02** Fail-closed + bỏ backdoor | `test_empty_inspector_payload_raises`, `test_rpc_rejects_inspector_override` | `full_frame_pipeline:515/544` bắt buộc `frame_ids` + `observation_text`; `main_g2:458` ném `ValueError("INSPECTOR_OVERRIDE_FORBIDDEN")` | `{}` → `INVALID_VISUAL_PAYLOAD`; RPC có `_inspector_fn` → lỗi |
-| **T03** Coverage số học | `test_coverage_never_exceeds_one`, `test_index_denominator_mismatch_fails_closed` | Mẫu số từ container (fallback duration×fps), đếm frame bị bỏ, clamp [0,1], fail-closed khi lệch > 5% | declared=10/indexed=40 → raise, không còn 4.0 |
-| **T04** Payload ≤ 1 MiB | `test_long_video_result_fits_frame_budget` | Trả `frame_id_ranges` + counts; client dựng lại được | 86.400 frame → JSON < 1.048.576 B |
+| ✅ **T01** Hợp đồng cửa sổ | `test_g2_window_contract.py::test_sampled_window_completes` + `test_inspector_underreports_frames_raises` | `pipeline_adapters`: decode N frame/cửa sổ (N=8, đều nhau, gồm midpoint), trả `accepted_frame_ids` = frame thật gửi; `full_frame_pipeline`: audit theo `planned_frame_ids` của inspector, không theo 16 frame; ledger tách `vlm_frame_coverage` vs `decode_coverage` | Pipeline với model thật trên `trip-holdout-01-dalat.mp4` → `completed`, ≥1 observation, không raise; coverage = 8/16 chứ không phải 1.0 |
+| ✅ **T02** Fail-closed + bỏ backdoor | `test_empty_inspector_payload_raises`, `test_rpc_rejects_inspector_override` | `full_frame_pipeline:515/544` bắt buộc `frame_ids` + `observation_text`; `main_g2:458` ném `ValueError("INSPECTOR_OVERRIDE_FORBIDDEN")` | `{}` → `INVALID_VISUAL_PAYLOAD`; RPC có `_inspector_fn` → lỗi |
+| ✅ **T03** Coverage số học | `test_coverage_never_exceeds_one`, `test_index_denominator_mismatch_fails_closed` | Mẫu số từ container (fallback duration×fps), đếm frame bị bỏ, clamp [0,1], fail-closed khi lệch > 5% | declared=10/indexed=40 → raise, không còn 4.0 |
+| ✅ **T04** Payload ≤ 1 MiB | `test_long_video_result_fits_frame_budget` | Trả `frame_id_ranges` + counts; client dựng lại được | 86.400 frame → JSON < 1.048.576 B |
 
 ### Wave B — Benchmark trung thực (D05)
 | Task | Red test | Thay đổi | Nghiệm thu |
 |---|---|---|---|
-| **T05** Bỏ metric giả | `test_real_mode_refuses_synthetic_labels`, `test_fixed_text_inspector_fails_gate` | Xoá `(1200,1200)`; bỏ gán `real_video_corpus_verified=True`; thêm `label_source`; `real` mode từ chối nhãn synthetic | Report ghi `label_source=synthetic`, `real_video_corpus_verified=False`; thay inspector bằng text cố định → G2 FAIL |
+| ✅ **T05** Bỏ metric giả | `test_real_mode_refuses_synthetic_labels`, `test_fixed_text_inspector_fails_gate` | Xoá `(1200,1200)`; bỏ gán `real_video_corpus_verified=True`; thêm `label_source`; `real` mode từ chối nhãn synthetic | Report ghi `label_source=synthetic`, `real_video_corpus_verified=False`; thay inspector bằng text cố định → G2 FAIL |
 | **T06** (hoãn) Nhãn thật 5 clip | — | Cần người viết ground truth | Chỉ chạy khi có nhãn |
 
 ### Wave C — Toàn vẹn SQLite & phát hành (D06, D07, D09–D11)
