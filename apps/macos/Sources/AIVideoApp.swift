@@ -108,6 +108,15 @@ final class AppState: ObservableObject {
     @Published var g2ReviewItems: [TargetedReviewRecord] = []
     @Published var g2ScopeSummary: String = "Chưa có lượt phân tích G2 nào trong SQLite (Coverage: N/A)"
     @Published var isRunningG2Analysis: Bool = false
+
+    // Batch G2 Analysis (Analyze All Videos in Folder)
+    @Published var isBatchAnalysisRunning: Bool = false
+    @Published var batchTotalCount: Int = 0
+    @Published var batchCurrentIndex: Int = 0
+    @Published var batchCurrentFilename: String = ""
+    @Published var batchCompletedCount: Int = 0
+    @Published var batchFailedCount: Int = 0
+    private var batchCancelRequested: Bool = false
     var projectStore: ProjectStore? // actor remains single canonical writer; exposed to G3 UI only
     var publicationService: ArtifactPublicationService? // shared S08 actor for G4
     private let backupService = BackupRestoreService(supportedMaxSchemaVersion: 2)
@@ -807,8 +816,112 @@ final class AppState: ObservableObject {
         return UUID(uuidString: "\(s1)-\(s2)-\(s3)-\(s4)-\(s5)") ?? UUID()
     }
 
+    private func analyzeSingleSource(
+        filePath: String,
+        store: ProjectStore,
+        proj: ProjectRecord,
+        wd: WorkdayRecord
+    ) async throws -> CoverageLedgerRecord {
+        // Deterministic sourceRevisionId from canonical path + file size so S12 window checkpoints resume on retry!
+        let fileAttrs = try? FileManager.default.attributesOfItem(atPath: filePath)
+        let fileSize = (fileAttrs?[.size] as? NSNumber)?.int64Value ?? 0
+        let srcRevUUID = Self.deterministicUUID(from: "src-rev:\(filePath):\(fileSize)")
+
+        let res = try await worker.analyzeG2Source(
+            filePath: filePath,
+            sourceRevisionId: srcRevUUID.uuidString,
+            workdayId: wd.workdayId.uuidString,
+            briefText: g1DraftFactText
+        )
+        let dto = res.coverageLedger
+        let covRec = CoverageLedgerRecord(
+            coverageId: Self.deterministicUUID(from: "cov:\(srcRevUUID.uuidString)"),
+            projectId: proj.projectId,
+            sourceRevisionId: srcRevUUID,
+            runtimeProfileId: dto.runtimeProfileId,
+            inputFingerprint: dto.inputFingerprint,
+            totalDeclaredFrames: dto.totalDeclaredSourceFrames,
+            validDecodedFrameCount: dto.validDecodedFrameIds.count,
+            corruptedDecodeFrameIds: dto.corruptedDecodeFrameIds,
+            uniqueProcessedFrameIds: dto.uniquePostProcessorFrameIds,
+            totalSubmittedWithOverlap: dto.totalSubmittedFramesWithOverlap,
+            audioBranchState: AudioBranchState(rawValue: res.audioBranchState) ?? .speechDetected,
+            completedWindows: dto.uniquePostProcessorFrameIds.isEmpty ? 0 : 1,
+            totalWindows: 1,
+            detailedPassStatus: dto.detailedPassStatus
+        )
+        try await store.saveCoverageRecord(covRec)
+
+        for rawDto in res.rawObservations {
+            let role = ObservationPassRole(rawValue: rawDto.passRole) ?? .rawIndependent
+            let orig = Origin(rawValue: rawDto.origin) ?? .visualModel
+            let ep = EpistemicStatus(rawValue: rawDto.epistemicStatus) ?? .observed
+            let obsArt = try RawObservationArtifact(
+                observationId: rawDto.observationId,
+                sourceRevisionId: srcRevUUID,
+                windowIndex: rawDto.windowIndex,
+                passRole: role,
+                origin: orig,
+                epistemicStatus: ep,
+                frameIds: rawDto.frameIds,
+                startPts: rawDto.startPtsTicks,
+                endPts: rawDto.endPtsTicks,
+                observationText: rawDto.observationText,
+                ocrRawTokens: rawDto.ocrRawTokens,
+                ocrIsUncertain: rawDto.ocrIsUncertain
+            )
+            try await store.saveRawObservation(obsArt)
+        }
+
+        for cDto in res.claims {
+            let cId = Self.deterministicUUID(from: "claim:\(srcRevUUID.uuidString):\(cDto.claimId)")
+            let orig = Origin(rawValue: cDto.origin) ?? .user
+            let ep = EpistemicStatus(rawValue: cDto.epistemicStatus) ?? .reported
+            let revSt = ReviewStatus(rawValue: cDto.reviewStatus) ?? .unreviewed
+            let supSt = SupportStatus(rawValue: cDto.supportStatus) ?? .insufficient
+            let allUse = AllowedUse(rawValue: cDto.allowedUse) ?? .exclude
+            let claimRec = ClaimRecord(
+                claimId: cId,
+                workdayId: wd.workdayId,
+                text: cDto.text,
+                origin: orig,
+                epistemicStatus: ep,
+                reviewStatus: revSt,
+                supportStatus: supSt,
+                allowedUse: allUse
+            )
+            _ = try await store.saveClaim(
+                claim: claimRec,
+                idempotencyKey: "g2-claim-\(srcRevUUID.uuidString)-\(cDto.claimId)"
+            )
+        }
+
+        for (idx, rItem) in res.reviewItems.enumerated() {
+            let kind = ReviewEvidenceKind(rawValue: rItem.evidenceKind) ?? .briefSpan
+            let rUUID = Self.deterministicUUID(from: "rev-item:\(srcRevUUID.uuidString):\(idx):\(rItem.questionText)")
+            let rec = try TargetedReviewRecord(
+                reviewItemId: rUUID,
+                projectId: proj.projectId,
+                workdayId: wd.workdayId,
+                evidenceScopeRevisionId: rItem.evidenceScopeRevisionId,
+                evidenceKind: kind,
+                isCritical: rItem.isCritical,
+                questionText: rItem.questionText
+            )
+            try await store.saveReviewItem(rec)
+        }
+
+        return covRec
+    }
+
     func runG2AnalysisOnSelectedSource() async {
-        guard let store = projectStore, let proj = g1Project, let wd = g1Workday else { return }
+        if projectStore == nil || g1Project == nil || g1Workday == nil {
+            await initializeG1ProjectStore()
+        }
+        guard let store = projectStore, let proj = g1Project, let wd = g1Workday else {
+            self.errorMessage = "Không thể khởi tạo cơ sở dữ liệu dự án."
+            return
+        }
         guard !selectedFilePath.isEmpty else {
             self.errorMessage = "Vui lòng chọn file video nguồn trước khi chạy phân tích G2."
             return
@@ -818,102 +931,84 @@ final class AppState: ObservableObject {
         defer { self.isRunningG2Analysis = false }
 
         do {
-            // Deterministic sourceRevisionId from canonical path + file size so S12 window checkpoints resume on retry!
-            let fileAttrs = try? FileManager.default.attributesOfItem(atPath: selectedFilePath)
-            let fileSize = (fileAttrs?[.size] as? NSNumber)?.int64Value ?? 0
-            let srcRevUUID = Self.deterministicUUID(from: "src-rev:\(selectedFilePath):\(fileSize)")
-
-            let res = try await worker.analyzeG2Source(
-                filePath: selectedFilePath,
-                sourceRevisionId: srcRevUUID.uuidString,
-                workdayId: wd.workdayId.uuidString,
-                briefText: g1DraftFactText
-            )
-            let dto = res.coverageLedger
-            let covRec = CoverageLedgerRecord(
-                coverageId: Self.deterministicUUID(from: "cov:\(srcRevUUID.uuidString)"),
-                projectId: proj.projectId,
-                sourceRevisionId: srcRevUUID,
-                runtimeProfileId: dto.runtimeProfileId,
-                inputFingerprint: dto.inputFingerprint,
-                totalDeclaredFrames: dto.totalDeclaredSourceFrames,
-                validDecodedFrameCount: dto.validDecodedFrameIds.count,
-                corruptedDecodeFrameIds: dto.corruptedDecodeFrameIds,
-                uniqueProcessedFrameIds: dto.uniquePostProcessorFrameIds,
-                totalSubmittedWithOverlap: dto.totalSubmittedFramesWithOverlap,
-                audioBranchState: AudioBranchState(rawValue: res.audioBranchState) ?? .speechDetected,
-                completedWindows: dto.uniquePostProcessorFrameIds.isEmpty ? 0 : 1,
-                totalWindows: 1,
-                detailedPassStatus: dto.detailedPassStatus
-            )
-            try await store.saveCoverageRecord(covRec)
-
-            for rawDto in res.rawObservations {
-                let role = ObservationPassRole(rawValue: rawDto.passRole) ?? .rawIndependent
-                let orig = Origin(rawValue: rawDto.origin) ?? .visualModel
-                let ep = EpistemicStatus(rawValue: rawDto.epistemicStatus) ?? .observed
-                let obsArt = try RawObservationArtifact(
-                    observationId: rawDto.observationId,
-                    sourceRevisionId: srcRevUUID,
-                    windowIndex: rawDto.windowIndex,
-                    passRole: role,
-                    origin: orig,
-                    epistemicStatus: ep,
-                    frameIds: rawDto.frameIds,
-                    startPts: rawDto.startPtsTicks,
-                    endPts: rawDto.endPtsTicks,
-                    observationText: rawDto.observationText,
-                    ocrRawTokens: rawDto.ocrRawTokens,
-                    ocrIsUncertain: rawDto.ocrIsUncertain
-                )
-                try await store.saveRawObservation(obsArt)
-            }
-
-            for cDto in res.claims {
-                let cId = Self.deterministicUUID(from: "claim:\(srcRevUUID.uuidString):\(cDto.claimId)")
-                let orig = Origin(rawValue: cDto.origin) ?? .user
-                let ep = EpistemicStatus(rawValue: cDto.epistemicStatus) ?? .reported
-                let revSt = ReviewStatus(rawValue: cDto.reviewStatus) ?? .unreviewed
-                let supSt = SupportStatus(rawValue: cDto.supportStatus) ?? .insufficient
-                let allUse = AllowedUse(rawValue: cDto.allowedUse) ?? .exclude
-                let claimRec = ClaimRecord(
-                    claimId: cId,
-                    workdayId: wd.workdayId,
-                    text: cDto.text,
-                    origin: orig,
-                    epistemicStatus: ep,
-                    reviewStatus: revSt,
-                    supportStatus: supSt,
-                    allowedUse: allUse
-                )
-                _ = try await store.saveClaim(
-                    claim: claimRec,
-                    idempotencyKey: "g2-claim-\(srcRevUUID.uuidString)-\(cDto.claimId)"
-                )
-            }
-
-            for (idx, rItem) in res.reviewItems.enumerated() {
-                let kind = ReviewEvidenceKind(rawValue: rItem.evidenceKind) ?? .briefSpan
-                let rUUID = Self.deterministicUUID(from: "rev-item:\(srcRevUUID.uuidString):\(idx):\(rItem.questionText)")
-                let rec = try TargetedReviewRecord(
-                    reviewItemId: rUUID,
-                    projectId: proj.projectId,
-                    workdayId: wd.workdayId,
-                    evidenceScopeRevisionId: rItem.evidenceScopeRevisionId,
-                    evidenceKind: kind,
-                    isCritical: rItem.isCritical,
-                    questionText: rItem.questionText
-                )
-                try await store.saveReviewItem(rec)
-            }
-
-            self.g1Claims = try await store.getLatestClaims(workdayId: wd.workdayId)
-            self.g2ReviewItems = try await store.listReviewItems(workdayId: wd.workdayId)
-            let savedObs = try await store.listRawObservations(sourceRevisionId: srcRevUUID)
-            let pct = String(format: "%.1f", covRec.frameInputCoverage * 100.0)
-            self.g2ScopeSummary = "Status: \(covRec.detailedPassStatus) · Coverage: \(pct)% (\(covRec.uniqueProcessedFrameIds.count)/\(covRec.totalDeclaredFrames) frames) · Obs: \(savedObs.count) · Claims: \(self.g1Claims.count) · Review: \(self.g2ReviewItems.count)"
+            let covRec = try await analyzeSingleSource(filePath: selectedFilePath, store: store, proj: proj, wd: wd)
+            await refreshG2State(wdId: wd.workdayId, lastCov: covRec)
+            self.statusMessage = "Phân tích media thành công: \(URL(fileURLWithPath: selectedFilePath).lastPathComponent)"
         } catch {
             self.errorMessage = "Phân tích G2 thất bại: \(error.localizedDescription)"
+        }
+    }
+
+    func runG2AnalysisOnAllVideos() async {
+        if projectStore == nil || g1Project == nil || g1Workday == nil {
+            await initializeG1ProjectStore()
+        }
+        guard let store = projectStore, let proj = g1Project, let wd = g1Workday else {
+            self.errorMessage = "Không thể khởi tạo cơ sở dữ liệu dự án."
+            return
+        }
+
+        let videoItems = mediaItems.filter { $0.kind == .video }
+        guard !videoItems.isEmpty else {
+            self.errorMessage = "Không tìm thấy video nào trong thư mục tư liệu nguồn."
+            return
+        }
+
+        self.isRunningG2Analysis = true
+        self.isBatchAnalysisRunning = true
+        self.batchCancelRequested = false
+        self.batchTotalCount = videoItems.count
+        self.batchCurrentIndex = 0
+        self.batchCompletedCount = 0
+        self.batchFailedCount = 0
+        self.errorMessage = nil
+        defer {
+            self.isRunningG2Analysis = false
+            self.isBatchAnalysisRunning = false
+            self.batchCurrentFilename = ""
+        }
+
+        var lastCov: CoverageLedgerRecord? = nil
+
+        for (idx, item) in videoItems.enumerated() {
+            if batchCancelRequested {
+                self.statusMessage = "Đã dừng phân tích toàn bộ (\(batchCompletedCount)/\(videoItems.count) video hoàn tất)."
+                break
+            }
+
+            self.batchCurrentIndex = idx + 1
+            self.batchCurrentFilename = item.name
+            self.selectedFilePath = item.id
+
+            do {
+                let cov = try await analyzeSingleSource(filePath: item.id, store: store, proj: proj, wd: wd)
+                lastCov = cov
+                self.batchCompletedCount += 1
+            } catch {
+                self.batchFailedCount += 1
+                self.statusMessage = "Video \(item.name) lỗi: \(error.localizedDescription)"
+            }
+
+            await refreshG2State(wdId: wd.workdayId, lastCov: lastCov)
+        }
+
+        if !batchCancelRequested {
+            self.statusMessage = "Hoàn tất phân tích toàn bộ: \(batchCompletedCount)/\(videoItems.count) video thành công\(batchFailedCount > 0 ? " (\(batchFailedCount) lỗi)" : "")."
+        }
+    }
+
+    func cancelBatchAnalysis() {
+        self.batchCancelRequested = true
+    }
+
+    private func refreshG2State(wdId: UUID, lastCov: CoverageLedgerRecord?) async {
+        guard let store = projectStore else { return }
+        self.g1Claims = (try? await store.getLatestClaims(workdayId: wdId)) ?? self.g1Claims
+        self.g2ReviewItems = (try? await store.listReviewItems(workdayId: wdId)) ?? self.g2ReviewItems
+        let countObs = (try? await store.listRawObservations(sourceRevisionId: lastCov?.sourceRevisionId ?? UUID()))?.count ?? 0
+        if let covRec = lastCov {
+            let pct = String(format: "%.1f", covRec.frameInputCoverage * 100.0)
+            self.g2ScopeSummary = "Status: \(covRec.detailedPassStatus) · Coverage: \(pct)% (\(covRec.uniqueProcessedFrameIds.count)/\(covRec.totalDeclaredFrames) frames) · Obs: \(countObs) · Claims: \(self.g1Claims.count) · Review: \(self.g2ReviewItems.count)"
         }
     }
 
@@ -1560,28 +1655,75 @@ struct MediaInspectorView: View {
 
                 Divider().padding(.vertical, 4)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Button {
-                        Task { await state.runG2AnalysisOnSelectedSource() }
-                    } label: {
-                        HStack(spacing: 8) {
-                            if state.isRunningG2Analysis {
+                VStack(alignment: .leading, spacing: 8) {
+                    if state.isBatchAnalysisRunning {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
                                 ProgressView().controlSize(.small)
-                                Text("Đang phân tích G2 (Qwen3-VL 4B local)…")
-                            } else {
-                                Image(systemName: "sparkles.tv")
-                                Text("Chạy phân tích G2 trên video này")
+                                Text("Đang phân tích hàng đợi (\(state.batchCurrentIndex)/\(state.batchTotalCount))")
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer()
+                                Button("Dừng", role: .destructive) {
+                                    state.cancelBatchAnalysis()
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+
+                            ProgressView(value: Double(state.batchCompletedCount), total: Double(max(1, state.batchTotalCount)))
+                                .progressViewStyle(.linear)
+
+                            Text("Hiện tại: \(state.batchCurrentFilename)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .padding(10)
+                        .background(Color.brandTeal.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    } else if state.isRunningG2Analysis {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Đang phân tích G2 (Qwen3-VL 4B local)…")
+                                .font(.subheadline)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 8)
+                    } else {
+                        HStack(spacing: 8) {
+                            Button {
+                                Task { await state.runG2AnalysisOnSelectedSource() }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "sparkles.tv")
+                                    Text("Phân tích video này")
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
+                            .disabled(!state.isWorkerConnected)
+
+                            if state.videoCount > 1 {
+                                Button {
+                                    Task { await state.runG2AnalysisOnAllVideos() }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "play.rectangle.on.rectangle.fill")
+                                        Text("Phân tích toàn bộ (\(state.videoCount))")
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.regular)
+                                .disabled(!state.isWorkerConnected)
                             }
                         }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(state.isRunningG2Analysis || !state.isWorkerConnected)
 
-                    Text("Trích xuất frame offline, suy luận VLM Qwen3-VL 4B và đối chiếu fact claim để sinh Coverage Ledger.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        Text("Trích xuất frame offline, suy luận VLM Qwen3-VL 4B tuần tự (RAM < 4 GB) để đối chiếu fact claim và sinh Coverage Ledger.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         } else {
@@ -1748,6 +1890,38 @@ struct MediaSectionView: View {
                         StatusPill(text: "\(state.imageCount) ảnh đính kèm", color: state.imageCount > 0 ? .indigo : .secondary)
                         StatusPill(text: "Tổng: \(ByteCountFormatter.string(fromByteCount: state.totalFolderBytes, countStyle: .file))", color: .secondary)
                         Spacer()
+
+                        if state.videoCount > 0 {
+                            if state.isBatchAnalysisRunning {
+                                HStack(spacing: 8) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Đang phân tích \(state.batchCurrentIndex)/\(state.batchTotalCount): \(state.batchCurrentFilename)")
+                                        .font(.caption.monospacedDigit())
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .frame(maxWidth: 240)
+                                    Button("Dừng", role: .destructive) {
+                                        state.cancelBatchAnalysis()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.mini)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.brandTeal.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            } else {
+                                Button {
+                                    Task { await state.runG2AnalysisOnAllVideos() }
+                                } label: {
+                                    Label("Phân tích toàn bộ (\(state.videoCount) video)", systemImage: "sparkles.tv")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                .disabled(state.isRunningG2Analysis || !state.isWorkerConnected)
+                                .help("Phân tích tuần tự toàn bộ video trong thư mục bằng Qwen3-VL 4B local")
+                            }
+                        }
+
                         if state.isSecurityScoped {
                             HStack(spacing: 4) {
                                 Image(systemName: "lock.shield.fill").foregroundStyle(.green)
@@ -2146,14 +2320,38 @@ struct G2ReviewSectionView: View {
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(.secondary)
                     Spacer()
-                    Button("Chạy phân tích G2 trên video đã chọn") {
-                        Task {
-                            await state.runG2AnalysisOnSelectedSource()
+                    if state.isBatchAnalysisRunning {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Đang phân tích \(state.batchCurrentIndex)/\(state.batchTotalCount): \(state.batchCurrentFilename)")
+                                .font(.caption.monospacedDigit())
+                            Button("Dừng", role: .destructive) {
+                                state.cancelBatchAnalysis()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    } else {
+                        Button("Phân tích video đã chọn") {
+                            Task {
+                                await state.runG2AnalysisOnSelectedSource()
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(!state.isWorkerConnected || state.selectedFilePath.isEmpty || state.isRunningG2Analysis)
+
+                        if state.videoCount > 1 {
+                            Button("Phân tích toàn bộ (\(state.videoCount) video)") {
+                                Task {
+                                    await state.runG2AnalysisOnAllVideos()
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .disabled(!state.isWorkerConnected || state.isRunningG2Analysis)
                         }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(!state.isWorkerConnected || state.selectedFilePath.isEmpty || state.isRunningG2Analysis)
                 }
 
                 ForEach(state.g2ReviewItems) { item in

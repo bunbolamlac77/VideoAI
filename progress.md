@@ -99,6 +99,23 @@
   - 21/21 AutoBridge tests PASS.
   - Cả hai mô hình G0 & S11 đều 100% Verified.
 
+## 2026-11-10 — Batch G2 Sequential Video Analysis (Phân Tích Toàn Bộ Video Theo Hàng Đợi An Toàn RAM)
+- **Kiến trúc & Ngân sách RAM 16 GB**:
+  - Không chạy song song nhiều mô hình VLM Qwen3-VL 4B đồng thời vì mỗi model + context + frame đệm chiếm ~3.5–4 GB RAM, chạy song song 15 video 4K (76 GB) sẽ đòi hỏi >50 GB RAM gây tràn RAM (OOM Crash / Kernel Panic).
+  - Áp dụng kiến trúc **Sequential Queue Processing (Hàng đợi tuần tự)**: Phân tích từng video $\to$ ghi nhận Coverage Ledger, Raw Observations, Fact Claims và Review Items vào SQLite canonical qua `ProjectStore` $\to$ giải phóng đệm frame và tensor $\to$ chuyển tiếp sang video kế tiếp. Mức RAM duy trì ổn định $\le 4$ GB.
+- **AppState & Quản Lý Tiến Trình Hàng Đợi**:
+  - Bổ sung `isBatchAnalysisRunning`, `batchTotalCount`, `batchCurrentIndex`, `batchCurrentFilename`, `batchCompletedCount`, `batchFailedCount`, `batchCancelRequested`.
+  - Tách hàm dùng chung `analyzeSingleSource(...)`, bổ sung `runG2AnalysisOnAllVideos()`, `cancelBatchAnalysis()` và `refreshG2State(...)`.
+  - Tự động fallback khởi tạo `initializeG1ProjectStore()` nếu cơ sở dữ liệu chưa sẵn sàng khi người dùng ấn nút từ tab Tư liệu nguồn.
+  - Cập nhật con trỏ `selectedFilePath` theo từng bước của hàng đợi để UI tự động cuộn và làm nổi bật video đang được xử lý trong danh sách.
+- **Tích Hợp Giao Diện Chuẩn macOS Calm Editor**:
+  - **Thẻ thư mục nguồn (`folderBannerCard`)**: Thêm nút nổi bật "Phân tích toàn bộ (N video)" cạnh các pill trạng thái; tự động chuyển sang thanh tiến trình trực tiếp (Progress bar + Tên video hiện tại + Nút Dừng) khi đang phân tích hàng đợi.
+  - **Inspector kỹ thuật video (`MediaInspectorView`)**: Bổ sung bộ nút đôi "Phân tích video này" và "Phân tích toàn bộ (N video)"; khi đang phân tích hiển thị card tiến độ chi tiết và nút dừng an toàn.
+  - **Bảng kiểm chứng Gate G2 (`G2VerificationSectionView`)**: Tích hợp nút phân tích toàn bộ và chỉ số tiến trình đồng bộ.
+- **Kiểm Thử & Biên Dịch Nghiệm Thu**:
+  - Biên dịch macOS Swift 6 App Bundle thành công: `apps/macos/build/AIVideo.app`.
+  - Toàn bộ 152 test Python và 15 test suite Swift đạt PASS 100%.
+
 
 ## 2026-11-10 — Senior review pass (AppState robustness)
 - Directory scan moved off MainActor (`scanDirectoryAsync`/`loadDirectory`), guarded against folder switch races.

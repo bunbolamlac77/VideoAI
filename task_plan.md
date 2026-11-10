@@ -33,3 +33,7 @@ Hoàn thiện toàn bộ các khuyến nghị từ báo cáo thẩm định đ�
   - Security-Scoped Bookmark bền vững trên thư mục gốc cho phép truy cập toàn bộ file con trong sandbox macOS.
   - UI Calm Editor phân chia rõ rệt: Thẻ thư mục với video/image count & dung lượng, segmented filter (Tất cả / Video / Ảnh), ô tìm kiếm nhanh, danh sách scrollable có highlight & context menu, và inspector panel hiển thị thông số ffprobe + nút "Chạy phân tích G2 trên video này" (khi chọn video) hoặc khung xem ảnh native `LocalImagePreview` kèm thông tin kích thước và ghi chú bối cảnh (khi chọn ảnh).
   - Tích hợp phím tắt `⌘O` (Mở thư mục) và `⇧⌘O` (Mở file riêng lẻ), đăng ký Spotlight `/Applications/AIVideo.app`.
+- [x] **Batch G2 Sequential Video Analysis (Phân Tích Toàn Bộ Video)**:
+  - Giải quyết bài toán phân tích hàng loạt video trong thư mục mà không làm tràn bộ nhớ 16 GB Unified RAM của Apple Silicon M1 Pro.
+  - Xử lý hàng đợi tuần tự (Sequential Queue): Tự động duyệt qua từng video, suy luận VLM Qwen3-VL 4B local, trích xuất quan sát, lập Coverage Ledger và đối chiếu claim vào SQLite canonical qua `ProjectStore`.
+  - Cập nhật live giao diện: Thẻ thư mục (`folderBannerCard`), Inspector (`MediaInspectorView`) và Tab Kiểm chứng G2 (`G2VerificationSectionView`) với nút "Phân tích toàn bộ (N video)", hiển thị tiến trình đang chạy (video thứ k/N + tên video), và nút "Dừng" an toàn.

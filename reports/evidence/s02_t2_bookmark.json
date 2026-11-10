@@ -1,12 +1,12 @@
 {
+  "timestamp" : "2026-11-10T02:39:13Z",
+  "repick_action_offered" : true,
+  "error_message_offered" : "Quyền truy cập file đã cũ (stale bookmark). Vui lòng chọn lại file để tái cấp quyền.",
+  "testcase_id" : "S02.T2",
   "bookmark_created" : true,
-  "requirement_id" : "UI-19",
-  "timestamp" : "2026-11-10T01:36:05Z",
+  "bookmark_resolved_on_reopen" : true,
   "stale_or_revoked_detected" : true,
   "details" : "Verified bookmarkData persistence across quit\/reopen, successful URL resolution, and explicit detection of stale\/revoked permissions triggering user re-pick prompt.",
-  "error_message_offered" : "Quyền truy cập file đã cũ (stale bookmark). Vui lòng chọn lại file để tái cấp quyền.",
-  "repick_action_offered" : true,
-  "bookmark_resolved_on_reopen" : true,
-  "testcase_id" : "S02.T2",
+  "requirement_id" : "UI-19",
   "status" : "PASS"
 }
