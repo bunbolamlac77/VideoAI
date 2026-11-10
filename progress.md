@@ -227,3 +227,12 @@
 - Đo lại suy luận: 1 ảnh ≈ 12.6 s, 2 ảnh ≈ 24 s, 4 ảnh ≈ 53 s → **0.28 s/cửa sổ trong findings cũ là sai**.
 
 **Còn mở**: benchmark vẫn chấm claim/event trên nhãn synthetic (chưa có nhãn người); throughput 2 ảnh/cửa sổ ≈ 2.5 giờ cho clip 60 s.
+
+## 2026-11-10 — ECC Wave C: single-writer, publication binding, Ed25519 pin
+
+- **Single writer (D06)**: G3/G4/G5 approval extensions không còn mở SQLite connection riêng; dùng `withCanonicalTransaction` của `ProjectStore`. 7 bảng gate chuyển vào `initializeGateSchema`.
+- **Publication integrity (P1-1)**: `commitPublication` bind `job_id`/`attempt_id`/`fencing_token` và băm lại bytes; test S08.T4 (cross-job) và S08.T5 (tamper sau verify) chứng minh từ chối.
+- **Reconciler (P1-3)**: S08.T6 chứng minh job còn artifact PREPARED không bị đánh SUCCEEDED.
+- **Ed25519 pin (D07)**: key cố định + fingerprint pin + `key_id`; `AIVIDEO_CONTRACTS_DIR` không thể redirect. Test: key khác (dù hợp lệ) bị từ chối; chưa pin → không chứng nhận.
+- Guard cấu trúc mới: `tests/test_wave_c_invariants.py` (5 test) chặn tái phạm single-writer và env override.
+- **Nghiệm thu**: 173 Python PASS · 0 FAIL · 1 SKIP; 16 nhóm Swift suite PASS; `run_tests.sh` EXIT=0; app build + codesign OK.

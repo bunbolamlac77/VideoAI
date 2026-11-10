@@ -90,3 +90,10 @@
 - **Payload budget**: frame-id list > 4096 phần tử được thay bằng `frame_id_ranges` + `frame_ids_truncated = true`; Swift DTO mở rộng range trước khi lưu SQLite.
 - **Checkpoint**: fingerprint tăng `schema_version = 2` + `analysis_contract = "declared-sampling-v2"`, nên checkpoint cũ không thể resume âm thầm với kết quả của hợp đồng cũ.
 - **Benchmark**: bỏ hằng số coverage `(1200, 1200)` khỏi fixture (đổi tên `synthetic_coverage_by_group`); real-corpus chỉ là `SMOKE_ONLY`, `real_video_corpus_verified = False`, `acceptance_eligible = False`. Test real-corpus nặng chỉ chạy khi `AIVIDEO_RUN_HEAVY_G2=1`.
+
+## 10. Wave C — Toàn vẹn ghi & gốc tin cậy (2026-11-10)
+- **Một connection ghi duy nhất**: `withG3/G4/G5Transaction` trước đây tự `sqlite3_open_v2` và tự `CREATE TABLE` mỗi lần gọi (4 connection, schema ngoài migration). Nay chúng dùng `ProjectStore.withCanonicalTransaction` trên đúng handle của actor; 7 bảng gate được tạo một lần trong `initializeGateSchema`.
+- **Publication gắn với job/attempt**: `commitPublication` kiểm tra `job_id`/`attempt_id`/`fencing_token` của publication khớp caller, và **băm lại SHA-256 file canonical** trước khi chuyển COMMITTED. Trước đó chỉ cần file tồn tại.
+- **Reconciler**: chỉ đánh `SUCCEEDED` khi **toàn bộ** publication của job đã COMMITTED (`SUM(committed) = COUNT(*)`), không còn "1 artifact là xong".
+- **Gốc tin cậy Ed25519**: key lấy từ đường dẫn cố định `contracts/field_qa_ed25519_public_key.pem`, bị **pin bằng SHA-256 fingerprint** (`PINNED_FIELD_QA_KEY_SHA256`) và `key_id = aivideo-field-qa-v1`; `AIVIDEO_CONTRACTS_DIR` không còn điều khiển được đường dẫn key. Khi chưa provision key thật, chứng nhận E0/E1 **không khả dụng** (fail-closed) — đúng trạng thái hiện tại của repo.
+- **Bằng chứng**: 173 Python test PASS (1 skip), 16 nhóm Swift suite PASS, app build + codesign OK.

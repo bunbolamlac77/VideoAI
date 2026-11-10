@@ -5,7 +5,7 @@
 **Size tier:** **large** — cross-cutting (Python pipeline contract, benchmark, Swift stores, tests, docs), có thay đổi contract nội bộ và open questions.
 **Phase mask:** 0 → 1 (light) → 2 → **GATE 1** → 4 (TDD) → 5 → 6 → **GATE 2**
 
-**Trạng thái:** Wave A+B hoàn tất (T01–T05, 4 commit). Wave C–E còn mở.
+**Trạng thái:** Wave A+B+C hoàn tất (T01–T10). Wave D–E còn mở.
 
 ---
 
@@ -69,10 +69,10 @@
 ### Wave C — Toàn vẹn SQLite & phát hành (D06, D07, D09–D11)
 | Task | Red test | Thay đổi | Nghiệm thu |
 |---|---|---|---|
-| **T07** Single-writer | `test_only_project_store_opens_sqlite` (static) + `test_g3_g4_g5_use_shared_handle` | G3/G4/G5 dùng handle/transaction của `ProjectStore`; DDL vào `initializeSchema` + migration `002`; bỏ `BEGIN IMMEDIATE` khỏi read | 1 connection; `user_version` tăng; 15 Swift suite vẫn xanh |
-| **T08** Publication binding | `test_commit_rejects_foreign_job`, `test_commit_rejects_hash_mismatch` | `commitPublication` bind `project/job/attempt/fencing`, re-hash file | Publication của project khác bị từ chối |
-| **T09** Reconciler | `test_reconciler_requires_all_artifacts` | Yêu cầu đủ artifact set | Thiếu 1 artifact → không SUCCEEDED |
-| **T10** Ed25519 pin | `test_foreign_key_cannot_certify`, `test_key_path_override_ignored` | Key trong bundle + `key_id`; bỏ `AIVIDEO_CONTRACTS_DIR` cho key | Key khác → fail |
+| ✅ **T07** Single-writer | `test_only_project_store_opens_sqlite` (static) + `test_g3_g4_g5_use_shared_handle` | G3/G4/G5 dùng handle/transaction của `ProjectStore`; DDL vào `initializeSchema` + migration `002`; bỏ `BEGIN IMMEDIATE` khỏi read | 1 connection; `user_version` tăng; 15 Swift suite vẫn xanh |
+| ✅ **T08** Publication binding | `test_commit_rejects_foreign_job`, `test_commit_rejects_hash_mismatch` | `commitPublication` bind `project/job/attempt/fencing`, re-hash file | Publication của project khác bị từ chối |
+| ✅ **T09** Reconciler | `test_reconciler_requires_all_artifacts` | Yêu cầu đủ artifact set | Thiếu 1 artifact → không SUCCEEDED |
+| ✅ **T10** Ed25519 pin | `test_foreign_key_cannot_certify`, `test_key_path_override_ignored` | Key trong bundle + `key_id`; bỏ `AIVIDEO_CONTRACTS_DIR` cho key | Key khác → fail |
 
 ### Wave D — Luồng người dùng & trung thực (D12–D17)
 | Task | Việc | Nghiệm thu |
