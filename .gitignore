@@ -115,3 +115,8 @@ logs/
 !fixtures/**/*.md
 !fixtures/**/*.json
 !fixtures/**/*.txt
+
+# Generated test evidence (rewritten by tools/run_tests.sh; never hand-edited)
+reports/evidence/s02_t1_finder_launch.json
+reports/evidence/s02_t2_bookmark.json
+reports/evidence/s02_worker_bundle.json

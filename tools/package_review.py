@@ -352,9 +352,10 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
         try:
             with open(s02_t1_evidence, "r", encoding="utf-8") as ef:
                 ev = json.load(ef)
-            t1_status = "PASS" if ev.get("status") == "PASS" else "FAIL"
+            recorded = ev.get("status")
+            t1_status = "PASS" if recorded == "PASS" else ("NOT_RUN" if recorded == "NOT_RUN" else "FAIL")
             t1_obs = ev.get("details", "Verified from recorded evidence")
-            t1_exit = 0 if t1_status == "PASS" else 1
+            t1_exit = 0 if t1_status == "PASS" else (2 if t1_status == "NOT_RUN" else 1)
         except Exception:
             t1_status = "FAIL"
             t1_obs = "Evidence file corrupted"
@@ -381,9 +382,10 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
         try:
             with open(s02_t2_evidence, "r", encoding="utf-8") as ef:
                 ev = json.load(ef)
-            t2_status = "PASS" if ev.get("status") == "PASS" else "FAIL"
+            recorded = ev.get("status")
+            t2_status = "PASS" if recorded == "PASS" else ("NOT_RUN" if recorded == "NOT_RUN" else "FAIL")
             t2_obs = ev.get("details", "Verified from recorded evidence")
-            t2_exit = 0 if t2_status == "PASS" else 1
+            t2_exit = 0 if t2_status == "PASS" else (2 if t2_status == "NOT_RUN" else 1)
         except Exception:
             t2_status = "FAIL"
             t2_obs = "Evidence file corrupted"
