@@ -96,7 +96,9 @@ class AuditGateTests(unittest.TestCase):
             public_pem = private.public_key().public_bytes(
                 serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
             )
-            (root / "contracts" / "field_qa_ed25519_public_key.pem").write_bytes(public_pem)
+            key_path = root / "contracts" / "field_qa_ed25519_public_key.pem"
+            key_path.write_bytes(public_pem)
+            pin = hashlib.sha256(public_pem).hexdigest()
             trips = []
             for i in range(5):
                 content = f"heldout-sample-{i}".encode()
@@ -106,12 +108,26 @@ class AuditGateTests(unittest.TestCase):
             payload = {"schema": "aivideo-signed-field-corpus-manifest-v1", "corpus_scope": {"held_out_trips": trips}}
             manifest = dict(payload)
             manifest["signing_authority"] = {
+                "key_id": "aivideo-field-qa-v1",
                 "algorithm": "ed25519",
                 "signature": base64.b64encode(private.sign(g5_release_audit.canon(payload))).decode("ascii"),
             }
-            with mock.patch("aivideo_workers.runtime_paths.resolve_s11_registry", return_value=root / "contracts" / "s11_model_registry.lock.json"):
+            with mock.patch.object(g5_release_audit, "_QA_PUBLIC_KEY_PATH", key_path), \
+                 mock.patch.object(g5_release_audit, "PINNED_FIELD_QA_KEY_SHA256", pin):
                 self.assertTrue(g5_release_audit.validate_signed_field_manifest(manifest, corpus_dir=corpus))
                 (corpus / "trip-0.mp4").write_bytes(b"changed")
+                self.assertFalse(g5_release_audit.validate_signed_field_manifest(manifest, corpus_dir=corpus))
+            # A different but valid key can never certify unless its fingerprint is pinned.
+            other_pem = Ed25519PrivateKey.generate().public_key().public_bytes(
+                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+            )
+            key_path.write_bytes(other_pem)
+            with mock.patch.object(g5_release_audit, "_QA_PUBLIC_KEY_PATH", key_path), \
+                 mock.patch.object(g5_release_audit, "PINNED_FIELD_QA_KEY_SHA256", pin):
+                self.assertFalse(g5_release_audit.validate_signed_field_manifest(manifest, corpus_dir=corpus))
+            # Unprovisioned trust anchor: certification is unavailable by design.
+            with mock.patch.object(g5_release_audit, "_QA_PUBLIC_KEY_PATH", key_path), \
+                 mock.patch.object(g5_release_audit, "PINNED_FIELD_QA_KEY_SHA256", ""):
                 self.assertFalse(g5_release_audit.validate_signed_field_manifest(manifest, corpus_dir=corpus))
 
     def test_untrusted_team_id_rejected_in_release_preflight(self):

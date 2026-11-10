@@ -32,6 +32,15 @@ from . import runtime_paths
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
+# 2026-11-10 fix (D07): the QA trust anchor must be pinned, not discovered at runtime.
+# `PINNED_FIELD_QA_KEY_SHA256` is provisioned out-of-band when a real QA key is issued;
+# while it is empty, E0/E1 field certification is unavailable by design (fail-closed).
+# The path deliberately ignores AIVIDEO_CONTRACTS_DIR so an environment variable can no
+# longer redirect signature verification to a caller-supplied key.
+FIELD_QA_KEY_ID = "aivideo-field-qa-v1"
+PINNED_FIELD_QA_KEY_SHA256 = ""
+_QA_PUBLIC_KEY_PATH = PROJECT_ROOT / "contracts" / "field_qa_ed25519_public_key.pem"
+
 
 def run_commit_boundary_fault_suite(params: dict[str, Any] | None = None) -> dict[str, Any]:
     """Execute deterministic fault injection across 5 commit boundaries (S25.1..S25.2, S25.T1..S25.T3)."""
@@ -190,12 +199,23 @@ def validate_signed_field_manifest(
     try:
         import base64
         from cryptography.hazmat.primitives import serialization
-        contracts_reg = runtime_paths.resolve_s11_registry()
-        contracts_dir = contracts_reg.parent if hasattr(contracts_reg, "parent") else Path(contracts_reg).parent
-        pubkey_path = contracts_dir / "field_qa_ed25519_public_key.pem"
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        # The trust anchor is pinned: no key at all means no certification, and a
+        # substituted (even valid) key cannot certify unless its fingerprint matches.
+        if not PINNED_FIELD_QA_KEY_SHA256:
+            return False
+        if str(signing.get("key_id", "")) != FIELD_QA_KEY_ID:
+            return False
+        pubkey_path = _QA_PUBLIC_KEY_PATH
         if not pubkey_path.is_file():
             return False
-        pubkey = serialization.load_pem_public_key(pubkey_path.read_bytes())
+        pem_bytes = pubkey_path.read_bytes()
+        if hashlib.sha256(pem_bytes).hexdigest() != PINNED_FIELD_QA_KEY_SHA256:
+            return False
+        pubkey = serialization.load_pem_public_key(pem_bytes)
+        if not isinstance(pubkey, Ed25519PublicKey):
+            return False
         sig_bytes = base64.b64decode(sig)
         pubkey.verify(sig_bytes, canon(payload))
     except Exception:

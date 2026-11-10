@@ -172,18 +172,34 @@ class P0IntegrityTests(unittest.TestCase):
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PublicFormat.SubjectPublicKeyInfo,
             )
-            contracts_dir = cdir / "contracts"
-            contracts_dir.mkdir(parents=True, exist_ok=True)
-            (contracts_dir / "field_qa_ed25519_public_key.pem").write_bytes(pub_pem)
-            lock_file = contracts_dir / "s11_model_registry.lock.json"
-            lock_file.write_text("{}", encoding="utf-8")
+            key_path = cdir / "field_qa_ed25519_public_key.pem"
+            key_path.write_bytes(pub_pem)
+            pin = hashlib.sha256(pub_pem).hexdigest()
+            manifest["signing_authority"]["key_id"] = "aivideo-field-qa-v1"
 
             payload = {k: v for k, v in manifest.items() if k != "signing_authority"}
             sig_bytes = priv_key.sign(canon(payload))
             manifest["signing_authority"]["signature"] = base64.b64encode(sig_bytes).decode("ascii")
 
-            with mock.patch("aivideo_workers.runtime_paths.resolve_s11_registry", return_value=lock_file):
+            from aivideo_workers import g5_release_audit as audit
+            with mock.patch.object(audit, "_QA_PUBLIC_KEY_PATH", key_path), \
+                 mock.patch.object(audit, "PINNED_FIELD_QA_KEY_SHA256", pin):
                 self.assertTrue(validate_signed_field_manifest(manifest, corpus_dir=cdir, enforce_signature=True))
+
+            # No pinned anchor -> certification unavailable (production default).
+            with mock.patch.object(audit, "_QA_PUBLIC_KEY_PATH", key_path), \
+                 mock.patch.object(audit, "PINNED_FIELD_QA_KEY_SHA256", ""):
+                self.assertFalse(validate_signed_field_manifest(manifest, corpus_dir=cdir, enforce_signature=True))
+
+            # A substituted but valid key must not certify.
+            other_pem = ed25519.Ed25519PrivateKey.generate().public_key().public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            key_path.write_bytes(other_pem)
+            with mock.patch.object(audit, "_QA_PUBLIC_KEY_PATH", key_path), \
+                 mock.patch.object(audit, "PINNED_FIELD_QA_KEY_SHA256", pin):
+                self.assertFalse(validate_signed_field_manifest(manifest, corpus_dir=cdir, enforce_signature=True))
 
 
 if __name__ == "__main__":
