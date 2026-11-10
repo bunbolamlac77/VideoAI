@@ -124,3 +124,13 @@ test(s02): stop self-certifying manual evidence                [T12]
 | Bỏ path cứng, thêm `AIVIDEO_PYTHON`, guard hygiene | ✅ |
 | Toggle prefilter trong UI | ✅ |
 | CI build app + chạy full harness + zero-warning gate | ✅ |
+
+## Wave F — Bàn giao thật
+| Task | Trạng thái |
+|---|---|
+| Provision Ed25519 + ký manifest thật | ✅ |
+| Nhãn 5 clip (trung thực, không giả human) | ✅ |
+| Chặn certification nếu không human+field | ✅ |
+| Resolve acceptance thật (timeline + DRP) | ✅ |
+| G4/G5 e2e | ⛔ chặn bởi VieNeu-TTS |
+| Push + CI run | ⏳ sau commit |

@@ -122,3 +122,10 @@
 - **Prefilter UI**: toggle "Bỏ qua cảnh tĩnh" ở thẻ thư mục, mặc định tắt, truyền qua `G2AnalyzeSourceParams.prefilter` → `g2.analyze_source`.
 - **CI thật**: workflow cũ chỉ `swiftc -frontend -parse` + 1 suite; nay cài ffmpeg, export `AIVIDEO_PYTHON`, **build app** (fail nếu có `warning:`), và chạy **toàn bộ** `tools/run_tests.sh` (205 Python + 17 nhóm Swift).
 - **Bằng chứng**: 205 Python PASS (1 skip), ma trận `run_tests.sh` EXIT=0, app build 0 warning.
+
+## 14. Wave F — Khoá QA thật, nhãn trung thực, Resolve thật (2026-11-10)
+- **Ed25519 đã provision**: private key tại `~/.aivideo-qa/field_qa_ed25519_private.pem` (0600, ngoài repo); public key `contracts/field_qa_ed25519_public_key.pem`; fingerprint pin `9c7edbdd…a179` trong `g5_release_audit.py`. `tests/test_qa_anchor_invariants.py` chặn lệch pin hoặc commit private key.
+- **Manifest cũ là đồ giả**: `signed_field_corpus_manifest.json` trước đây có hash dạng mẫu và duration 1820 s trong khi clip thật 1.5 s — xác thực chữ ký trả `False`. Nay `tools/sign_field_corpus.py` sinh manifest từ file thật + nhãn, ký bằng key thật; `--verify` trả `True`.
+- **Nhãn trung thực**: 5 clip trong `fixtures/corpus` là **title card tĩnh** (đã xem frame), không phải footage thực địa. Nhãn ghi `labeler_type=agent_visual_review`, `source_kind=synthetic_title_card`, không có claim/event. `corpus_labels.summarize_label_eligibility` trả `acceptance_eligible=False`; `evaluate_e0_e1_accounting` và preflight đều từ chối chứng nhận với blocker `CORPUS_KIND_NOT_FIELD`, `LABELS_NOT_HUMAN`, `NOT_FIELD_FOOTAGE`.
+- **Resolve thật**: `run_g0_spike` chạy trên DaVinci Resolve Studio 21.2.0 đang mở — tạo project riêng, timeline 2160×3840@24, đúng 240 frame, title track 2, render settings, save + reopen, export DRP 26 KB. Bằng chứng: `reports/evidence/resolve_g0_real_run.json`.
+- **G4/G5 end-to-end vẫn bị chặn**: S20 cần `approved_plan` từ G3, mà G3 cần WAV thoại thật; VieNeu-TTS chưa cài nên `g3.voice.trial` trả `blocked_tts_runtime_unavailable`. Đây là phụ thuộc thật, không phải lỗi Resolve.

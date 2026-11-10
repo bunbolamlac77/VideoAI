@@ -263,3 +263,11 @@
 - CI: ffmpeg, `AIVIDEO_PYTHON`, build app với zero-warning gate, chạy full `run_tests.sh`.
 - Guard mới `tests/test_source_hygiene.py` (6 ca): path tuyệt đối, kích thước file, wiring prefilter, CI contract.
 - Nghiệm thu: 205 Python PASS · 0 FAIL · 1 SKIP; matrix EXIT=0.
+
+## 2026-11-10 — Wave F: QA key, labels, Resolve acceptance
+
+- Provision Ed25519 keypair ngoài repo; pin fingerprint; tool ký `tools/sign_field_corpus.py`; thay manifest giả bằng manifest ký thật.
+- Tạo nhãn cho 5 clip (`fixtures/corpus/labels/`) với `agent_visual_review` + `synthetic_title_card`; thêm `corpus_labels.py` và chặn certification nếu không phải human + field footage.
+- Resolve acceptance thật: G0 spike trên Resolve Studio 21.2.0, DRP 26 KB, evidence `reports/evidence/resolve_g0_real_run.json`.
+- G4/G5 e2e: bị chặn bởi VieNeu-TTS chưa cài (không có WAV → không có G3 approval).
+- Tests mới: `tests/test_corpus_labels.py` (7 ca) + cập nhật anchor invariants.
