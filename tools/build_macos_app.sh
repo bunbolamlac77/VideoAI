@@ -123,6 +123,7 @@ swiftc -sdk "$SDK_PATH" \
   packages/AIVideoCore/Sources/Publication/G4FilePublisher.swift \
   packages/AIVideoCore/Sources/Recovery/BackupRestoreService.swift \
   packages/AIVideoCore/Sources/Media/MediaIndexer.swift \
+  packages/AIVideoCore/Sources/Media/SourceRevisionIdentity.swift \
   packages/AIVideoCore/Sources/Adapters/ModelAdapterContracts.swift \
   packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
   packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \

@@ -111,10 +111,37 @@ class P0IntegrityTests(unittest.TestCase):
             manifest["signing_authority"]["signature"] = compute_field_manifest_signature(manifest)
             self.assertFalse(validate_signed_field_manifest(manifest, corpus_dir=cdir, enforce_signature=True))
 
+    def test_forged_hmac_manifest_strictly_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            cdir = Path(td)
+            trips = [{"trip_id": f"t{i}", "sha256": "0" * 64} for i in range(5)]
+            manifest = {
+                "schema": "aivideo-signed-field-corpus-manifest-v1",
+                "corpus_scope": {"held_out_trips": trips},
+                "signing_authority": {
+                    "key_id": "aivideo-field-qa-signing-key-v1",
+                    "algorithm": "hmac-sha256",
+                    "signature": "fake",
+                },
+            }
+            manifest["signing_authority"]["signature"] = compute_field_manifest_signature(manifest)
+            # Even with mathematically correct HMAC signature, it must be rejected!
+            self.assertFalse(validate_signed_field_manifest(manifest, corpus_dir=cdir, enforce_signature=True))
+
     def test_validly_signed_field_manifest_passes_verification(self):
+        try:
+            from cryptography.hazmat.primitives.asymmetric import ed25519
+            from cryptography.hazmat.primitives import serialization
+        except ImportError:
+            self.skipTest("cryptography not installed in current Python environment")
+
         with tempfile.TemporaryDirectory() as td:
             cdir = Path(td)
             import hashlib
+            from unittest import mock
+            import base64
+            from aivideo_workers.g5_release_audit import canon
+
             trips = []
             for i in range(5):
                 vfile = cdir / f"t{i}.mp4"
@@ -122,17 +149,35 @@ class P0IntegrityTests(unittest.TestCase):
                 vfile.write_bytes(data)
                 h = hashlib.sha256(data).hexdigest()
                 trips.append({"trip_id": f"t{i}", "sha256": h})
+
             manifest = {
                 "schema": "aivideo-signed-field-corpus-manifest-v1",
                 "corpus_scope": {"held_out_trips": trips},
                 "signing_authority": {
-                    "key_id": "aivideo-field-qa-signing-key-v1",
-                    "algorithm": "hmac-sha256",
+                    "key_id": "field_qa_ed25519_public_key.pem",
+                    "algorithm": "ed25519",
                     "signature": "",
                 },
             }
-            manifest["signing_authority"]["signature"] = compute_field_manifest_signature(manifest)
-            self.assertTrue(validate_signed_field_manifest(manifest, corpus_dir=cdir, enforce_signature=True))
+
+            priv_key = ed25519.Ed25519PrivateKey.generate()
+            pub_key = priv_key.public_key()
+            pub_pem = pub_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            contracts_dir = cdir / "contracts"
+            contracts_dir.mkdir(parents=True, exist_ok=True)
+            (contracts_dir / "field_qa_ed25519_public_key.pem").write_bytes(pub_pem)
+            lock_file = contracts_dir / "s11_model_registry.lock.json"
+            lock_file.write_text("{}", encoding="utf-8")
+
+            payload = {k: v for k, v in manifest.items() if k != "signing_authority"}
+            sig_bytes = priv_key.sign(canon(payload))
+            manifest["signing_authority"]["signature"] = base64.b64encode(sig_bytes).decode("ascii")
+
+            with mock.patch("aivideo_workers.runtime_paths.resolve_s11_registry", return_value=lock_file):
+                self.assertTrue(validate_signed_field_manifest(manifest, corpus_dir=cdir, enforce_signature=True))
 
 
 if __name__ == "__main__":

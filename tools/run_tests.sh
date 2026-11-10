@@ -58,11 +58,10 @@ swiftc -sdk "$SDK_PATH" \
 
 echo "=== [3/4] Running Python Framing & Model Setup Unit Tests ==="
 PYTHON_BIN="python3"
-DEDICATED_PY="$HOME/Library/Application Support/AIVideo/Runtimes/g0-mlx-runtime/bin/python3"
-if [ -x "$DEDICATED_PY" ]; then
-    PYTHON_BIN="$DEDICATED_PY"
-elif [ -x "workers/.venv/bin/python3" ]; then
+if [ -x "workers/.venv/bin/python3" ]; then
     PYTHON_BIN="workers/.venv/bin/python3"
+elif [ -x "$HOME/Library/Application Support/AIVideo/Runtimes/g0-mlx-runtime/bin/python3" ]; then
+    PYTHON_BIN="$HOME/Library/Application Support/AIVideo/Runtimes/g0-mlx-runtime/bin/python3"
 fi
 
 "$PYTHON_BIN" tools/run_python_tests.py
@@ -154,11 +153,22 @@ swiftc -sdk "$SDK_PATH" \
   -swift-version 6 \
   -parse-as-library \
   packages/AIVideoCore/Sources/Media/MediaIndexer.swift \
+  packages/AIVideoCore/Sources/Media/SourceRevisionIdentity.swift \
   packages/AIVideoCore/Sources/Adapters/ModelAdapterContracts.swift \
   tests/test_s10_s11_g2_foundations.swift \
   -o build/tests/test_s10_s11_g2_foundations
 
 ./build/tests/test_s10_s11_g2_foundations
+
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Media/SourceRevisionIdentity.swift \
+  tests/test_source_revision_identity.swift \
+  -o build/tests/test_source_revision_identity
+
+./build/tests/test_source_revision_identity
 
 echo "=== [11/15] Running Swift Gate G2 S12..S15 Analysis, Verifier & Review Closure Tests ==="
 swiftc -sdk "$SDK_PATH" \

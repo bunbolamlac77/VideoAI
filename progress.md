@@ -134,3 +134,28 @@
 - MediaIndexer: reject timeBaseDen <= 0 / negative duration before `try!` RationalTime paths.
 - Worker: protocol stdout isolated (fd dup) so stray prints (Resolve/mlx) can't corrupt JSON-RPC; results > 1 MiB return `RESULT_TOO_LARGE` error instead of breaking framing.
 - New test tests/test_worker_stdout_isolation.py. Evidence: 135 tests OK (1 skipped), build+install OK.
+
+## 2026-11-10 — Round 2 Audit Remediation (P0 Ed25519 Enforcement, SHA-256 Fingerprinting & Team ID Guard)
+- **P0 Cryptographic Authority Enforcement (Loại bỏ triệt để HMAC giả mạo)**:
+  - Cập nhật [`g5_release_audit.py`](file:///Users/phuthanh/APP_CaNhan/AIVideo/workers/src/aivideo_workers/g5_release_audit.py): `validate_signed_field_manifest` bắt buộc `algo == "ed25519"`, loại bỏ hoàn toàn việc công nhận HMAC vốn dùng khoá công khai trong source.
+  - Cập nhật [`check_readiness.py`](file:///Users/phuthanh/APP_CaNhan/AIVideo/tools/check_readiness.py): `check_field_corpus_and_certification` kiểm tra `algo == "ed25519"`. Mọi manifest giả mạo bằng HMAC đều bị từ chối triệt để (fail-closed: `UNVERIFIED_INPUT_REQUIRES_SIGNED_FIELD_CORPUS`).
+  - Thêm bài kiểm tra đối kháng `test_forged_hmac_manifest_fails_check_readiness` và `test_forged_hmac_manifest_strictly_rejected`.
+- **Apple Developer Team ID Preflight Guard**:
+  - `check_app_bundle` trong [`check_readiness.py`](file:///Users/phuthanh/APP_CaNhan/AIVideo/tools/check_readiness.py) kiểm tra biến môi trường `AIVIDEO_RELEASE_TEAM_ID`. Khi cấu hình phát hành, các bản build adhoc hoặc sai Team ID bị chặn phát hành chính thức (`passed = False`).
+  - Thêm test `test_untrusted_team_id_rejected_in_release_preflight`.
+- **Định Danh Video Nguồn Bằng Băm SHA-256 (`SourceRevisionIdentity.swift`)**:
+  - Tạo mới [`SourceRevisionIdentity.swift`](file:///Users/phuthanh/APP_CaNhan/AIVideo/packages/AIVideoCore/Sources/Media/SourceRevisionIdentity.swift) tính băm SHA-256 theo chunk 1 MB qua CryptoKit, kiểm tra trạng thái file trước và sau đọc (kích thước, mtime, regular file).
+  - Tích hợp vào [`AIVideoApp.swift`](file:///Users/phuthanh/APP_CaNhan/AIVideo/apps/macos/Sources/AIVideoApp.swift) chạy trong `Task.detached` ngoài MainActor để bảo đảm UI không bị giật lag trên các file 4K dung lượng lớn.
+  - Đối chiếu hash SHA-256 của Swift Core với kết quả `source_sha256` tính từ Python worker, ném lỗi `SourceRevisionIdentityError.sourceChangedDuringRead` nếu có sai lệch.
+  - Viết bộ test Swift native: [`tests/test_source_revision_identity.swift`](file:///Users/phuthanh/APP_CaNhan/AIVideo/tests/test_source_revision_identity.swift) (PASS S10.SHA.1 & S10.SHA.2).
+- **Kịch Bản Kiểm Thử Độc Lập S06 (`tools/run_s06_tests.sh`)**:
+  - Tạo mới script [`tools/run_s06_tests.sh`](file:///Users/phuthanh/APP_CaNhan/AIVideo/tools/run_s06_tests.sh) với cơ chế dò tìm SDK tương thích với `swiftc` (5/5 PASS).
+- **VFR & Timeline Rational Overflow Safety**:
+  - Thêm bài test `test_vfr_rational_boundaries_and_extreme_frame_ranges` kiểm tra các mốc PTS cực lớn ($2^{40}$) và seek chính xác 100%.
+- **Nghiệm Thu Toàn Diện**:
+  - Python tests: **156 PASS · 0 FAIL · 0 BLOCKED · 1 SKIPPED**.
+  - Autobridge: **21/21 PASS**.
+  - Swift G1 S06: **5/5 PASS**.
+  - Swift S10 SHA-256: **2/2 PASS**.
+  - Tất cả 15 Swift test suite: **PASS 100%**.
+  - Build & Install: `/Applications/AIVideo.app` biên dịch và ký số thành công.

@@ -37,3 +37,9 @@ Hoàn thiện toàn bộ các khuyến nghị từ báo cáo thẩm định đ�
   - Giải quyết bài toán phân tích hàng loạt video trong thư mục mà không làm tràn bộ nhớ 16 GB Unified RAM của Apple Silicon M1 Pro.
   - Xử lý hàng đợi tuần tự (Sequential Queue): Tự động duyệt qua từng video, suy luận VLM Qwen3-VL 4B local, trích xuất quan sát, lập Coverage Ledger và đối chiếu claim vào SQLite canonical qua `ProjectStore`.
   - Cập nhật live giao diện: Thẻ thư mục (`folderBannerCard`), Inspector (`MediaInspectorView`) và Tab Kiểm chứng G2 (`G2VerificationSectionView`) với nút "Phân tích toàn bộ (N video)", hiển thị tiến trình đang chạy (video thứ k/N + tên video), và nút "Dừng" an toàn.
+- [x] **Round 2 Audit Hardening Remediation**:
+  - [x] P0: Bắt buộc Ed25519 cho chứng nhận nghiệm thu thực địa, loại bỏ hoàn toàn việc công nhận chữ ký HMAC công khai.
+  - [x] P0: Bổ sung định danh video nguồn bằng băm SHA-256 nội dung file thực tế (`SourceRevisionIdentity.swift`), xử lý ngoài MainActor và đối chiếu với worker.
+  - [x] P1: Bổ sung script kiểm thử độc lập S06 ProjectStore (`tools/run_s06_tests.sh`) với dò tìm SDK tương thích.
+  - [x] P1: Bổ sung kiểm tra Apple Team ID cho các bản release chính thức trong preflight.
+  - [x] Nghiệm thu: 156 Python regression PASS, 21 Autobridge PASS, 15 Swift suite PASS, build & codesign PASS.

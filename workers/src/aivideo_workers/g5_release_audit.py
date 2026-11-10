@@ -180,32 +180,26 @@ def validate_signed_field_manifest(
     if not isinstance(sig, str) or len(sig) < 32:
         return False
     algo = str(signing.get("algorithm", "")).strip().lower()
-    if algo not in ("ed25519", "hmac-sha256"):
+    # HMAC không thể chứng minh QA độc lập khi khóa đã được đặt công khai trong source code.
+    # Toàn bộ chứng nhận nghiệm thu thực địa bắt buộc ký bằng Ed25519 độc lập.
+    if algo != "ed25519":
         return False
 
     payload = {k: v for k, v in manifest.items() if k != "signing_authority"}
 
-    if algo == "ed25519":
-        try:
-            import base64
-            from cryptography.hazmat.primitives import serialization
-            contracts_reg = runtime_paths.resolve_s11_registry()
-            contracts_dir = contracts_reg.parent if hasattr(contracts_reg, "parent") else Path(contracts_reg).parent
-            pubkey_path = contracts_dir / "field_qa_ed25519_public_key.pem"
-            if not pubkey_path.is_file():
-                return False
-            pubkey = serialization.load_pem_public_key(pubkey_path.read_bytes())
-            sig_bytes = base64.b64decode(sig)
-            pubkey.verify(sig_bytes, canon(payload))
-        except Exception:
+    try:
+        import base64
+        from cryptography.hazmat.primitives import serialization
+        contracts_reg = runtime_paths.resolve_s11_registry()
+        contracts_dir = contracts_reg.parent if hasattr(contracts_reg, "parent") else Path(contracts_reg).parent
+        pubkey_path = contracts_dir / "field_qa_ed25519_public_key.pem"
+        if not pubkey_path.is_file():
             return False
-    elif algo == "hmac-sha256":
-        if signing.get("key_id") != "aivideo-field-qa-signing-key-v1":
-            return False
-        if enforce_signature:
-            expected_sig = compute_field_manifest_signature(manifest)
-            if not hmac.compare_digest(sig.lower(), expected_sig.lower()):
-                return False
+        pubkey = serialization.load_pem_public_key(pubkey_path.read_bytes())
+        sig_bytes = base64.b64decode(sig)
+        pubkey.verify(sig_bytes, canon(payload))
+    except Exception:
+        return False
 
     cdir = Path(corpus_dir) if corpus_dir is not None else (PROJECT_ROOT / "fixtures" / "corpus")
     if not cdir.is_dir():

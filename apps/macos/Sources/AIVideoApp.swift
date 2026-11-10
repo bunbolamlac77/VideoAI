@@ -822,17 +822,24 @@ final class AppState: ObservableObject {
         proj: ProjectRecord,
         wd: WorkdayRecord
     ) async throws -> CoverageLedgerRecord {
-        // Deterministic sourceRevisionId from canonical path + file size so S12 window checkpoints resume on retry!
-        let fileAttrs = try? FileManager.default.attributesOfItem(atPath: filePath)
-        let fileSize = (fileAttrs?[.size] as? NSNumber)?.int64Value ?? 0
-        let srcRevUUID = Self.deterministicUUID(from: "src-rev:\(filePath):\(fileSize)")
+        // Compute SHA-256 fingerprint in detached background task off MainActor to ensure UI responsiveness on large 4K files
+        let fingerprint = try await Task.detached(priority: .userInitiated) {
+            try SourceRevisionIdentity.fingerprint(filePath: filePath)
+        }.value
+
+        let srcRevUUID = Self.deterministicUUID(from: "src-rev:\(fingerprint.sha256)")
 
         let res = try await worker.analyzeG2Source(
-            filePath: filePath,
+            filePath: fingerprint.canonicalPath,
             sourceRevisionId: srcRevUUID.uuidString,
             workdayId: wd.workdayId.uuidString,
             briefText: g1DraftFactText
         )
+
+        // Verify SHA-256 returned by Python worker matches computed fingerprint
+        if res.sourceSha256 != fingerprint.sha256 {
+            throw SourceRevisionIdentityError.sourceChangedDuringRead
+        }
         let dto = res.coverageLedger
         let covRec = CoverageLedgerRecord(
             coverageId: Self.deterministicUUID(from: "cov:\(srcRevUUID.uuidString)"),

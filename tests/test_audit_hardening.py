@@ -107,6 +107,66 @@ class AuditGateTests(unittest.TestCase):
                 (corpus / "trip-0.mp4").write_bytes(b"changed")
                 self.assertFalse(g5_release_audit.validate_signed_field_manifest(manifest, corpus_dir=corpus))
 
+    def test_untrusted_team_id_rejected_in_release_preflight(self):
+        import os
+        from tools import check_readiness
+        with mock.patch.dict(os.environ, {"AIVIDEO_RELEASE_TEAM_ID": "TEAM999999"}):
+            with mock.patch("tools.check_readiness.command") as mock_cmd, \
+                 mock.patch("pathlib.Path.is_dir", return_value=True), \
+                 mock.patch("pathlib.Path.is_file", return_value=True):
+                mock_cmd.side_effect = [
+                    (True, "Mach-O 64-bit executable arm64"),
+                    (True, "valid on disk"),
+                    (True, "Executable=/path/AIVideo\nIdentifier=com.phuthanh.aivideo\nSignature=adhoc\nTeamIdentifier=not set"),
+                ]
+                bundle = check_readiness.check_app_bundle()
+                self.assertFalse(bundle["passed"])
+                self.assertIn("Release requires Apple Developer signature", bundle["codesign_detail"])
+
+    def test_forged_hmac_manifest_fails_check_readiness(self):
+        from tools import check_readiness
+        with tempfile.TemporaryDirectory() as td:
+            man_path = Path(td) / "forged_manifest.json"
+            manifest = {
+                "schema": "aivideo-signed-field-corpus-manifest-v1",
+                "corpus_scope": {"held_out_trips": [{"trip_id": f"t{i}", "sha256": "0" * 64} for i in range(5)]},
+                "signing_authority": {
+                    "algorithm": "hmac-sha256",
+                    "key_id": "aivideo-field-qa-signing-key-v1",
+                    "signature": g5_release_audit.compute_field_manifest_signature({}),
+                },
+            }
+            man_path.write_text(json.dumps(manifest), encoding="utf-8")
+            res = check_readiness.check_field_corpus_and_certification(manifest_path=man_path)
+            self.assertFalse(res["live_field_corpus_certified"])
+            self.assertEqual(res["certification_status"], "UNVERIFIED_INPUT_REQUIRES_SIGNED_FIELD_CORPUS")
+
+    def test_vfr_rational_boundaries_and_extreme_frame_ranges(self):
+        from aivideo_workers.media_indexer import (
+            SourceFrameEntry,
+            build_vfr_to_cfr24_map,
+        )
+        from fractions import Fraction
+        # High PTS / 64-bit boundary timestamps (e.g. multi-day continuous camera recording)
+        base_pts = 2**40
+        entries = [
+            SourceFrameEntry(frame_id=i, pts=base_pts + i * 3000, duration_pts=3000, time_base_num=1, time_base_den=90000)
+            for i in range(30)
+        ]
+        start_sec = Fraction(base_pts, 90000)
+        cmap = build_vfr_to_cfr24_map(
+            pts_index=entries,
+            source_revision_id="rev-64bit",
+            source_start_sec=start_sec,
+            timeline_frame_count=24,
+        )
+        self.assertEqual(len(cmap.mappings), 24)
+        self.assertEqual(cmap.mappings[0].source_frame_id, 0)
+        # Seeking must work deterministically without precision loss
+        fid, pts = cmap.seek_source_from_timeline(0)
+        self.assertEqual(fid, 0)
+        self.assertEqual(pts, base_pts)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -92,6 +92,9 @@ def check_app_bundle() -> dict[str, Any]:
     arch_ok = False
     codesign_ok = False
     codesign_detail = "app not found"
+    team_id = "not set"
+    is_adhoc = True
+    team_id_ok = True
 
     if bin_exists:
         file_ok, file_out = command(["file", str(binary)])
@@ -100,13 +103,35 @@ def check_app_bundle() -> dict[str, Any]:
         codesign_ok = cs_ok
         codesign_detail = cs_out or "valid"
 
+        # Check TeamIdentifier and adhoc status
+        info_ok, info_out = command(["codesign", "-d", "-v", str(APP)])
+        full_info = (info_out or "") + "\n" + (cs_out or "")
+        for line in full_info.splitlines():
+            line = line.strip()
+            if line.startswith("TeamIdentifier="):
+                team_id = line.split("=", 1)[1].strip()
+            if line.startswith("Signature="):
+                is_adhoc = "adhoc" in line.lower()
+
+        required_team = os.environ.get("AIVIDEO_RELEASE_TEAM_ID", "").strip()
+        if required_team:
+            if is_adhoc or team_id != required_team or team_id == "not set":
+                team_id_ok = False
+                codesign_detail = (
+                    f"Release requires Apple Developer signature with Team ID '{required_team}', "
+                    f"got TeamIdentifier='{team_id}' (Signature={'adhoc' if is_adhoc else 'signed'})"
+                )
+
+    passed = app_exists and bin_exists and arch_ok and codesign_ok and team_id_ok
     return {
         "app_exists": app_exists,
         "binary_exists": bin_exists,
         "is_arm64": arch_ok,
-        "codesign_verified": codesign_ok,
+        "codesign_verified": codesign_ok and team_id_ok,
         "codesign_detail": codesign_detail,
-        "passed": app_exists and bin_exists and arch_ok and codesign_ok,
+        "team_identifier": team_id,
+        "is_adhoc": is_adhoc,
+        "passed": passed,
     }
 
 
@@ -174,21 +199,39 @@ def check_resolve_installation() -> dict[str, Any]:
     }
 
 
-def check_field_corpus_and_certification(manifest_path: Path | None = None) -> dict[str, Any]:
-    # Live field corpus certification requires cryptographically signed manifests AND verified video SHA-256 hashes
-    from aivideo_workers.g5_release_audit import validate_signed_field_manifest
-
-    field_corpus_manifest = manifest_path or (ROOT / "reports" / "evidence" / "signed_field_corpus_manifest.json")
+def check_field_corpus_and_certification(
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    from aivideo_workers.g5_release_audit import (
+        validate_signed_field_manifest,
+    )
+    path = manifest_path or (
+        ROOT / "reports"
+        / "evidence"
+        / "signed_field_corpus_manifest.json"
+    )
     corpus_dir = ROOT / "fixtures" / "corpus"
     certified = False
-    manifest_exists = field_corpus_manifest.is_file()
-    if manifest_exists:
+    if path.is_file():
         try:
-            data = json.loads(field_corpus_manifest.read_text(encoding="utf-8"))
-            certified = validate_signed_field_manifest(
-                data,
-                corpus_dir=corpus_dir,
-                enforce_signature=True,
+            data = json.loads(
+                path.read_text(encoding="utf-8")
+            )
+            authority = data.get(
+                "signing_authority", {}
+            )
+            algorithm = (
+                authority.get("algorithm", "")
+                if isinstance(authority, dict)
+                else ""
+            )
+            certified = (
+                algorithm.strip().lower() == "ed25519"
+                and validate_signed_field_manifest(
+                    data,
+                    corpus_dir=corpus_dir,
+                    enforce_signature=True,
+                )
             )
         except Exception:
             certified = False
@@ -196,7 +239,7 @@ def check_field_corpus_and_certification(manifest_path: Path | None = None) -> d
     return {
         "live_field_corpus_certified": certified,
         "certification_status": "CERTIFIED_FIELD_CORPUS" if certified else "UNVERIFIED_INPUT_REQUIRES_SIGNED_FIELD_CORPUS",
-        "manifest_path": str(field_corpus_manifest),
+        "manifest_path": str(path),
     }
 
 
