@@ -95,41 +95,8 @@ private enum G4SQL {
 extension ProjectStore {
     // Dedicated G4 transaction because G3's helper is intentionally private.
     private func g4Transaction<T>(_ block: (OpaquePointer) throws -> T) throws -> T {
-        guard let url = dbURL else { throw G3StoreError.diskStoreRequired }
-        var handle: OpaquePointer?
-        guard sqlite3_open_v2(url.path, &handle,
-                              SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
-              let db = handle else {
-            if let handle { sqlite3_close_v2(handle) }
-            throw G3StoreError.database("G4 cannot open canonical database")
-        }
-        defer { sqlite3_close_v2(db) }
-        try G4SQL.exec(db, "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")
-        try G4SQL.exec(db, "BEGIN IMMEDIATE;")
-        do {
-            try G4SQL.exec(db, """
-                CREATE TABLE IF NOT EXISTS g4_preview_approvals (
-                    approval_id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL REFERENCES projects(project_id),
-                    g3_approval_id TEXT NOT NULL REFERENCES g3_approvals(approval_id),
-                    preview_publication_id TEXT NOT NULL REFERENCES artifact_publications(publication_id),
-                    preview_sha256 TEXT NOT NULL,
-                    plan_sha256 TEXT NOT NULL,
-                    qc_receipt_json TEXT NOT NULL,
-                    qc_receipt_sha256 TEXT NOT NULL,
-                    reviewed_by TEXT NOT NULL,
-                    review_notes TEXT NOT NULL,
-                    approved_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    UNIQUE(project_id, g3_approval_id, preview_sha256)
-                );
-            """)
-            let result = try block(db)
-            try G4SQL.exec(db, "COMMIT;")
-            return result
-        } catch {
-            try? G4SQL.exec(db, "ROLLBACK;")
-            throw error
-        }
+        guard dbURL != nil else { throw G3StoreError.diskStoreRequired }
+        return try withCanonicalTransaction(block)
     }
 
     public func approveG4Preview(

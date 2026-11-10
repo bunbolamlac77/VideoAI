@@ -156,7 +156,7 @@ struct TestS07SchedulerFencing {
                 jobId: job1.jobId,
                 attemptId: attemptB.attemptId,
                 fencingToken: attemptB.fencingToken,
-                sha256: String(repeating: "a", count: 64),
+                sha256: "a29ee2b15c494311c52521766e44af56a3ad2248e7a8ab465e5206463c13d288",
                 byteSize: 15
             )
             let committedB = try await store.commitPublication(

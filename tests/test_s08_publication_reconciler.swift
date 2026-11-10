@@ -1,6 +1,7 @@
 // test_s08_publication_reconciler.swift — Swift Unit Tests for Gate G1 S08 Artifact Publication & Startup Reconciler
 // Compliant with docs/05-ARCHITECTURE-AND-ROADMAP.md Sections 6 & 7 and docs/11-CODING-WORKFLOW-AND-CHECKLIST.md (S08).
 
+import CryptoKit
 import Foundation
 
 func recordS08TestResult(
@@ -245,6 +246,142 @@ struct TestS08PublicationReconciler {
                 exitStatus: 0
             )
             print("   ✅ PASS: S08.T3 Post-commit artifact corruption detection verified.")
+
+            // Test 4: a publication may only be committed by the job/attempt that owns it.
+            print("\n[Test 4] S08.T4: Cross-job commit is rejected...")
+            let jobOwner = try await store.enqueueJob(
+                projectId: project.projectId, jobType: "owner_job", inputFingerprint: "fp_owner")
+            let attOwner = try await store.allocateAttempt(jobId: jobOwner.jobId, workerSessionId: "session-owner")
+            let jobForeign = try await store.enqueueJob(
+                projectId: project.projectId, jobType: "foreign_job", inputFingerprint: "fp_foreign")
+            let attForeign = try await store.allocateAttempt(jobId: jobForeign.jobId, workerSessionId: "session-foreign")
+
+            let ownedURL = tempDir.appendingPathComponent("owned_artifact.bin")
+            try Data("OWNED BYTES".utf8).write(to: ownedURL)
+            let ownedPub = try await store.createPublicationIntent(
+                projectId: project.projectId,
+                jobId: jobOwner.jobId,
+                attemptId: attOwner.attemptId,
+                fencingToken: attOwner.fencingToken,
+                artifactType: "voice_wav",
+                tempPath: ownedURL.path
+            )
+            var crossJobRejected = false
+            do {
+                _ = try await store.commitPublication(
+                    publicationId: ownedPub.publicationId,
+                    jobId: jobForeign.jobId,
+                    attemptId: attForeign.attemptId,
+                    fencingToken: attForeign.fencingToken,
+                    canonicalPath: ownedURL.path,
+                    completeJob: false
+                )
+            } catch {
+                crossJobRejected = true
+            }
+            assert(crossJobRejected, "Committing a publication from another job must be rejected")
+
+            // Test 5: commit re-hashes the canonical bytes recorded at verification time.
+            print("\n[Test 5] S08.T5: Tampered canonical bytes are rejected at commit...")
+            let tamperURL = tempDir.appendingPathComponent("tampered_artifact.bin")
+            let originalBytes = Data("ORIGINAL CANONICAL BYTES".utf8)
+            try originalBytes.write(to: tamperURL)
+            let originalHash = SHA256.hash(data: originalBytes).map { String(format: "%02x", $0) }.joined()
+
+            let tamperPub = try await store.createPublicationIntent(
+                projectId: project.projectId,
+                jobId: jobOwner.jobId,
+                attemptId: attOwner.attemptId,
+                fencingToken: attOwner.fencingToken,
+                artifactType: "voice_wav",
+                tempPath: tamperURL.path
+            )
+            _ = try await store.updatePublicationMaterialized(
+                publicationId: tamperPub.publicationId,
+                jobId: jobOwner.jobId,
+                attemptId: attOwner.attemptId,
+                fencingToken: attOwner.fencingToken,
+                tempPath: tamperURL.path
+            )
+            _ = try await store.updatePublicationVerified(
+                publicationId: tamperPub.publicationId,
+                jobId: jobOwner.jobId,
+                attemptId: attOwner.attemptId,
+                fencingToken: attOwner.fencingToken,
+                sha256: originalHash,
+                byteSize: originalBytes.count
+            )
+            try Data("SWAPPED AFTER VERIFICATION".utf8).write(to: tamperURL)
+            var tamperRejected = false
+            do {
+                _ = try await store.commitPublication(
+                    publicationId: tamperPub.publicationId,
+                    jobId: jobOwner.jobId,
+                    attemptId: attOwner.attemptId,
+                    fencingToken: attOwner.fencingToken,
+                    canonicalPath: tamperURL.path,
+                    completeJob: false
+                )
+            } catch {
+                tamperRejected = true
+            }
+            assert(tamperRejected, "Commit must re-hash canonical bytes and reject changes")
+
+            // Test 6: a job is only repaired to SUCCEEDED when ALL its artifacts are COMMITTED.
+            print("\n[Test 6] S08.T6: Partial publication set is not reconciled to SUCCEEDED...")
+            let jobPartial = try await store.enqueueJob(
+                projectId: project.projectId, jobType: "partial_job", inputFingerprint: "fp_partial")
+            let attPartial = try await store.allocateAttempt(jobId: jobPartial.jobId, workerSessionId: "session-partial")
+            let firstURL = tempDir.appendingPathComponent("partial_first.bin")
+            try Data("FIRST ARTIFACT".utf8).write(to: firstURL)
+            let firstPub = try await store.createPublicationIntent(
+                projectId: project.projectId,
+                jobId: jobPartial.jobId,
+                attemptId: attPartial.attemptId,
+                fencingToken: attPartial.fencingToken,
+                artifactType: "voice_wav",
+                tempPath: firstURL.path
+            )
+            let firstHash = SHA256.hash(data: Data("FIRST ARTIFACT".utf8)).map { String(format: "%02x", $0) }.joined()
+            _ = try await store.updatePublicationMaterialized(
+                publicationId: firstPub.publicationId, jobId: jobPartial.jobId,
+                attemptId: attPartial.attemptId, fencingToken: attPartial.fencingToken,
+                tempPath: firstURL.path)
+            _ = try await store.updatePublicationVerified(
+                publicationId: firstPub.publicationId, jobId: jobPartial.jobId,
+                attemptId: attPartial.attemptId, fencingToken: attPartial.fencingToken,
+                sha256: firstHash, byteSize: Data("FIRST ARTIFACT".utf8).count)
+            _ = try await store.commitPublication(
+                publicationId: firstPub.publicationId, jobId: jobPartial.jobId,
+                attemptId: attPartial.attemptId, fencingToken: attPartial.fencingToken,
+                canonicalPath: firstURL.path, completeJob: false)
+
+            // A second expected artifact exists but is still only PREPARED.
+            let secondURL = tempDir.appendingPathComponent("partial_second.bin")
+            try Data("SECOND ARTIFACT".utf8).write(to: secondURL)
+            _ = try await store.createPublicationIntent(
+                projectId: project.projectId,
+                jobId: jobPartial.jobId,
+                attemptId: attPartial.attemptId,
+                fencingToken: attPartial.fencingToken,
+                artifactType: "voice_wav",
+                tempPath: secondURL.path
+            )
+
+            let repairedPartial = try await store.repairJobCompletionFromCommittedPublications(jobId: jobPartial.jobId)
+            assert(!repairedPartial, "Job with a pending artifact must not be reconciled as SUCCEEDED")
+            let stillRunning = try await store.getJob(id: jobPartial.jobId)
+            assert(stillRunning?.status == .running, "Partially published job must stay RUNNING")
+
+            recordS08TestResult(
+                testcaseId: "S08.T4-T6",
+                requirementId: "DATA-02",
+                expected: "Cross-job commit, post-verification tampering and partial artifact sets are all rejected",
+                observed: "crossJobRejected=true, tamperRejected=true, partialJobRepaired=false",
+                status: "PASS",
+                exitStatus: 0
+            )
+            print("   ✅ PASS: S08.T4-T6 Publication identity, byte integrity and complete-set reconciliation verified.")
 
             await store.close()
             print("\n=======================================================")

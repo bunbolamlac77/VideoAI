@@ -194,57 +194,8 @@ private enum G5SQL {
 
 extension ProjectStore {
     private func g5Transaction<T>(_ block: (OpaquePointer) throws -> T) throws -> T {
-        guard let url = dbURL else { throw G3StoreError.diskStoreRequired }
-        var handle: OpaquePointer?
-        guard sqlite3_open_v2(url.path, &handle,
-                              SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK,
-              let db = handle else {
-            if let handle { sqlite3_close_v2(handle) }
-            throw G3StoreError.database("G5 cannot open canonical database")
-        }
-        defer { sqlite3_close_v2(db) }
-        try G5SQL.exec(db, "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")
-        try G5SQL.exec(db, "BEGIN IMMEDIATE;")
-        do {
-            try G5SQL.exec(db, """
-                CREATE TABLE IF NOT EXISTS g5_final_approvals (
-                    approval_id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL REFERENCES projects(project_id),
-                    g3_approval_id TEXT NOT NULL REFERENCES g3_approvals(approval_id),
-                    g4_approval_id TEXT NOT NULL REFERENCES g4_preview_approvals(approval_id),
-                    final_publication_id TEXT NOT NULL REFERENCES artifact_publications(publication_id),
-                    drp_publication_id TEXT NOT NULL REFERENCES artifact_publications(publication_id),
-                    final_sha256 TEXT NOT NULL,
-                    drp_sha256 TEXT NOT NULL,
-                    plan_sha256 TEXT NOT NULL,
-                    qc_receipt_json TEXT NOT NULL,
-                    qc_receipt_sha256 TEXT NOT NULL,
-                    reviewed_by TEXT NOT NULL,
-                    review_notes TEXT NOT NULL,
-                    approved_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    UNIQUE(project_id, g4_approval_id, final_sha256)
-                );
-
-                CREATE TABLE IF NOT EXISTS g5_manual_handoff_branches (
-                    branch_id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL REFERENCES projects(project_id),
-                    g3_approval_id TEXT NOT NULL REFERENCES g3_approvals(approval_id),
-                    g4_approval_id TEXT NOT NULL REFERENCES g4_preview_approvals(approval_id),
-                    handoff_drp_publication_id TEXT NOT NULL REFERENCES artifact_publications(publication_id),
-                    handoff_drp_sha256 TEXT NOT NULL,
-                    handoff_project_name TEXT NOT NULL,
-                    branch_receipt_json TEXT NOT NULL,
-                    created_by TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                );
-            """)
-            let result = try block(db)
-            try G5SQL.exec(db, "COMMIT;")
-            return result
-        } catch {
-            try? G5SQL.exec(db, "ROLLBACK;")
-            throw error
-        }
+        guard dbURL != nil else { throw G3StoreError.diskStoreRequired }
+        return try withCanonicalTransaction(block)
     }
 
     public func approveG5Final(

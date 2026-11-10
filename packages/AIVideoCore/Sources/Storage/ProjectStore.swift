@@ -1,6 +1,7 @@
 // ProjectStore.swift — Canonical Single-Writer SQLite WAL Actor for Gate G1 (S06)
 // Compliant with docs/05-ARCHITECTURE-AND-ROADMAP.md and docs/11-CODING-WORKFLOW-AND-CHECKLIST.md.
 
+import CryptoKit
 import Foundation
 import SQLite3
 
@@ -248,6 +249,10 @@ public actor ProjectStore {
 
         // Initialize DDL Schema
         try Self.initializeSchema(db: connection)
+        // 2026-11-10 fix (D06): the G3/G4/G5 gate tables used to be created lazily by
+        // extensions that opened their own SQLite connection. They are canonical schema,
+        // so they are created once here, by the single writer, before any gate write.
+        try Self.initializeGateSchema(db: connection)
     }
 
     public func close() {
@@ -268,6 +273,22 @@ public actor ProjectStore {
 
     private func execute(sql: String) throws {
         try Self.execute(db: self.db, sql: sql)
+    }
+
+    /// Streaming SHA-256 used to re-verify canonical bytes before commit (P1-1).
+    private static func fileSHA256(atPath path: String) throws -> String {
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            throw ProjectStoreError.integrityViolation("Cannot read canonical file at \(path)")
+        }
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private static func initializeSchema(db: OpaquePointer?) throws {
@@ -456,6 +477,97 @@ public actor ProjectStore {
         try Self.execute(db: db, sql: schema)
     }
 
+    /// Canonical DDL for the S19/S21/S22 approval tables (schema owned by the single writer).
+    private static func initializeGateSchema(db: OpaquePointer?) throws {
+        let schema = """
+        CREATE TABLE IF NOT EXISTS g3_scripts (
+            script_revision_id TEXT PRIMARY KEY NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(project_id),
+            workday_id TEXT NOT NULL REFERENCES workdays(workday_id),
+            candidate_json TEXT NOT NULL,
+            candidate_sha256 TEXT NOT NULL,
+            scope_revision_id TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS g3_selected (
+            project_id TEXT PRIMARY KEY NOT NULL REFERENCES projects(project_id),
+            script_revision_id TEXT NOT NULL REFERENCES g3_scripts(script_revision_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS g3_voice_reviews (
+            script_revision_id TEXT NOT NULL REFERENCES g3_scripts(script_revision_id),
+            beat_id TEXT NOT NULL,
+            publication_id TEXT NOT NULL REFERENCES artifact_publications(publication_id),
+            wav_sha256 TEXT NOT NULL,
+            text_sha256 TEXT NOT NULL,
+            reviewed_by TEXT NOT NULL,
+            reviewed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            PRIMARY KEY(script_revision_id, beat_id),
+            UNIQUE(script_revision_id, publication_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS g3_approvals (
+            approval_id TEXT PRIMARY KEY NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(project_id),
+            workday_id TEXT NOT NULL REFERENCES workdays(workday_id),
+            script_revision_id TEXT NOT NULL UNIQUE REFERENCES g3_scripts(script_revision_id),
+            candidate_sha256 TEXT NOT NULL,
+            manifest_json TEXT NOT NULL,
+            manifest_sha256 TEXT NOT NULL,
+            approved_by TEXT NOT NULL,
+            approved_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS g4_preview_approvals (
+            approval_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(project_id),
+            g3_approval_id TEXT NOT NULL REFERENCES g3_approvals(approval_id),
+            preview_publication_id TEXT NOT NULL REFERENCES artifact_publications(publication_id),
+            preview_sha256 TEXT NOT NULL,
+            plan_sha256 TEXT NOT NULL,
+            qc_receipt_json TEXT NOT NULL,
+            qc_receipt_sha256 TEXT NOT NULL,
+            reviewed_by TEXT NOT NULL,
+            review_notes TEXT NOT NULL,
+            approved_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            UNIQUE(project_id, g3_approval_id, preview_sha256)
+        );
+
+        CREATE TABLE IF NOT EXISTS g5_final_approvals (
+            approval_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(project_id),
+            g3_approval_id TEXT NOT NULL REFERENCES g3_approvals(approval_id),
+            g4_approval_id TEXT NOT NULL REFERENCES g4_preview_approvals(approval_id),
+            final_publication_id TEXT NOT NULL REFERENCES artifact_publications(publication_id),
+            drp_publication_id TEXT NOT NULL REFERENCES artifact_publications(publication_id),
+            final_sha256 TEXT NOT NULL,
+            drp_sha256 TEXT NOT NULL,
+            plan_sha256 TEXT NOT NULL,
+            qc_receipt_json TEXT NOT NULL,
+            qc_receipt_sha256 TEXT NOT NULL,
+            reviewed_by TEXT NOT NULL,
+            review_notes TEXT NOT NULL,
+            approved_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            UNIQUE(project_id, g4_approval_id, final_sha256)
+        );
+
+        CREATE TABLE IF NOT EXISTS g5_manual_handoff_branches (
+            branch_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(project_id),
+            g3_approval_id TEXT NOT NULL REFERENCES g3_approvals(approval_id),
+            g4_approval_id TEXT NOT NULL REFERENCES g4_preview_approvals(approval_id),
+            handoff_drp_publication_id TEXT NOT NULL REFERENCES artifact_publications(publication_id),
+            handoff_drp_sha256 TEXT NOT NULL,
+            handoff_project_name TEXT NOT NULL,
+            branch_receipt_json TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+        """
+        try Self.execute(db: db, sql: schema)
+    }
+
     // MARK: - Transaction Wrapper
 
     private func withTransaction<T>(_ block: () throws -> T) throws -> T {
@@ -467,6 +579,16 @@ public actor ProjectStore {
         } catch {
             try? execute(sql: "ROLLBACK;")
             throw error
+        }
+    }
+
+    /// 2026-11-10 fix (D06): canonical write transaction shared with the G3/G4/G5
+    /// extensions. It runs on the actor's ONE connection, so the "single writer"
+    /// invariant is true at the connection level instead of opening a second handle.
+    func withCanonicalTransaction<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
+        try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            return try body(db)
         }
     }
 
@@ -1252,15 +1374,36 @@ public actor ProjectStore {
                 throw ProjectStoreError.publicationNotFound(publicationId)
             }
 
-            // Verify canonical file exists on disk before committing DB
+            // 2026-11-10 fix (P1-1): a publication may only be committed by the job/attempt
+            // that created it, and the canonical bytes must still match the digest recorded
+            // at verification time. Previously any valid attempt could commit any publication
+            // and only file existence was checked.
+            guard pub.jobId == jobId,
+                  pub.attemptId == attemptId,
+                  pub.fencingToken == fencingToken else {
+                throw ProjectStoreError.integrityViolation(
+                    "Publication \(publicationId) does not belong to job \(jobId) / attempt \(attemptId) / fencing \(fencingToken)"
+                )
+            }
             guard FileManager.default.fileExists(atPath: canonicalPath) else {
                 throw ProjectStoreError.integrityViolation("Cannot commit publication \(publicationId): canonical file missing at \(canonicalPath)")
+            }
+            guard let expectedHash = pub.sha256Hash, !expectedHash.isEmpty else {
+                throw ProjectStoreError.integrityViolation(
+                    "Cannot commit publication \(publicationId): no verified sha256 recorded"
+                )
+            }
+            let actualHash = try Self.fileSHA256(atPath: canonicalPath)
+            guard actualHash == expectedHash else {
+                throw ProjectStoreError.integrityViolation(
+                    "Cannot commit publication \(publicationId): bytes changed (expected \(expectedHash), found \(actualHash))"
+                )
             }
 
             try pub.transitionToCommitted(canonicalPath: canonicalPath)
 
             guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
-            let sql = "UPDATE artifact_publications SET state = 'COMMITTED', canonical_path = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE publication_id = ?;"
+            let sql = "UPDATE artifact_publications SET state = 'COMMITTED', canonical_path = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE publication_id = ? AND job_id = ?;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
                 throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
@@ -1268,8 +1411,14 @@ public actor ProjectStore {
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_text(stmt, 1, canonicalPath, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 2, publicationId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, jobId.uuidString, -1, SQLITE_TRANSIENT)
             if sqlite3_step(stmt) != SQLITE_DONE {
                 throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            guard sqlite3_changes(db) == 1 else {
+                throw ProjectStoreError.integrityViolation(
+                    "Commit of publication \(publicationId) matched no row for job \(jobId)"
+                )
             }
 
             if completeJob {
@@ -1467,7 +1616,10 @@ public actor ProjectStore {
     public func repairJobCompletionFromCommittedPublications(jobId: UUID) throws -> Bool {
         return try withTransaction {
             guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
-            let sql = "SELECT COUNT(*) FROM artifact_publications WHERE job_id = ? AND state = 'COMMITTED';"
+            // 2026-11-10 fix (P1-3): a job is only complete when EVERY publication it
+            // owns is COMMITTED. Counting >0 let a job with 4 of 5 artifacts pending be
+            // reported SUCCEEDED after a crash.
+            let sql = "SELECT SUM(CASE WHEN state = 'COMMITTED' THEN 1 ELSE 0 END), COUNT(*) FROM artifact_publications WHERE job_id = ?;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
                 throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
@@ -1475,10 +1627,12 @@ public actor ProjectStore {
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_text(stmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
             var committedCount = 0
+            var totalCount = 0
             if sqlite3_step(stmt) == SQLITE_ROW {
                 committedCount = Int(sqlite3_column_int(stmt, 0))
+                totalCount = Int(sqlite3_column_int(stmt, 1))
             }
-            if committedCount > 0 {
+            if committedCount > 0 && committedCount == totalCount {
                 let upSql = "UPDATE jobs SET status = 'SUCCEEDED', completed_at = COALESCE(completed_at, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) WHERE job_id = ? AND status != 'SUCCEEDED';"
                 var upStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, upSql, -1, &upStmt, nil) == SQLITE_OK {
