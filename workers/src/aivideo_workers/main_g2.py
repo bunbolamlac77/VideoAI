@@ -320,6 +320,17 @@ def handle_media_index_and_proxy(params: dict) -> dict:
     )
 
 
+def _estimate_source_fps(pts_entries) -> float:
+    """Best-effort source fps from the PTS index, used only by the motion prefilter."""
+    if len(pts_entries) < 2:
+        return 24.0
+    delta = int(pts_entries[1].pts) - int(pts_entries[0].pts)
+    first = pts_entries[0]
+    if delta <= 0 or first.time_base_num <= 0:
+        return 24.0
+    return float(first.time_base_den) / float(first.time_base_num) / float(delta)
+
+
 def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callable[[Path], Callable[[Any], dict]]] = None) -> dict:
     """
     S10..S14 End-to-End G2 Worker RPC (`g2.analyze_source`):
@@ -354,6 +365,12 @@ def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callab
         BoundedPipelineConfig,
         FullFrameAnalysisPipeline,
         compact_coverage_ledger_payload,
+        generate_overlapping_windows,
+    )
+    from aivideo_workers.prefilter import (
+        build_window_prefilter,
+        config_from_params,
+        scan_motion_profile,
     )
     from aivideo_workers.semantic_verifier import (
         decompose_causal_or_compound_statement,
@@ -424,6 +441,32 @@ def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callab
                 vision_installed = False
                 inspector_fn = None
 
+    # 2026-11-10 prefilter (opt-in): choose which windows are worth the vision model.
+    prefilter_cfg = config_from_params(params.get("prefilter"))
+    window_prefilter = None
+    prefilter_signature = None
+    prefilter_summary = {"enabled": False}
+    if prefilter_cfg.enabled and vision_installed:
+        source_fps = _estimate_source_fps(pts_entries)
+        profile = scan_motion_profile(src_path, config=prefilter_cfg, source_fps=source_fps)
+        windows_for_prefilter = generate_overlapping_windows(
+            pts_entries,
+            window_size=BoundedPipelineConfig().window_size_frames,
+            overlap=BoundedPipelineConfig().window_overlap_frames,
+        )
+        window_prefilter = build_window_prefilter(windows_for_prefilter, profile, prefilter_cfg)
+        prefilter_signature = {
+            **prefilter_cfg.fingerprint_payload(),
+            "profile_sha256": profile["profile_sha256"],
+        }
+        prefilter_summary = {
+            "enabled": True,
+            "sample_fps": prefilter_cfg.sample_fps,
+            "motion_threshold": prefilter_cfg.motion_threshold,
+            "profile_sha256": profile["profile_sha256"],
+            "profile_sample_count": profile["sample_count"],
+        }
+
     ckpt_dir = Path(params.get("checkpoint_dir") or tempfile.gettempdir())
     ckpt_path = ckpt_dir / f"g2_ckpt_{source_rev_id[:8]}_{src_sha256[:8]}.json"
 
@@ -437,6 +480,8 @@ def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callab
         checkpoint_path=ckpt_path,
         has_audio_stream=bool(probed.get("has_audio_stream", False)),
         window_inspector_fn=inspector_fn,
+        window_prefilter=window_prefilter,
+        prefilter_signature=prefilter_signature,
     )
 
     claims_out = []
@@ -488,6 +533,12 @@ def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callab
         "source_sha256": src_sha256,
         "vision_model_installed": vision_installed,
         "visual_weights_verification": weights_verification,
+        "prefilter": {
+            **prefilter_summary,
+            "skipped_count": ledger.prefilter_skipped_count,
+            "analyzed_count": ledger.total_windows - ledger.prefilter_skipped_count,
+            "skipped_window_indices": ledger.skipped_window_indices,
+        },
         "color_decision": probed["color_decision"],
         "coverage_ledger": compact_coverage_ledger_payload(ledger.to_dict()),
         "raw_observations_count": len(raw_obs),

@@ -204,6 +204,10 @@ class AssetCoverageLedger:
     # Bounded vision models only see a declared sample of each window, so this must be
     # reported separately from decode coverage instead of being called "100% input coverage".
     vlm_frame_coverage: float = 0.0
+    # 2026-11-10 prefilter: windows deliberately not sent to the vision model. They are
+    # recorded with a score and reason and never counted as analyzed.
+    skipped_window_indices: List[int] = field(default_factory=list)
+    prefilter_skipped_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -287,10 +291,10 @@ def compute_pipeline_input_fingerprint(
     window_size: int,
     overlap: int,
     total_declared_frames: int,
+    prefilter_signature: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Canonical SHA-256 fingerprint for S12 checkpoint validation (prevents mixing old/new profiles on resume)."""
-    canonical = json.dumps(
-        {
+    payload: Dict[str, Any] = {
             "analysis_contract": "declared-sampling-v2",
             "overlap": overlap,
             "runtime_profile_id": runtime_profile_id,
@@ -299,7 +303,11 @@ def compute_pipeline_input_fingerprint(
             "source_sha256": source_sha256,
             "total_declared_frames": total_declared_frames,
             "window_size": window_size,
-        },
+        }
+    if prefilter_signature is not None:
+        payload["prefilter"] = prefilter_signature
+    canonical = json.dumps(
+        payload,
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -472,6 +480,8 @@ class FullFrameAnalysisPipeline:
         has_audio_stream: bool = True,
         raw_audio_transcript_segments: Optional[Sequence[Dict[str, Any]]] = None,
         window_inspector_fn: Optional[Callable[[SlidingWindowSpec], Dict[str, Any]]] = None,
+        window_prefilter: Optional[Callable[[SlidingWindowSpec], Dict[str, Any]]] = None,
+        prefilter_signature: Optional[Dict[str, Any]] = None,
         stop_after_window_index: Optional[int] = None,
         simulated_ram_rss_bytes: Optional[int] = None,
         simulated_free_ssd_bytes: Optional[int] = None,
@@ -491,6 +501,7 @@ class FullFrameAnalysisPipeline:
             window_size=self.config.window_size_frames,
             overlap=self.config.window_overlap_frames,
             total_declared_frames=total_declared_source_frames,
+            prefilter_signature=prefilter_signature,
         )
 
         corrupted_set = {int(x) for x in corrupted_decode_frame_ids}
@@ -525,6 +536,7 @@ class FullFrameAnalysisPipeline:
 
         # Load existing checkpoint if present
         committed_windows: Dict[int, Dict[str, Any]] = {}
+        skipped_windows: Dict[int, Dict[str, Any]] = {}
         raw_observations: List[RawObservationRecord] = []
 
         if checkpoint_path.is_file():
@@ -539,6 +551,8 @@ class FullFrameAnalysisPipeline:
             for w_entry in ckpt.get("committed_windows", []):
                 w_idx = int(w_entry["window_index"])
                 committed_windows[w_idx] = w_entry
+            for skip_entry in ckpt.get("skipped_windows", []):
+                skipped_windows[int(skip_entry["window_index"])] = skip_entry
             for obs_dict in ckpt.get("raw_observations", []):
                 raw_observations.append(RawObservationRecord(**obs_dict))
             self._append_log(f"Resumed checkpoint with {len(committed_windows)}/{len(windows)} committed windows.")
@@ -550,6 +564,36 @@ class FullFrameAnalysisPipeline:
         for win in windows:
             if win.window_index in committed_windows:
                 continue
+
+            # 2026-11-10 prefilter: decide BEFORE doing any decode/memory work. A skipped
+            # window is persisted with its score/reason and produces no observation.
+            if window_prefilter is not None:
+                decision = window_prefilter(win) or {}
+                if decision.get("analyze") is False:
+                    skipped_windows[win.window_index] = {
+                        "window_index": win.window_index,
+                        "score": float(decision.get("score", 0.0)),
+                        "reason": str(decision.get("reason", "prefilter")),
+                    }
+                    committed_windows[win.window_index] = {
+                        "window_index": win.window_index,
+                        "prefilter_skipped": True,
+                        "actual_processed_frame_ids": [],
+                    }
+                    self._write_checkpoint_atomic(
+                        checkpoint_path=checkpoint_path,
+                        input_fingerprint=expected_fp,
+                        source_revision_id=source_revision_id,
+                        committed_windows=committed_windows,
+                        skipped_windows=skipped_windows,
+                        raw_observations=raw_observations,
+                    )
+                    self._append_log(
+                        f"Skipped window {win.window_index} by prefilter "
+                        f"(score={skipped_windows[win.window_index]['score']:.4f}, "
+                        f"reason={skipped_windows[win.window_index]['reason']})."
+                    )
+                    continue
 
             # Check bounded in-memory frame queue guard (S12.1 & S12.T4)
             if len(win.intended_frame_ids) > self.config.max_in_memory_frame_queue:
@@ -685,6 +729,7 @@ class FullFrameAnalysisPipeline:
                 input_fingerprint=expected_fp,
                 source_revision_id=source_revision_id,
                 committed_windows=committed_windows,
+                skipped_windows=skipped_windows,
                 raw_observations=raw_observations,
             )
             self._append_log(f"Committed window {win.window_index} ({len(audit.actual_processed_frame_ids)} frames).")
@@ -723,7 +768,7 @@ class FullFrameAnalysisPipeline:
         unique_processed: Set[int] = set()
         total_submitted_with_overlap = 0
         for w_data in committed_windows.values():
-            fids = [int(x) for x in w_data["actual_processed_frame_ids"]]
+            fids = [int(x) for x in w_data.get("actual_processed_frame_ids", [])]
             total_submitted_with_overlap += len(fids)
             unique_processed.update(fids)
 
@@ -740,6 +785,7 @@ class FullFrameAnalysisPipeline:
         vlm_cov = min(1.0, len(unique_sorted) / float(denom_total))
 
         all_windows_done = len(committed_windows) == len(windows)
+        skipped_sorted = sorted(skipped_windows.keys())
         if blocked_model_unavailable:
             detailed_status = "blocked_model_unavailable"
         elif paused_by_resource:
@@ -748,6 +794,8 @@ class FullFrameAnalysisPipeline:
             detailed_status = "paused_checkpoint"
         elif corrupted_ids_sorted:
             detailed_status = "partial_with_decode_errors"
+        elif skipped_sorted:
+            detailed_status = "completed_prefiltered"
         else:
             detailed_status = "completed"
 
@@ -774,6 +822,8 @@ class FullFrameAnalysisPipeline:
             frame_input_coverage=round(frame_input_cov, 6),
             valid_frame_input_coverage=round(valid_input_cov, 6),
             vlm_frame_coverage=round(vlm_cov, 6),
+            skipped_window_indices=skipped_sorted,
+            prefilter_skipped_count=len(skipped_sorted),
             completed_window_indices=sorted(committed_windows.keys()),
             total_windows=len(windows),
             visual_scan_status=detailed_status,
@@ -904,6 +954,7 @@ class FullFrameAnalysisPipeline:
         source_revision_id: str,
         committed_windows: Dict[int, Dict[str, Any]],
         raw_observations: Sequence[RawObservationRecord],
+        skipped_windows: Optional[Dict[int, Dict[str, Any]]] = None,
     ) -> None:
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = checkpoint_path.with_suffix(".tmp")
@@ -911,6 +962,7 @@ class FullFrameAnalysisPipeline:
             "source_revision_id": source_revision_id,
             "input_fingerprint": input_fingerprint,
             "committed_windows": [committed_windows[k] for k in sorted(committed_windows.keys())],
+            "skipped_windows": [skipped_windows[k] for k in sorted(skipped_windows.keys())] if skipped_windows else [],
             "raw_observations": [obs.to_dict() for obs in raw_observations],
         }
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
