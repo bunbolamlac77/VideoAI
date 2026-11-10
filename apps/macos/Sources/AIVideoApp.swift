@@ -992,6 +992,7 @@ final class AppState: ObservableObject {
             throw SourceRevisionIdentityError.sourceChangedDuringRead
         }
         let dto = res.coverageLedger
+        let resolvedUniqueIds = dto.resolvedUniquePostProcessorFrameIds
         let covRec = CoverageLedgerRecord(
             coverageId: Self.deterministicUUID(from: "cov:\(srcRevUUID.uuidString)"),
             projectId: proj.projectId,
@@ -999,12 +1000,12 @@ final class AppState: ObservableObject {
             runtimeProfileId: dto.runtimeProfileId,
             inputFingerprint: dto.inputFingerprint,
             totalDeclaredFrames: dto.totalDeclaredSourceFrames,
-            validDecodedFrameCount: dto.validDecodedFrameIds.count,
+            validDecodedFrameCount: dto.resolvedValidDecodedFrameIds.count,
             corruptedDecodeFrameIds: dto.corruptedDecodeFrameIds,
-            uniqueProcessedFrameIds: dto.uniquePostProcessorFrameIds,
+            uniqueProcessedFrameIds: resolvedUniqueIds,
             totalSubmittedWithOverlap: dto.totalSubmittedFramesWithOverlap,
             audioBranchState: AudioBranchState(rawValue: res.audioBranchState) ?? .speechDetected,
-            completedWindows: dto.uniquePostProcessorFrameIds.isEmpty ? 0 : 1,
+            completedWindows: resolvedUniqueIds.isEmpty ? 0 : 1,
             totalWindows: 1,
             detailedPassStatus: dto.detailedPassStatus
         )

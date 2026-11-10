@@ -478,6 +478,16 @@ public struct G2AnalyzeSourceParams: Codable, Sendable {
     }
 }
 
+public struct G2FrameIdRangesDTO: Codable, Sendable {
+    public let uniquePostProcessor: [[Int]]
+    public let validDecoded: [[Int]]
+
+    public enum CodingKeys: String, CodingKey {
+        case uniquePostProcessor = "unique_post_processor"
+        case validDecoded = "valid_decoded"
+    }
+}
+
 public struct G2AnalyzeCoverageDTO: Codable, Sendable {
     public let sourceRevisionId: String
     public let runtimeProfileId: String
@@ -490,6 +500,9 @@ public struct G2AnalyzeCoverageDTO: Codable, Sendable {
     public let frameInputCoverage: Double
     public let detailedPassStatus: String
     public let semanticUnderstandingCertified: Bool
+    public let vlmFrameCoverage: Double?
+    public let frameIdsTruncated: Bool?
+    public let frameIdRanges: G2FrameIdRangesDTO?
 
     public enum CodingKeys: String, CodingKey {
         case sourceRevisionId = "source_revision_id"
@@ -503,6 +516,31 @@ public struct G2AnalyzeCoverageDTO: Codable, Sendable {
         case frameInputCoverage = "frame_input_coverage"
         case detailedPassStatus = "detailed_pass_status"
         case semanticUnderstandingCertified = "semantic_understanding_certified"
+        case vlmFrameCoverage = "vlm_frame_coverage"
+        case frameIdsTruncated = "frame_ids_truncated"
+        case frameIdRanges = "frame_id_ranges"
+    }
+
+    private static func expand(_ ranges: [[Int]]?) -> [Int] {
+        guard let ranges else { return [] }
+        var ids: [Int] = []
+        for pair in ranges where pair.count == 2 && pair[0] <= pair[1] {
+            ids.append(contentsOf: pair[0]...pair[1])
+        }
+        return ids
+    }
+
+    /// Long sources return compact ranges instead of a multi-megabyte id list.
+    public var resolvedUniquePostProcessorFrameIds: [Int] {
+        uniquePostProcessorFrameIds.isEmpty
+            ? Self.expand(frameIdRanges?.uniquePostProcessor)
+            : uniquePostProcessorFrameIds
+    }
+
+    public var resolvedValidDecodedFrameIds: [Int] {
+        validDecodedFrameIds.isEmpty
+            ? Self.expand(frameIdRanges?.validDecoded)
+            : validDecodedFrameIds
     }
 }
 

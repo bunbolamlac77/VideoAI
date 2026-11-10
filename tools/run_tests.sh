@@ -170,6 +170,17 @@ swiftc -sdk "$SDK_PATH" \
 
 ./build/tests/test_source_revision_identity
 
+echo "=== [10b/16] Running Swift G2 Coverage DTO Range Expansion Tests ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DomainModels.swift \
+  tests/test_g2_coverage_dto.swift \
+  -o build/tests/test_g2_coverage_dto
+
+./build/tests/test_g2_coverage_dto
+
 echo "=== [11/15] Running Swift Gate G2 S12..S15 Analysis, Verifier & Review Closure Tests ==="
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
@@ -239,7 +250,7 @@ swiftc -sdk "$SDK_PATH" \
 
 TEST_RECORDS_OUT="build/reports/swift_g4_s21_records.jsonl" ./build/tests/test_g4_approval
 
-echo "=== [15/15] Running Swift Gate G5 S22..S26 Final 4K, Handoff, IME & Cache Quota Tests ==="
+echo "=== [16/16] Running Swift Gate G5 S22..S26 Final 4K, Handoff, IME & Cache Quota Tests ==="
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
