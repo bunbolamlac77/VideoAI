@@ -225,7 +225,8 @@ class TestS15G2Benchmark(unittest.TestCase):
         self.assertEqual(report["g2_gate_decision"], "SMOKE_ONLY")
         self.assertFalse(report["real_video_corpus_verified"])
         self.assertFalse(report["acceptance_eligible"])
-        self.assertEqual(report["label_source"], "synthetic_decision_harness_fixture")
+        self.assertEqual(report["label_source"], "agent_labeled_synthetic_fixture")
+        self.assertFalse(report["labels"]["acceptance_eligible"])
         self.assertEqual(report["real_video_groups_count"], 5)
         coverage = report["metrics"]["frame_input_coverage"]["point_estimate"]
         self.assertGreater(coverage, 0.0)

@@ -1,0 +1,20 @@
+{
+  "schema": "aivideo-clip-label-v1",
+  "trip_id": "trip-holdout-04-phuquoc",
+  "source_sha256": "cb1aba42e9f51087300a208f6546ea0ac55926487f5b5c52f423eb94421d55f5",
+  "duration_seconds": 1.5,
+  "labeler_type": "agent_visual_review",
+  "labeler_id": "deepseek-harness-vision",
+  "source_kind": "synthetic_title_card",
+  "observed": {
+    "scene": "static_title_card",
+    "dominant_color": "cyan",
+    "text_on_screen": "Cảnh quay POV Bãi Sao - Cáp treo Hòn Thơm",
+    "actions": [],
+    "objects": [],
+    "has_motion": false
+  },
+  "claims": [],
+  "events": [],
+  "notes": "Generated fixture: a single static title card, not real field footage. Labels describe only what is visible; they are not human ground truth and must not be used as E0/E1 field evidence."
+}

@@ -947,6 +947,7 @@ def run_real_video_corpus_g2_benchmark(
         probe_and_index_real_video,
     )
     from .pipeline_adapters import S11ModelRegistryAndAdapters
+    from .corpus_labels import load_clip_labels, summarize_label_eligibility
     from .full_frame_pipeline import BoundedPipelineConfig, FullFrameAnalysisPipeline
 
     wdir = Path(work_dir).resolve()
@@ -1010,6 +1011,8 @@ def run_real_video_corpus_g2_benchmark(
         )
         group_observations[hg] = [o.observation_id for o in raw_obs]
 
+    labels = load_clip_labels(wdir / "labels")
+    label_summary = summarize_label_eligibility(labels)
     report = run_g2_analysis_eligible_benchmark(
         manifest=manifest,
         asset_to_group_map=base_fx["asset_to_group_map"],
@@ -1019,7 +1022,11 @@ def run_real_video_corpus_g2_benchmark(
         observable_events=base_fx["observable_events"],
         verifier_adversarial_suite=base_fx["verifier_suite"],
         frame_coverage_by_group=real_coverage_by_group,
-        label_source="synthetic_decision_harness_fixture",
+        label_source=(
+            "human_labeled_holdout"
+            if label_summary["acceptance_eligible"]
+            else "agent_labeled_synthetic_fixture"
+        ),
     )
     # 2026-11-10 fix (D05): a real-video run only measures frame coverage and produces
     # observations. Claim precision / event recall / verifier FAR are still graded against
@@ -1028,6 +1035,7 @@ def run_real_video_corpus_g2_benchmark(
     report["g2_gate_decision"] = "SMOKE_ONLY"
     report["corpus_mode"] = "smoke"
     report["real_video_corpus_verified"] = False
+    report["labels"] = label_summary
     report["real_video_groups_count"] = len(real_coverage_by_group)
     report["real_video_observations_by_group"] = group_observations
     return report

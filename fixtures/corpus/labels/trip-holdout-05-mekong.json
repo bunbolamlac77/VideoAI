@@ -1,0 +1,20 @@
+{
+  "schema": "aivideo-clip-label-v1",
+  "trip_id": "trip-holdout-05-mekong",
+  "source_sha256": "2ff90102e5a072c318bb2983d1a8f526787453c35ed8fa140a755d98f65ded2d",
+  "duration_seconds": 1.5,
+  "labeler_type": "agent_visual_review",
+  "labeler_id": "deepseek-harness-vision",
+  "source_kind": "synthetic_title_card",
+  "observed": {
+    "scene": "static_title_card",
+    "dominant_color": "orange",
+    "text_on_screen": "Cảnh quay POV Chợ nổi Cái Răng - Cồn Sơn Cần Thơ",
+    "actions": [],
+    "objects": [],
+    "has_motion": false
+  },
+  "claims": [],
+  "events": [],
+  "notes": "Generated fixture: a single static title card, not real field footage. Labels describe only what is visible; they are not human ground truth and must not be used as E0/E1 field evidence."
+}
