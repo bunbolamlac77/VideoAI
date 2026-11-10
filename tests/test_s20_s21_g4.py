@@ -379,6 +379,9 @@ class S20S21Tests(unittest.TestCase):
         font = next((p for p in font_candidates if p.exists()), None)
         if font is None:
             self.skipTest("Test caption font unavailable")
+        from aivideo_workers.child_process import ffmpeg_has_filter
+        if not ffmpeg_has_filter("drawtext"):
+            self.skipTest("ffmpeg build lacks drawtext (freetype)")
         result = g4_stage.stage_captioned_clip({
             "db_path": str(self.fixture.db), "project_id": self.fixture.project,
             "beat_id": "beat-01", "mapping_publication_id": pub_map,

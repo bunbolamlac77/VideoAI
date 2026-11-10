@@ -15,6 +15,7 @@ import subprocess
 import uuid
 import textwrap
 
+from .child_process import ffmpeg_has_filter
 from .g4_core import (_read_db, row, publication, must, G4Blocked,
                       read_json, hash_file, check_video, canon, digest, ffprobe)
 from .g4_resolve import _safe_root
@@ -97,6 +98,12 @@ def stage_captioned_clip(params: dict) -> dict:
         must(all(visual[0].get(k) == "bt709" for k in (
                  "color_primaries", "color_transfer", "color_space")),
              "S10 proxy is not verified SDR Rec.709; re-conform before G4")
+
+    if not ffmpeg_has_filter("drawtext"):
+        raise RuntimeError(
+            "FFMPEG_DRAWTEXT_UNAVAILABLE: the ffmpeg build lacks the drawtext filter "
+            "(freetype support). Caption burn-in cannot be verified with this runtime."
+        )
 
     # Each phrase is tied to already reviewed narration; do not invent wording.
     previous = 0

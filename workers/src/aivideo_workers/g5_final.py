@@ -27,6 +27,7 @@ import time
 import uuid
 import zipfile
 
+from .child_process import ffmpeg_has_filter
 from .g4_core import (
     G4Blocked,
     MAX_BEATS,

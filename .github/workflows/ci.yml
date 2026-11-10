@@ -139,20 +139,21 @@ jobs:
           script: |
             const fs = require('fs');
             const parts = [];
-            for (const path of [
-              'build/reports/python_test_summary.json',
-              'build/reports/python_test_records.jsonl',
-              'build/reports/python-regression.log',
-              'build/app-build.log'
-            ]) {
+            const add = (title, body) => parts.push(`### ${title}\n\`\`\`\n${body}\n\`\`\``);
+            try {
+              add('python_test_summary.json', fs.readFileSync('build/reports/python_test_summary.json', 'utf8'));
+            } catch (e) { parts.push('### python_test_summary.json (missing)'); }
+            try {
+              const records = fs.readFileSync('build/reports/python_test_records.jsonl', 'utf8')
+                .split('\n').filter(Boolean).map((line) => JSON.parse(line))
+                .filter((r) => r.status !== 'PASS');
+              add('non-PASS records', JSON.stringify(records, null, 1));
+            } catch (e) { parts.push('### non-PASS records (unavailable)'); }
+            for (const path of ['build/reports/python-regression.log', 'build/app-build.log']) {
               try {
-                const text = fs.readFileSync(path, 'utf8');
-                const lines = text.split('\n');
-                const tail = lines.slice(-120).join('\n');
-                parts.push(`### ${path}\n\`\`\`\n${tail}\n\`\`\``);
-              } catch (error) {
-                parts.push(`### ${path} (missing)`);
-              }
+                const lines = fs.readFileSync(path, 'utf8').split('\n');
+                add(`${path} (tail)`, lines.slice(-150).join('\n'));
+              } catch (e) { parts.push(`### ${path} (missing)`); }
             }
             await github.rest.checks.create({
               owner: context.repo.owner,

@@ -14,6 +14,7 @@ import os
 import signal
 import subprocess
 import threading
+from functools import lru_cache
 import time
 from typing import Dict, Optional
 
@@ -133,3 +134,20 @@ def cleanup_child_subprocesses() -> None:
 
     with _CHILD_LOCK:
         _TRACKED_CHILD_PROCS.clear()
+
+
+@lru_cache(maxsize=8)
+def ffmpeg_has_filter(name: str) -> bool:
+    """True when the ffmpeg on PATH exposes `name` (e.g. drawtext needs freetype)."""
+    try:
+        result = run_tracked(
+            ["ffmpeg", "-hide_banner", "-filters"],
+            timeout=15,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return False
+    if result.returncode != 0:
+        return False
+    return name in (result.stdout or "")
