@@ -236,3 +236,12 @@
 - **Ed25519 pin (D07)**: key cố định + fingerprint pin + `key_id`; `AIVIDEO_CONTRACTS_DIR` không thể redirect. Test: key khác (dù hợp lệ) bị từ chối; chưa pin → không chứng nhận.
 - Guard cấu trúc mới: `tests/test_wave_c_invariants.py` (5 test) chặn tái phạm single-writer và env override.
 - **Nghiệm thu**: 173 Python PASS · 0 FAIL · 1 SKIP; 16 nhóm Swift suite PASS; `run_tests.sh` EXIT=0; app build + codesign OK.
+
+## 2026-11-10 — ECC Wave D: honest UI/evidence + runtime guards
+
+- **D12**: `G3StoryRequestBuilder` (mới) + G3 UI chọn claim thật từ G1, nút "Xác nhận fact này"; không còn `c1`. Test Swift: `tests/test_g3_story_request.swift`.
+- **D13**: S02 harness không tự chứng nhận; Finder launch chỉ chạy khi `AIVIDEO_RUN_UI_TESTS=1`; bookmark dùng `.withSecurityScope` (PASS thật trên máy này). `package_review` phân biệt NOT_RUN với FAIL.
+- **D14**: `model_installation.py` là nguồn duy nhất; preflight deep-hash, worker báo `visual_weights_verification`. Test: `tests/test_model_installation.py`.
+- **D15/D16**: bỏ slider TTS sai; ASR status `not_configured` thay vì `completed`.
+- **D17**: `child_process.py` + `run_tracked`; test `tests/test_worker_child_process.py`.
+- **Nghiệm thu**: chạy `run_tests.sh` sau khi hoàn tất (ghi ở mục dưới).

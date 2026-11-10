@@ -97,3 +97,11 @@
 - **Reconciler**: chỉ đánh `SUCCEEDED` khi **toàn bộ** publication của job đã COMMITTED (`SUM(committed) = COUNT(*)`), không còn "1 artifact là xong".
 - **Gốc tin cậy Ed25519**: key lấy từ đường dẫn cố định `contracts/field_qa_ed25519_public_key.pem`, bị **pin bằng SHA-256 fingerprint** (`PINNED_FIELD_QA_KEY_SHA256`) và `key_id = aivideo-field-qa-v1`; `AIVIDEO_CONTRACTS_DIR` không còn điều khiển được đường dẫn key. Khi chưa provision key thật, chứng nhận E0/E1 **không khả dụng** (fail-closed) — đúng trạng thái hiện tại của repo.
 - **Bằng chứng**: 173 Python test PASS (1 skip), 16 nhóm Swift suite PASS, app build + codesign OK.
+
+## 11. Wave D — Trung thực trong UI, evidence và runtime (2026-11-10)
+- **S02 evidence**: harness cũ chỉ spawn worker trực tiếp nhưng ghi `"status": "PASS"` cho "Finder launch", và tạo bookmark `.suitableForBookmarkFile` trong khi nhận là security-scoped. Nay: phần automated ghi `s02_worker_bundle.json`; `s02_t1_finder_launch.json` chỉ PASS khi thật sự launch qua `NSWorkspace.openApplication` (cần `AIVIDEO_RUN_UI_TESTS=1`), ngược lại NOT_RUN; `s02_t2_bookmark.json` dùng `.withSecurityScope` và chỉ PASS khi `startAccessingSecurityScopedResource()` thành công (máy này: access=true, PASS thật).
+- **G3 claim**: UI không còn gửi `claim_id="c1"` với `review_status=confirmed/support_status=supported`. Mọi story request đi qua `G3StoryRequestBuilder`, bắt buộc `ClaimRecord` thật đã confirmed; origin/epistemic/support/allowed_use lấy nguyên từ DB.
+- **Model installed**: một định nghĩa duy nhất `model_installation.inspect_model_installation` (missing → incomplete → present_unverified → verified). Worker chấp nhận `present_unverified` nhưng trả `visual_weights_verification` cho caller; preflight yêu cầu `verified` (deep hash) nên vẫn NO-GO trung thực.
+- **TTS**: bỏ slider 0.8–1.2× (engine khoá 1.0×), hiển thị rõ profile và yêu cầu cài VieNeu offline.
+- **ASR**: `audio_analysis_status` không còn hard-code `completed`; không có transcript → `not_configured`, không có audio stream → `no_audio`.
+- **Child reaper**: mọi ffmpeg/ffprobe đi qua `run_tracked` (đăng ký process group, kill khi timeout, unregister sau khi xong); registry chuyển sang `child_process.py` để dùng chung.

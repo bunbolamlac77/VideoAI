@@ -5,7 +5,7 @@
 **Size tier:** **large** — cross-cutting (Python pipeline contract, benchmark, Swift stores, tests, docs), có thay đổi contract nội bộ và open questions.
 **Phase mask:** 0 → 1 (light) → 2 → **GATE 1** → 4 (TDD) → 5 → 6 → **GATE 2**
 
-**Trạng thái:** Wave A+B+C hoàn tất (T01–T10). Wave D–E còn mở.
+**Trạng thái:** Wave A+B+C+D hoàn tất (T01–T15). Wave E (hygiene) còn mở.
 
 ---
 
@@ -77,11 +77,11 @@
 ### Wave D — Luồng người dùng & trung thực (D12–D17)
 | Task | Việc | Nghiệm thu |
 |---|---|---|
-| T11 | G3 UI bind claim thật từ `state.g1Claims` | Không còn `c1`; nút Duyệt tắt khi không có claim confirmed |
-| T12 | S02 evidence: launch thật hoặc NOT_RUN | Không còn file tự ghi PASS |
-| T13 | Thống nhất "model installed" (1 hàm) | Preflight và worker cùng kết quả |
-| T14 | TTS: cài VieNeu hoặc disable bước voice + bỏ slider | Không còn ngõ cụt |
-| T15 | Lease Python + reaper ffmpeg | Kill worker → không còn ffmpeg orphan |
+| ✅ T11 | G3 UI bind claim thật từ `state.g1Claims` | Không còn `c1`; nút Duyệt tắt khi không có claim confirmed |
+| ✅ T12 | S02 evidence: launch thật hoặc NOT_RUN | Không còn file tự ghi PASS |
+| ✅ T13 | Thống nhất "model installed" (1 hàm) | Preflight và worker cùng kết quả |
+| ✅ T14 | TTS: cài VieNeu hoặc disable bước voice + bỏ slider | Không còn ngõ cụt |
+| ✅ T15 | Lease Python + reaper ffmpeg | Kill worker → không còn ffmpeg orphan |
 
 ### Wave E — Hygiene (P2, sau cùng)
 `AIVideoApp` tách file, path cứng → env, Swift suite ghi JSONL, CI chạy harness, xoá dead code.
