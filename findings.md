@@ -62,4 +62,22 @@
   - Khi chọn một ảnh: Tự động hiển thị `LocalImagePreview` (render qua `NSImage`), thông số kích thước pixel/pt, dung lượng, và chỉ dẫn tư liệu tham chiếu cho kịch bản POV.
   - Hỗ trợ đầy đủ phím tắt chuẩn macOS: `⌘O` để mở thư mục, `⇧⌘O` để mở file đơn lẻ, và đăng ký tự động trên Spotlight thông qua `/Applications/AIVideo.app`.
 
-  - `app_binary_path` -> `ValueError: APP_BINARY_OVERRIDE_FORBIDDEN`
+## 8. Kết Quả Thẩm Định & Tinh Chỉnh Chuyên Sâu (Senior Developer Audit & Hardening)
+- **Lỗ hổng thực thi test độc lập (Test Suite Isolation & DevEx)**:
+  - 11/23 bài test Python (`test_s10` đến `test_s15`, `test_audit_hardening`, `test_p0_integrity_gates`, `test_runner_records`, `test_s05_snapshot`) gặp lỗi `ModuleNotFoundError` khi chạy trực tiếp qua `workers/.venv/bin/python3 <file>` do thiếu cấu hình `sys.path` trỏ về project root và `workers/src`.
+  - Đã chuẩn hoá toàn bộ các test script chèn đường dẫn an toàn qua `Path(__file__).resolve().parents[1]`, đồng thời bổ sung `tests/conftest.py`. Kết quả: **23/23 file test PASS 100% khi chạy standalone**.
+- **Lỗi tài liệu hóa kiểm thử trong `GEMINI.md`**:
+  - Hướng dẫn cũ `cd packages/AIVideoCore && swift test` gây crash/abort do `swift-package` trên macOS CLT bị lỗi dyld symbol mismatch trong `BuildServerProtocol.framework` và dự án không dùng SPM manifest.
+  - Đã cập nhật `GEMINI.md` với các lệnh chuẩn xác: `./tools/run_s06_tests.sh` và `./tools/run_tests.sh`.
+- **Lỗi khôi phục trạng thái Security-Scoped Bookmark file đơn lẻ (`restoreSavedBookmark`)**:
+  - Khi bookmark là file riêng lẻ (`isDir == false`), hàm cũ chỉ set `selectedFilePath` và probe ngầm mà bỏ quên `selectedDirectoryPath` và `mediaItems`, khiến giao diện hiển thị màn hình trống placeholder dù file đã được nạp.
+  - Đã tái cấu trúc với helper `populateSingleFile(url:)` đồng bộ hóa đầy đủ danh sách tư liệu và thanh inspector.
+- **Vi phạm Invariant 4 (Heavy Task Concurrency) & Trạng thái nút bấm UI**:
+  - G2 Analysis và Resolve Spike trước đây gọi trực tiếp worker mà không đăng ký lease với `ResourceGovernor.shared`. Nếu người dùng thao tác ở tab khác (hoặc G4/G5 render), hai tác vụ nặng có thể chạy đồng thời làm tràn RAM 16 GB.
+  - Đã tích hợp `ResourceGovernor.shared.acquireHeavyLease` (loại `.modelInference` và `.resolveRender`) kèm khối `defer` giải phóng lease triệt để.
+  - Sửa logic `.disabled` trên các nút phân tích video: bắt buộc kiểm tra `!state.isWorkerConnected || state.isRunningG2Analysis || state.isBatchAnalysisRunning`.
+- **Hiện tượng giật lag Main Thread khi xem ảnh (`LocalImagePreview`)**:
+  - `NSImage(contentsOfFile:)` được gọi đồng bộ trong `body` của view gây đơ giao diện với ảnh kích thước lớn (TIFF/RAW/HEIC).
+  - Đã chuyển sang tải ảnh bất đồng bộ qua `Task.detached` với `@State private var image: NSImage?` gắn vào modifier `.task(id: path)`.
+- **An toàn luồng điều khiển `runResolveSpike`**:
+  - Bổ sung `defer { self.isRunningResolveSpike = false }` đảm bảo cờ bận không bị treo vĩnh viễn khi có lỗi ngoại lệ hoặc huỷ tác vụ.

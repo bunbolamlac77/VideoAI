@@ -159,3 +159,51 @@
   - Swift S10 SHA-256: **2/2 PASS**.
   - Tất cả 15 Swift test suite: **PASS 100%**.
   - Build & Install: `/Applications/AIVideo.app` biên dịch và ký số thành công.
+
+## 2026-11-10: Thẩm Định Chuyên Sâu Của Kỹ Sư Cấp Cao & Tối Ưu Hóa Trơn Tru Toàn Diện
+- **Khắc Phục Toàn Diện Lỗi Thực Thi Test Độc Lập (Test Isolation)**:
+  - Trước sửa lỗi: 11/23 file test Python gặp lỗi `ModuleNotFoundError` khi chạy trực tiếp (`workers/.venv/bin/python3 tests/test_*.py`).
+  - Sau sửa lỗi: Chuẩn hoá cấu hình `sys.path` với `_ROOT` và `_ROOT / "workers" / "src"` trong toàn bộ 11 file test bị thiếu, đồng thời tạo mới `tests/conftest.py`.
+  - Nghiệm thu: **23/23 file test Python chạy PASS 100% khi chạy standalone**.
+- **Sửa Lỗi Khôi Phục Bookmark File Đơn Lẻ (`restoreSavedBookmark`)**:
+  - Tái cấu trúc logic nạp file với helper `populateSingleFile(url:)` giúp khôi phục đầy đủ cả thư mục cha, danh sách tư liệu `mediaItems` và thanh inspector chi tiết khi người dùng mở lại app từ single file bookmark.
+- **Tuân Thủ Tuyệt Đối Invariant 4 (Heavy Task Concurrency & Resource Governor)**:
+  - Bổ sung đăng ký lease `ResourceGovernor.shared.acquireHeavyLease` cho cả G2 Analysis (`.modelInference`) và DaVinci Resolve Spike (`.resolveRender`) kèm khối giải phóng `releaseHeavyLease` trong `defer`.
+  - Khóa đồng bộ trạng thái `.disabled` của tất cả các nút phân tích video (`!state.isWorkerConnected || state.isRunningG2Analysis || state.isBatchAnalysisRunning`), ngăn chặn triệt để hành vi bấm nhiều lần hoặc chạy song song làm tràn RAM 16 GB.
+- **Loại Bỏ Hoàn Toàn Lag Main Thread Trong Xem Ảnh Tư Liệu (`LocalImagePreview`)**:
+  - Thay thế việc gọi đồng bộ `NSImage(contentsOfFile:)` trong view body bằng giải mã bất đồng bộ trong background qua `Task.detached` kết hợp `.task(id: path)` và `@State private var image: NSImage?`.
+- **Hoàn Thiện Điều Khiển Luồng & Trải Nghiệm Người Dùng**:
+  - Thêm `defer { self.isRunningResolveSpike = false }` trong `runResolveSpike()` tránh treo cờ bận.
+  - Sửa nút Finder mở trực tiếp thư mục nguồn bằng `NSWorkspace.shared.open(dirURL)`.
+  - Cập nhật chuẩn xác các lệnh kiểm thử và build trong `GEMINI.md`.
+- **Nghiệm Thu Hồi Quy Toàn Diện**:
+  - `workers/.venv/bin/python3 <test_file>`: **23/23 PASS 100%**.
+  - `tools/run_python_tests.py`: **156 PASS · 0 FAIL · 0 BLOCKED · 1 SKIPPED**.
+  - `tools/run_s06_tests.sh`: **5/5 PASS**.
+  - `tools/run_tests.sh`: **15/15 Swift Suites PASS · Python Suite PASS · Codesign PASS**.
+  - `tools/build_macos_app.sh`: **Build hoàn tất không có cảnh báo/lỗi, ký số Ad-hoc hợp lệ**.
+
+## [2026-11-10] — Cải Tiến Toàn Diện UI/UX: Calm Editor 4-Step Workflow & Auto-Wiring
+
+### 1. Vấn đề giải quyết
+- Loại bỏ sự rối rắm và quá tải nhận thức do hiển thị 9 tab kỹ thuật nội bộ (G0-G5, SQLite WAL, RPC capabilities) mà không có thứ tự làm việc rõ ràng.
+- Chấm dứt hoàn toàn việc người dùng phải copy-paste thủ công `mappingPublicationId`, `SHA-256 (64 hex)` giữa các màn hình G3, G4 và G5.
+
+### 2. Các thay đổi chính
+- **Thanh Stepper tuyến tính (`WorkflowStepperView`)**: Đặt ở đầu trang chi tiết cho 4 bước chính:
+  1. `1. Tư liệu` (Quét AI và trích xuất fact)
+  2. `2. Kịch bản & Thoại` (Sinh cốt truyện, chọn voice VieNeu-TTS, duyệt S19)
+  3. `3. Xem trước (Preview)` (Dựng timeline 1080×1920 dọc có sub, kiểm tra QC)
+  4. `4. Xuất bản Final` (Render 2160×3840 24fps & mở DaVinci Resolve)
+- **Auto-wiring dữ liệu ngầm**:
+  - G3 sau khi duyệt tự động đẩy `approvalId`, `cachedStoryBeats` và tự động sinh danh sách `cachedCaptionCues` CFR24 vào `AppState`.
+  - G4 và G5 tự động nhận diện `mappingPublicationId` từ `AppState` hoặc truy vấn tự động từ `artifact_publications` trong `ProjectStore`.
+- **Pipeline 1-Click tự động**:
+  - G4: Bổ sung nút "Dựng & Render Preview tự động" liên kết 3 RPC `timeline.build` -> `render.start` -> `render.inspect`.
+  - G5: Bổ sung nút "Dựng & Render 4K Tự Động" và thẻ hoàn thành (Celebration Card) cho phép 1-click mở MP4 trong Finder hoặc mở Timeline trong DaVinci Resolve Studio.
+- **Tái cấu trúc Sidebar**: Phân chia rõ ràng thành nhóm "Quy trình dựng (POV Workflow)" và các nhóm kỹ thuật phụ trợ ("Dữ liệu & Kiểm chứng", "Hệ thống & Chẩn đoán").
+
+### 3. Nghiệm thu thực tế
+- Biên dịch Swift 6 arm64: **PASS** (Zero warnings, Zero errors).
+- Đóng gói và cài đặt: Đã cài `/Applications/AIVideo.app`, đăng ký Spotlight.
+- Bộ kiểm thử hồi quy: **156/156 Python tests PASS**, **5/5 Swift S06 ProjectStore tests PASS**.

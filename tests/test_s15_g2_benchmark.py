@@ -7,7 +7,14 @@ Covers S15.T1, S15.T2, S15.T3, and S15.T4.
 from __future__ import annotations
 
 import copy
+from pathlib import Path
+import sys
 import unittest
+
+_ROOT = Path(__file__).resolve().parents[1]
+for _p in (_ROOT, _ROOT / "workers" / "src"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from workers.src.aivideo_workers.g2_benchmark_runner import (
     FrozenG2EvaluationManifest,

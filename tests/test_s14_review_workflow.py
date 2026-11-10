@@ -6,7 +6,14 @@ Covers S14.T1, S14.T2, S14.T3, and S14.T4.
 
 from __future__ import annotations
 
+from pathlib import Path
+import sys
 import unittest
+
+_ROOT = Path(__file__).resolve().parents[1]
+for _p in (_ROOT, _ROOT / "workers" / "src"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from workers.src.aivideo_workers.review_workflow import (
     ReviewEvidenceAttachment,

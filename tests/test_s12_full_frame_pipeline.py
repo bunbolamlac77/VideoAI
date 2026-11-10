@@ -7,8 +7,14 @@ Covers S12.T1, S12.T2, S12.T3, and S12.T4.
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 import tempfile
 import unittest
+
+_ROOT = Path(__file__).resolve().parents[1]
+for _p in (_ROOT, _ROOT / "workers" / "src"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from workers.src.aivideo_workers.full_frame_pipeline import (
     BoundedPipelineConfig,

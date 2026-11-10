@@ -11,7 +11,10 @@ import types
 import unittest
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "workers" / "src"))
+_ROOT = Path(__file__).resolve().parents[1]
+for _p in (_ROOT, _ROOT / "workers" / "src"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from aivideo_workers import main, pipeline_adapters, g5_release_audit
 from aivideo_workers.pipeline_adapters import PipelineAdapterError, S11ModelRegistryAndAdapters

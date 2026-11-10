@@ -12,8 +12,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
+
+_ROOT = Path(__file__).resolve().parents[1]
+for _p in (_ROOT, _ROOT / "workers" / "src"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from workers.src.aivideo_workers.pipeline_adapters import (
     S11ModelRegistryAndAdapters,

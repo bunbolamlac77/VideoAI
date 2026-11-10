@@ -43,3 +43,19 @@ Hoàn thiện toàn bộ các khuyến nghị từ báo cáo thẩm định đ�
   - [x] P1: Bổ sung script kiểm thử độc lập S06 ProjectStore (`tools/run_s06_tests.sh`) với dò tìm SDK tương thích.
   - [x] P1: Bổ sung kiểm tra Apple Team ID cho các bản release chính thức trong preflight.
   - [x] Nghiệm thu: 156 Python regression PASS, 21 Autobridge PASS, 15 Swift suite PASS, build & codesign PASS.
+- [x] **Round 3 Senior Developer Rigorous Audit & Full Stability Hardening**:
+  - [x] Khắc phục triệt để lỗi thực thi test cô lập: 23/23 file test Python chạy standalone đạt 100% PASS mà không phụ thuộc `PYTHONPATH`.
+  - [x] Tạo `tests/conftest.py` và chuẩn hóa lệnh kiểm thử trong `GEMINI.md`.
+  - [x] Sửa lỗi khôi phục trạng thái Security-Scoped Bookmark file đơn lẻ trong `AppState.restoreSavedBookmark()`.
+  - [x] Tích hợp `ResourceGovernor.shared.acquireHeavyLease` cho G2 Analysis và Resolve Spike (bảo vệ Invariant 4).
+  - [x] Khóa trạng thái nút bấm phân tích video khi đang chạy tác vụ nặng (loại bỏ nguy cơ gọi VLM đồng thời).
+  - [x] Chuyển đổi `LocalImagePreview` sang giải mã bất đồng bộ, loại bỏ hoàn toàn giật lag Main Thread.
+  - [x] Bổ sung khối `defer` trong `runResolveSpike()` và hoàn thiện hành vi mở thư mục trong Finder.
+  - [x] Nghiệm thu toàn diện: 23/23 Standalone PASS · 156/156 Python Structured PASS · 15/15 Swift Suites PASS · Build & Codesign PASS.
+- [x] **Calm Editor UI Redesign (Quy Trình 4 Bước Tuyến Tính & Auto-Wiring)**:
+  - [x] Tinh gọn Sidebar thành 2 nhóm rõ rệt: "Quy trình dựng (POV Workflow)" (4 bước chính: 1. Tư liệu nguồn → 2. Kịch bản & Thoại → 3. Xem trước Preview → 4. Xuất bản Final 4K) và nhóm phụ trợ "Dữ liệu & Kiểm chứng", "Hệ thống & Chẩn đoán".
+  - [x] Thêm thanh tiến trình `WorkflowStepperView` ở đầu trang chi tiết cho 4 bước chính với trạng thái hoàn thành và nút điều hướng "Tiếp tục sang bước tiếp theo →".
+  - [x] Triệt tiêu hoàn toàn việc copy-paste UUID / SHA-256 thủ công giữa các màn hình G3, G4, G5: Tự động kết nối dữ liệu ngầm (`mappingPublicationId`, `cachedStoryBeats`, `cachedCaptionCues`) qua `AppState`.
+  - [x] Tích hợp pipeline 1-Click tự động dựng và render preview trong G4 (`runFullPreviewPipeline()`) và final 4K trong G5 (`runFullFinalPipeline()`).
+  - [x] Thêm thẻ thông báo hoàn thành (Celebration Card) cho phép mở file MP4 4K trong Finder hoặc mở Timeline trong DaVinci Resolve Studio chỉ với 1 click.
+  - [x] Đóng gói và cài đặt phiên bản mới nhất vào `/Applications/AIVideo.app`.

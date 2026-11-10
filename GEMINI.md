@@ -63,17 +63,26 @@ Mục tiêu phần cứng: **Apple Silicon M1 Pro, 16 GB Unified RAM**.
 ## 3. Lệnh Kiểm Thử & Nghiệm Thu Thường Dùng
 
 ```bash
-# Chạy toàn bộ test Python của workers và contracts
+# Chạy toàn bộ test Python của workers và contracts (hỗ trợ chạy độc lập từng file)
 for t in tests/test_*.py; do
   echo "Running $t..."
   workers/.venv/bin/python3 "$t"
 done
+
+# Chạy test suite Python với báo cáo JSONL có cấu trúc
+workers/.venv/bin/python3 tools/run_python_tests.py
 
 # Chạy test cụ thể theo từng Gate (ví dụ Gate G1, G2, G3)
 workers/.venv/bin/python3 tests/test_g1_contracts.py
 workers/.venv/bin/python3 tests/test_s10_media_indexer.py
 workers/.venv/bin/python3 tests/test_s16_to_s19_g3.py
 
-# Kiểm tra Swift Core package
-cd packages/AIVideoCore && swift test
+# Kiểm tra Swift Core package (biên dịch trực tiếp qua swiftc với SDK tương thích)
+./tools/run_s06_tests.sh
+
+# Chạy toàn bộ ma trận kiểm thử hồi quy Swift + Python + Codesign
+./tools/run_tests.sh
+
+# Đóng gói và cài đặt ứng dụng macOS vào /Applications
+./tools/build_macos_app.sh --install
 ```

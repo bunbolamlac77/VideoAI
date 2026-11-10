@@ -224,9 +224,21 @@ struct G5ConsoleView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 10) {
                         Button {
+                            Task { await runFullFinalPipeline() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if isBusy { ProgressView().controlSize(.small) }
+                                Image(systemName: "wand.and.stars")
+                                Text("Dựng & Render 4K Tự Động")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isBusy || !state.isWorkerConnected || publishedAssets.isEmpty)
+
+                        Button {
                             Task { await rpc("g5.timeline.build_4k") }
                         } label: {
-                            Label("Dựng Timeline 4K", systemImage: "film")
+                            Label("1. Dựng Timeline", systemImage: "film")
                         }
                         .buttonStyle(.bordered)
                         .disabled(isBusy || !state.isWorkerConnected || publishedAssets.isEmpty)
@@ -234,7 +246,7 @@ struct G5ConsoleView: View {
                         Button {
                             Task { await rpc("g5.render.start_4k") }
                         } label: {
-                            Label("Render 4K Final", systemImage: "play.circle")
+                            Label("2. Render", systemImage: "play.circle")
                         }
                         .buttonStyle(.bordered)
                         .disabled(isBusy || !state.isWorkerConnected)
@@ -242,7 +254,7 @@ struct G5ConsoleView: View {
                         Button {
                             Task { await rpc("g5.render.inspect_4k") }
                         } label: {
-                            Label("Kiểm định QC 4K", systemImage: "checkmark.shield")
+                            Label("3. QC Kỹ thuật", systemImage: "checkmark.shield")
                         }
                         .buttonStyle(.bordered)
                         .disabled(isBusy || !state.isWorkerConnected)
@@ -313,6 +325,65 @@ struct G5ConsoleView: View {
                 }
             }
 
+            if !state.latestG5PublicationId.isEmpty {
+                Card {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.system(size: 32))
+                                .foregroundStyle(.green)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Chúc mừng! Video POV Final 4K đã sẵn sàng!")
+                                    .font(.title3.weight(.bold))
+                                Text("Bản xuất 2160×3840 @ 24fps chuẩn Rec.709 và timeline .drp đã được niêm phong hoàn tất.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        Divider()
+
+                        HStack(spacing: 12) {
+                            if !finalPath.isEmpty {
+                                Button {
+                                    let url = URL(fileURLWithPath: finalPath)
+                                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                                } label: {
+                                    Label("Hiện MP4 4K trong Finder", systemImage: "folder")
+                                }
+                                .buttonStyle(.borderedProminent)
+
+                                Button {
+                                    let url = URL(fileURLWithPath: finalPath)
+                                    NSWorkspace.shared.open(url)
+                                } label: {
+                                    Label("Phát video 4K", systemImage: "play.fill")
+                                }
+                                .buttonStyle(.bordered)
+                            }
+
+                            if !drpPath.isEmpty {
+                                Button {
+                                    let url = URL(fileURLWithPath: drpPath)
+                                    NSWorkspace.shared.open(url)
+                                } label: {
+                                    Label("Mở trong DaVinci Resolve", systemImage: "arrow.up.forward.app")
+                                }
+                                .buttonStyle(.bordered)
+                            }
+
+                            Spacer()
+
+                            Button("Làm video mới (Về Bước 1)") {
+                                state.navigateToSection(.media)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    .padding(6)
+                }
+            }
+
             // Form 5: Hệ thống & Audit (S23 - S26)
             Card(title: "5. Kiểm toán & Năng lực phát hành (S23..S26)", symbol: "shield.lefthalf.filled") {
                 HStack(spacing: 10) {
@@ -377,8 +448,44 @@ struct G5ConsoleView: View {
         }
         .padding(.vertical, 4)
         .onAppear {
+            autoPopulateFromStateAndStore()
             syncFormToStageJSON()
         }
+    }
+
+    private func autoPopulateFromStateAndStore() {
+        if mappingPublicationId.isEmpty {
+            if !state.latestG4PublicationId.isEmpty {
+                mappingPublicationId = state.latestG4PublicationId
+            } else if !state.latestG3PublicationId.isEmpty {
+                mappingPublicationId = state.latestG3PublicationId
+            }
+            Task {
+                if let store = state.projectStore, let proj = state.g1Project {
+                    let pubs = try? await store.listPublications(projectId: proj.projectId)
+                    if let mapPub = pubs?.last(where: { $0.artifactType == "g2_source_mapping" && $0.state == .committed }) ?? pubs?.last(where: { $0.artifactType == "g2_source_mapping" }) {
+                        await MainActor.run {
+                            self.mappingPublicationId = mapPub.publicationId.uuidString
+                            self.syncFormToStageJSON()
+                        }
+                    }
+                }
+            }
+        }
+        if !state.cachedCaptionCues.isEmpty && (cues.count <= 1 && (cues.first?.text == "Nội dung đã duyệt" || cues.isEmpty)) {
+            cues = state.cachedCaptionCues.map { G5CaptionCue(text: $0.text, startFrame: $0.startFrame, endFrame: $0.endFrame) }
+        }
+        if let firstBeat = state.cachedStoryBeats.first {
+            beatId = firstBeat.beatId
+        }
+    }
+
+    private func runFullFinalPipeline() async {
+        await rpc("g5.timeline.build_4k")
+        guard !resultText.contains("Lỗi") && !resultText.contains("blocked") else { return }
+        await rpc("g5.render.start_4k")
+        guard !resultText.contains("Lỗi") && !resultText.contains("blocked") else { return }
+        await rpc("g5.render.inspect_4k")
     }
 
     private func syncFormToStageJSON() {
@@ -559,6 +666,7 @@ struct G5ConsoleView: View {
                 reviewNotes: reviewNotes,
                 watchedFull4KAndVerifiedCaptionsAndAudio: reviewed4K
             )
+            state.latestG5PublicationId = mp4ID.uuidString
             reviewed4K = false
             resultText = "Canonical S22 Final 4K Approval: \(approved.approvalId.uuidString)\nFinal SHA: \(approved.finalSHA256)"
         } catch {

@@ -46,6 +46,51 @@ enum MediaFilter: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum WorkflowStep: String, CaseIterable, Identifiable {
+    case assets = "media"
+    case story = "story"
+    case preview = "preview"
+    case export = "final"
+
+    var id: String { rawValue }
+
+    var stepNumber: Int {
+        switch self {
+        case .assets: return 1
+        case .story: return 2
+        case .preview: return 3
+        case .export: return 4
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .assets: return "1. Tư liệu"
+        case .story: return "2. Kịch bản & Thoại"
+        case .preview: return "3. Xem trước (Preview)"
+        case .export: return "4. Xuất bản Final"
+        }
+    }
+
+    var shortDescription: String {
+        switch self {
+        case .assets: return "Nạp & Quét AI"
+        case .story: return "Cốt truyện & Voice"
+        case .preview: return "Khớp video 9:16 & Sub"
+        case .export: return "Render 4K & Resolve"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .assets: return "film.stack"
+        case .story: return "text.book.closed"
+        case .preview: return "play.rectangle"
+        case .export: return "checkmark.seal"
+        }
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     // Worker Status
@@ -117,6 +162,43 @@ final class AppState: ObservableObject {
     @Published var batchCompletedCount: Int = 0
     @Published var batchFailedCount: Int = 0
     private var batchCancelRequested: Bool = false
+    // Linear Workflow & Auto-Wiring State
+    @Published var activeWorkflowStep: WorkflowStep = .assets
+    @Published var requestedSection: AppSection? = nil
+    @Published var latestG3PublicationId: String = ""
+    @Published var latestG4PublicationId: String = ""
+    @Published var latestG5PublicationId: String = ""
+    @Published var cachedStoryBeats: [G3BeatItem] = []
+    @Published var cachedCaptionCues: [G4CaptionCue] = []
+    @Published var isStep2StoryApproved: Bool = false
+    @Published var isStep3PreviewReady: Bool = false
+
+    func navigateToSection(_ section: AppSection) {
+        self.requestedSection = section
+    }
+
+    func syncApprovedStoryToBeatsAndCues(beats: [G3BeatItem], publicationId: String) {
+        self.cachedStoryBeats = beats
+        self.latestG3PublicationId = publicationId
+        self.isStep2StoryApproved = true
+
+        // Generate default sequential 24fps caption cues from beats
+        var generatedCues: [G4CaptionCue] = []
+        var currentFrame = 0
+        for b in beats {
+            let wordCount = max(1, b.voiceText.split(separator: " ").count)
+            let durationSeconds = max(2.0, Double(wordCount) * 0.45)
+            let frameSpan = Int(durationSeconds * 24.0)
+            generatedCues.append(G4CaptionCue(
+                text: b.voiceText,
+                startFrame: currentFrame,
+                endFrame: currentFrame + frameSpan
+            ))
+            currentFrame += frameSpan
+        }
+        self.cachedCaptionCues = generatedCues
+    }
+
     var projectStore: ProjectStore? // actor remains single canonical writer; exposed to G3 UI only
     var publicationService: ArtifactPublicationService? // shared S08 actor for G4
     private let backupService = BackupRestoreService(supportedMaxSchemaVersion: 2)
@@ -512,6 +594,27 @@ final class AppState: ObservableObject {
         }
     }
 
+    func populateSingleFile(url: URL) {
+        guard let kind = Self.mediaKind(for: url) else {
+            self.errorMessage = "Định dạng không được hỗ trợ: .\(url.pathExtension)"
+            return
+        }
+        self.selectedDirectoryPath = url.deletingLastPathComponent().path
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        let date = attrs?[.modificationDate] as? Date
+        let singleItem = MediaSourceItem(
+            id: url.path,
+            url: url,
+            name: url.lastPathComponent,
+            kind: kind,
+            fileSize: size,
+            modifiedDate: date
+        )
+        self.mediaItems = [singleItem]
+        selectItemForInspection(singleItem)
+    }
+
     func handleSelectedURL(_ url: URL) {
         stopAccessingCurrentSecurityScopedResource()
         self.isBookmarkStale = false
@@ -542,24 +645,7 @@ final class AppState: ObservableObject {
             Task { await self.loadDirectory(url) }
         } else {
             // Single file selection
-            guard let kind = Self.mediaKind(for: url) else {
-                self.errorMessage = "Định dạng không được hỗ trợ: .\(url.pathExtension)"
-                return
-            }
-            self.selectedDirectoryPath = url.deletingLastPathComponent().path
-            let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
-            let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-            let date = attrs?[.modificationDate] as? Date
-            let singleItem = MediaSourceItem(
-                id: url.path,
-                url: url,
-                name: url.lastPathComponent,
-                kind: kind,
-                fileSize: size,
-                modifiedDate: date
-            )
-            self.mediaItems = [singleItem]
-            selectItemForInspection(singleItem)
+            populateSingleFile(url: url)
         }
     }
 
@@ -625,8 +711,7 @@ final class AppState: ObservableObject {
                         self.selectedDirectoryPath = restoredURL.path
                         Task { await self.loadDirectory(restoredURL) }
                     } else {
-                        self.selectedFilePath = restoredURL.path
-                        Task { await self.probeFile(path: restoredURL.path) }
+                        populateSingleFile(url: restoredURL)
                     }
                 } else if isStale {
                     self.errorMessage = "Quyền truy cập thư mục đã cũ (stale bookmark). Vui lòng chọn lại thư mục để tái cấp quyền."
@@ -648,7 +733,6 @@ final class AppState: ObservableObject {
                     relativeTo: nil,
                     bookmarkDataIsStale: &isStale
                 )
-                self.selectedFilePath = restoredURL.path
                 self.isBookmarkStale = isStale
                 if isStale {
                     self.errorMessage = "Quyền truy cập file đã cũ. Vui lòng chọn lại file."
@@ -656,7 +740,7 @@ final class AppState: ObservableObject {
                     let success = restoredURL.startAccessingSecurityScopedResource()
                     if success {
                         self.currentlyAccessedSecurityScopedURL = restoredURL
-                        Task { await self.probeFile(path: restoredURL.path) }
+                        populateSingleFile(url: restoredURL)
                     }
                 }
             } catch {
@@ -716,6 +800,43 @@ final class AppState: ObservableObject {
     func runResolveSpike() async {
         self.isRunningResolveSpike = true
         self.errorMessage = nil
+        defer { self.isRunningResolveSpike = false }
+
+        let governor = ResourceGovernor.shared
+        let leaseDecision = await governor.acquireHeavyLease(
+            projectId: g1Project?.projectId ?? UUID(),
+            jobId: UUID(),
+            attemptId: UUID(),
+            fencingToken: g1Project?.currentRevision ?? 1,
+            kind: .resolveRender,
+            workerPid: nil
+        )
+        let leaseToken: HeavyLeaseToken?
+        switch leaseDecision {
+        case .granted(let token):
+            leaseToken = token
+        case .deniedActiveLeaseHeld(let holderJob, _):
+            self.errorMessage = "Tài nguyên đang bận bởi tác vụ nặng khác (\(holderJob.uuidString.prefix(8)))."
+            return
+        case .deniedZombieWorkerStillAlive(let pid):
+            self.errorMessage = "Tiến trình worker (PID \(pid)) đang giải phóng bộ nhớ. Vui lòng thử lại sau."
+            return
+        case .deniedExternalResolveBusy(let reason):
+            self.errorMessage = "DaVinci Resolve đang bận: \(reason)"
+            return
+        case .pausedInsufficientMemory(let avail, let req):
+            self.errorMessage = "Bộ nhớ RAM khả dụng không đủ: \(avail) MB < yêu cầu \(req) MB."
+            return
+        case .pausedInsufficientDisk(let avail, let req):
+            self.errorMessage = "Dung lượng đĩa không đủ: \(avail) MB < yêu cầu \(req) MB."
+            return
+        }
+        defer {
+            if let token = leaseToken {
+                Task { await governor.releaseHeavyLease(leaseId: token.leaseId) }
+            }
+        }
+
         do {
             let res = try await worker.runResolveSpike(forceFreshRun: true)
             self.resolveSpikeResult = res
@@ -724,7 +845,6 @@ final class AppState: ObservableObject {
             self.errorMessage = "Resolve Spike thất bại: \(error.localizedDescription)"
             self.resolveSpikeResult = nil
         }
-        self.isRunningResolveSpike = false
     }
 
     func shutdownAsync() async {
@@ -822,6 +942,37 @@ final class AppState: ObservableObject {
         proj: ProjectRecord,
         wd: WorkdayRecord
     ) async throws -> CoverageLedgerRecord {
+        // Enforce Core Invariant 4: Resource Governor Heavy Lease
+        let governor = ResourceGovernor.shared
+        let leaseDecision = await governor.acquireHeavyLease(
+            projectId: proj.projectId,
+            jobId: UUID(),
+            attemptId: UUID(),
+            fencingToken: proj.currentRevision,
+            kind: .modelInference,
+            workerPid: nil
+        )
+        let leaseToken: HeavyLeaseToken
+        switch leaseDecision {
+        case .granted(let token):
+            leaseToken = token
+        case .deniedActiveLeaseHeld(let holderJob, _):
+            throw NSError(domain: "AIVideoGovernor", code: 429, userInfo: [NSLocalizedDescriptionKey: "Tài nguyên hệ thống đang bận bởi tác vụ nặng khác (\(holderJob.uuidString.prefix(8)))."])
+        case .deniedZombieWorkerStillAlive(let pid):
+            throw NSError(domain: "AIVideoGovernor", code: 429, userInfo: [NSLocalizedDescriptionKey: "Tiến trình worker cũ (PID \(pid)) vẫn đang chiếm bộ nhớ. Đang đợi giải phóng..."])
+        case .deniedExternalResolveBusy(let reason):
+            throw NSError(domain: "AIVideoGovernor", code: 429, userInfo: [NSLocalizedDescriptionKey: "DaVinci Resolve đang bận: \(reason)"])
+        case .pausedInsufficientMemory(let avail, let req):
+            throw NSError(domain: "AIVideoGovernor", code: 507, userInfo: [NSLocalizedDescriptionKey: "Bộ nhớ RAM khả dụng không đủ: \(avail) MB < yêu cầu \(req) MB."])
+        case .pausedInsufficientDisk(let avail, let req):
+            throw NSError(domain: "AIVideoGovernor", code: 507, userInfo: [NSLocalizedDescriptionKey: "Dung lượng đĩa không đủ: \(avail) MB < yêu cầu \(req) MB."])
+        }
+        defer {
+            Task {
+                await governor.releaseHeavyLease(leaseId: leaseToken.leaseId)
+            }
+        }
+
         // Compute SHA-256 fingerprint in detached background task off MainActor to ensure UI responsiveness on large 4K files
         let fingerprint = try await Task.detached(priority: .userInitiated) {
             try SourceRevisionIdentity.fingerprint(filePath: filePath)
@@ -1173,57 +1324,165 @@ struct AIVideoApp: App {
 }
 
 enum AppSection: String, CaseIterable, Identifiable, Hashable {
-    case media, model, resolve, data, review, story, preview, final, capabilities
+    case media, story, preview, final, review, data, model, resolve, capabilities
     var id: String { rawValue }
+
+    var isWorkflowStep: Bool {
+        self == .media || self == .story || self == .preview || self == .final
+    }
 
     var title: String {
         switch self {
-        case .media: return "Tư liệu nguồn"
+        case .media: return "1. Tư liệu nguồn"
+        case .story: return "2. Kịch bản & Thoại"
+        case .preview: return "3. Xem trước (Preview)"
+        case .final: return "4. Xuất bản Final 4K"
+        case .review: return "Kiểm chứng G2"
+        case .data: return "Dữ liệu & Backup"
         case .model: return "Model local"
         case .resolve: return "DaVinci Resolve"
-        case .data: return "Dữ liệu & Backup"
-        case .review: return "Kiểm chứng G2"
-        case .story: return "Kịch bản & Cắt G3"
-        case .preview: return "Preview G4"
-        case .final: return "Final 4K G5"
         case .capabilities: return "Năng lực hệ thống"
         }
     }
 
     var subtitle: String {
         switch self {
-        case .media: return "Probe media qua ffprobe, bookmark bảo mật"
+        case .media: return "Quét AI nhận diện clip, ffprobe và quản lý tư liệu"
+        case .story: return "Tạo câu chuyện POV, sinh giọng đọc VieNeu-TTS & duyệt S19"
+        case .preview: return "Khớp video dọc 1080×1920, raster phụ đề & kiểm tra QC"
+        case .final: return "Render 2160×3840 24fps & mở timeline DaVinci Resolve Studio"
+        case .review: return "Coverage, claim, review có truy vết nguồn"
+        case .data: return "ProjectStore SQLite WAL, fact ACK, portable backup"
         case .model: return "Smoke test model offline trên Apple Silicon"
         case .resolve: return "Kết nối Resolve Studio, timeline spike 24 fps"
-        case .data: return "ProjectStore SQLite WAL, fact ACK, portable backup"
-        case .review: return "Coverage, claim, review có truy vết nguồn"
-        case .story: return "Storyboard, TTS trial, SEARCH-v1, duyệt S19"
-        case .preview: return "Timeline 1080×1920, QC kỹ thuật, duyệt S21"
-        case .final: return "Render 2160×3840, handoff, release audit"
         case .capabilities: return "Năng lực worker công bố thực tế"
         }
     }
 
     var symbol: String {
         switch self {
-        case .media: return "film"
-        case .model: return "cpu"
-        case .resolve: return "film.stack"
-        case .data: return "externaldrive.badge.checkmark"
-        case .review: return "magnifyingglass.circle"
+        case .media: return "film.stack"
         case .story: return "text.book.closed"
         case .preview: return "play.rectangle"
         case .final: return "checkmark.seal"
+        case .review: return "magnifyingglass.circle"
+        case .data: return "externaldrive.badge.checkmark"
+        case .model: return "cpu"
+        case .resolve: return "film"
         case .capabilities: return "checklist"
         }
     }
 
     static let groups: [(String, [AppSection])] = [
-        ("Chuẩn bị", [.media, .model, .resolve]),
-        ("Dự án", [.data, .review]),
-        ("Dựng", [.story, .preview, .final]),
-        ("Hệ thống", [.capabilities]),
+        ("Quy trình dựng (POV Workflow)", [.media, .story, .preview, .final]),
+        ("Dữ liệu & Kiểm chứng", [.review, .data]),
+        ("Hệ thống & Chẩn đoán", [.model, .resolve, .capabilities]),
     ]
+}
+
+struct WorkflowStepperView: View {
+    let currentSection: AppSection
+    let onSelect: (AppSection) -> Void
+    @EnvironmentObject var state: AppState
+
+    private let steps: [(AppSection, String, String)] = [
+        (.media, "1. Tư liệu", "film.stack"),
+        (.story, "2. Kịch bản", "text.book.closed"),
+        (.preview, "3. Xem trước", "play.rectangle"),
+        (.final, "4. Xuất bản", "checkmark.seal")
+    ]
+
+    private var currentStepIndex: Int? {
+        steps.firstIndex(where: { $0.0 == currentSection })
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                let (section, title, icon) = step
+                let isCurrent = section == currentSection
+                let isPast = (currentStepIndex ?? 0) > index
+                let isComplete = stepIsComplete(section)
+
+                Button {
+                    onSelect(section)
+                } label: {
+                    HStack(spacing: 8) {
+                        ZStack {
+                            Circle()
+                                .fill(isCurrent ? Color.brandTeal : (isComplete ? Color.brandTeal.opacity(0.18) : Color.primary.opacity(0.06)))
+                                .frame(width: 28, height: 28)
+                            if isComplete && !isCurrent {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundStyle(Color.brandTeal)
+                            } else {
+                                Image(systemName: icon)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(isCurrent ? Color.white : (isPast ? Color.brandTeal : Color.secondary))
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title)
+                                .font(.caption.weight(isCurrent ? .bold : .medium))
+                                .foregroundStyle(isCurrent ? Color.primary : Color.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(isCurrent ? Color.brandTeal.opacity(0.1) : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+
+                if index < steps.count - 1 {
+                    Rectangle()
+                        .fill(isPast ? Color.brandTeal : Color.primary.opacity(0.1))
+                        .frame(height: 2)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 4)
+                }
+            }
+
+            Spacer(minLength: 12)
+
+            // Next step button
+            if let curIdx = currentStepIndex, curIdx < steps.count - 1 {
+                let nextStep = steps[curIdx + 1]
+                Button {
+                    onSelect(nextStep.0)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Tiếp tục: \(nextStep.1)")
+                        Image(systemName: "arrow.right")
+                    }
+                    .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06))
+        )
+    }
+
+    private func stepIsComplete(_ section: AppSection) -> Bool {
+        switch section {
+        case .media: return !state.mediaItems.isEmpty
+        case .story: return state.isStep2StoryApproved
+        case .preview: return state.isStep3PreviewReady
+        case .final: return !state.latestG5PublicationId.isEmpty
+        default: return false
+        }
+    }
 }
 
 struct ContentView: View {
@@ -1261,6 +1520,11 @@ struct ContentView: View {
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
+                        if current.isWorkflowStep {
+                            WorkflowStepperView(currentSection: current) { target in
+                                selectionRaw = target.rawValue
+                            }
+                        }
                         SectionHeader(section: current)
                         detailView(for: current)
                     }
@@ -1273,6 +1537,12 @@ struct ContentView: View {
             }
             .navigationTitle(current.title)
             .navigationSubtitle(state.g1Project?.name ?? "AIVideo v3.1")
+            .onChange(of: state.requestedSection) { _, newSec in
+                if let s = newSec {
+                    selectionRaw = s.rawValue
+                    state.requestedSection = nil
+                }
+            }
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     Menu {
@@ -1472,40 +1742,60 @@ struct StatusBar: View {
 
 struct LocalImagePreview: View {
     let path: String
+    @State private var image: NSImage?
+    @State private var isLoading: Bool = false
 
     var body: some View {
-        if let image = NSImage(contentsOfFile: path) {
-            VStack(alignment: .leading, spacing: 6) {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxHeight: 220)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.1))
-                    )
+        Group {
+            if let image = image {
+                VStack(alignment: .leading, spacing: 6) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxHeight: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.1))
+                        )
+                    HStack {
+                        Text("\(Int(image.size.width)) × \(Int(image.size.height)) pt")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                }
+            } else if isLoading {
                 HStack {
-                    Text("\(Int(image.size.width)) × \(Int(image.size.height)) pt")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    Spacer()
+                    ProgressView("Đang nạp ảnh...")
+                        .controlSize(.small)
                     Spacer()
                 }
-            }
-        } else {
-            HStack {
-                Spacer()
-                VStack(spacing: 8) {
-                    Image(systemName: "photo")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.secondary)
-                    Text("Không thể mở bản xem trước")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                .padding(.vertical, 30)
+            } else {
+                HStack {
+                    Spacer()
+                    VStack(spacing: 8) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.secondary)
+                        Text("Không thể mở bản xem trước")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
                 }
-                Spacer()
+                .padding(.vertical, 20)
             }
-            .padding(.vertical, 20)
+        }
+        .task(id: path) {
+            isLoading = true
+            let loaded = await Task.detached(priority: .userInitiated) {
+                NSImage(contentsOfFile: path)
+            }.value
+            self.image = loaded
+            self.isLoading = false
         }
     }
 }
@@ -1709,7 +1999,7 @@ struct MediaInspectorView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.regular)
-                            .disabled(!state.isWorkerConnected)
+                            .disabled(!state.isWorkerConnected || state.isRunningG2Analysis || state.isBatchAnalysisRunning)
 
                             if state.videoCount > 1 {
                                 Button {
@@ -1723,13 +2013,28 @@ struct MediaInspectorView: View {
                                 }
                                 .buttonStyle(.borderedProminent)
                                 .controlSize(.regular)
-                                .disabled(!state.isWorkerConnected)
+                                .disabled(!state.isWorkerConnected || state.isRunningG2Analysis || state.isBatchAnalysisRunning)
                             }
                         }
 
                         Text("Trích xuất frame offline, suy luận VLM Qwen3-VL 4B tuần tự (RAM < 4 GB) để đối chiếu fact claim và sinh Coverage Ledger.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+
+                        if !state.mediaItems.isEmpty {
+                            Button {
+                                state.navigateToSection(.story)
+                            } label: {
+                                HStack {
+                                    Text("Tiếp tục: Sang Bước 2 (Kịch bản & Thoại)")
+                                    Image(systemName: "arrow.right")
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
+                            .padding(.top, 4)
+                        }
                     }
                 }
             }
@@ -1879,7 +2184,9 @@ struct MediaSectionView: View {
 
                             Button {
                                 let dirURL = URL(fileURLWithPath: state.selectedDirectoryPath)
-                                NSWorkspace.shared.activateFileViewerSelecting([dirURL])
+                                if !NSWorkspace.shared.open(dirURL) {
+                                    NSWorkspace.shared.activateFileViewerSelecting([dirURL])
+                                }
                             } label: {
                                 Image(systemName: "macwindow")
                             }
@@ -2346,7 +2653,7 @@ struct G2ReviewSectionView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                        .disabled(!state.isWorkerConnected || state.selectedFilePath.isEmpty || state.isRunningG2Analysis)
+                        .disabled(!state.isWorkerConnected || state.selectedFilePath.isEmpty || state.isRunningG2Analysis || state.isBatchAnalysisRunning)
 
                         if state.videoCount > 1 {
                             Button("Phân tích toàn bộ (\(state.videoCount) video)") {
@@ -2356,7 +2663,7 @@ struct G2ReviewSectionView: View {
                             }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
-                            .disabled(!state.isWorkerConnected || state.isRunningG2Analysis)
+                            .disabled(!state.isWorkerConnected || state.isRunningG2Analysis || state.isBatchAnalysisRunning)
                         }
                     }
                 }

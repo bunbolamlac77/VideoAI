@@ -455,6 +455,35 @@ struct G3ConsoleView: View {
                 }
             }
 
+            if state.isStep2StoryApproved {
+                Card {
+                    HStack(spacing: 12) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.green)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Kịch bản và các điểm cắt đã được duyệt thành công!")
+                                .font(.headline)
+                            Text("Approval ID: \(state.latestG3PublicationId.prefix(18))… · Đã tự động chuyển dữ liệu sang Bước 3")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            state.navigateToSection(.preview)
+                        } label: {
+                            HStack {
+                                Text("Tiếp tục sang Bước 3: Xem trước (Preview)")
+                                Image(systemName: "arrow.right")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                    }
+                    .padding(4)
+                }
+            }
+
             // Collapsible Developer Section for Raw JSON
             DisclosureGroup(isExpanded: $showRawJSON) {
                 VStack(alignment: .leading, spacing: 8) {
@@ -485,6 +514,13 @@ struct G3ConsoleView: View {
             }
         }
         .padding(.vertical, 4)
+        .onAppear {
+            if (customClaimText.isEmpty || customClaimText == "Tôi đã đến địa điểm này và trải nghiệm thực tế.") {
+                if let firstConfirmed = state.g1Claims.first(where: { $0.reviewStatus == .confirmed }) ?? state.g1Claims.first {
+                    customClaimText = firstConfirmed.text
+                }
+            }
+        }
     }
 
     private func buildAndSendStoryRequest() {
@@ -550,16 +586,22 @@ struct G3ConsoleView: View {
     }
 
     private func buildAndSendVoiceTrial() {
+        let textToUse = parsedBeats.first(where: { $0.beatId == voiceTrialBeatId })?.voiceText ?? "Kiểm tra giọng đọc tiếng Việt offline."
         let obj: [String: G3JSONValue] = [
             "beat_id": .string(voiceTrialBeatId),
             "voice_id": .string(voiceModelChoice),
             "speed": .decimal(voiceSpeed),
-            "text": .string(parsedBeats.first(where: { $0.beatId == voiceTrialBeatId })?.voiceText ?? "Kiểm tra giọng đọc tiếng Việt offline.")
+            "text": .string(textToUse)
         ]
         voiceRequest = G3JSONValue.object(obj).json
 
         Task {
-            await rpc(method: "g3.voice.trial", json: voiceRequest) { _ in }
+            await rpc(method: "g3.voice.trial", json: voiceRequest) { res in
+                if let sha = res.fields?["wav"]?.fields?["sha256"]?.string {
+                    reviewedVoiceSHA256 = sha
+                }
+                voiceBeatId = voiceTrialBeatId
+            }
         }
     }
 
@@ -789,6 +831,7 @@ struct G3ConsoleView: View {
                 approvedBy: NSUserName()
             )
 
+            state.syncApprovedStoryToBeatsAndCues(beats: parsedBeats, publicationId: result.approvalId.uuidString)
             output = "APPROVED by Swift Core: " + result.approvalId.uuidString + "\nManifest SHA256: " + result.manifestSHA256
             explicitApproval = false
         } catch {

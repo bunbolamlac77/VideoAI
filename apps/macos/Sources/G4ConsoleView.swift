@@ -215,9 +215,21 @@ struct G4ConsoleView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 12) {
                         Button {
+                            Task { await runFullPreviewPipeline() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if isBusy { ProgressView().controlSize(.small) }
+                                Image(systemName: "wand.and.stars")
+                                Text("Dựng & Render Preview tự động")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(isBusy || !state.isWorkerConnected || publishedAssets.isEmpty)
+
+                        Button {
                             Task { await rpc("g4.timeline.build") }
                         } label: {
-                            Label("S20: Dựng Timeline Resolve", systemImage: "film")
+                            Label("1. Dựng Timeline", systemImage: "film")
                         }
                         .buttonStyle(.bordered)
                         .disabled(isBusy || !state.isWorkerConnected || publishedAssets.isEmpty)
@@ -225,7 +237,7 @@ struct G4ConsoleView: View {
                         Button {
                             Task { await rpc("g4.render.start") }
                         } label: {
-                            Label("S21: Bắt đầu Render", systemImage: "play.circle")
+                            Label("2. Render", systemImage: "play.circle")
                         }
                         .buttonStyle(.bordered)
                         .disabled(isBusy || !state.isWorkerConnected)
@@ -233,7 +245,7 @@ struct G4ConsoleView: View {
                         Button {
                             Task { await rpc("g4.render.inspect") }
                         } label: {
-                            Label("Kiểm định Kỹ thuật QC", systemImage: "checkmark.shield")
+                            Label("3. QC Kỹ thuật", systemImage: "checkmark.shield")
                         }
                         .buttonStyle(.bordered)
                         .disabled(isBusy || !state.isWorkerConnected)
@@ -303,6 +315,35 @@ struct G4ConsoleView: View {
                 }
             }
 
+            if state.isStep3PreviewReady {
+                Card {
+                    HStack(spacing: 12) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.green)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Preview đã được phê duyệt đạt chuẩn QC!")
+                                .font(.headline)
+                            Text("Đã sẵn sàng chuyển sang Bước 4 để Render Final 4K hoặc mở trong DaVinci Resolve Studio.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            state.navigateToSection(.final)
+                        } label: {
+                            HStack {
+                                Text("Tiếp tục sang Bước 4: Xuất bản Final 4K")
+                                Image(systemName: "arrow.right")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                    }
+                    .padding(4)
+                }
+            }
+
             // Collapsible Developer Section for Raw JSON
             DisclosureGroup(isExpanded: $showRawJSON) {
                 VStack(alignment: .leading, spacing: 8) {
@@ -338,8 +379,42 @@ struct G4ConsoleView: View {
         }
         .padding(.vertical, 4)
         .onAppear {
+            autoPopulateFromStateAndStore()
             syncFormToStageJSON()
         }
+    }
+
+    private func autoPopulateFromStateAndStore() {
+        if mappingPublicationId.isEmpty {
+            if !state.latestG3PublicationId.isEmpty {
+                mappingPublicationId = state.latestG3PublicationId
+            }
+            Task {
+                if let store = state.projectStore, let proj = state.g1Project {
+                    let pubs = try? await store.listPublications(projectId: proj.projectId)
+                    if let mapPub = pubs?.last(where: { $0.artifactType == "g2_source_mapping" && $0.state == .committed }) ?? pubs?.last(where: { $0.artifactType == "g2_source_mapping" }) {
+                        await MainActor.run {
+                            self.mappingPublicationId = mapPub.publicationId.uuidString
+                            self.syncFormToStageJSON()
+                        }
+                    }
+                }
+            }
+        }
+        if !state.cachedCaptionCues.isEmpty && (cues.count <= 1 && (cues.first?.text == "Nội dung đã duyệt" || cues.isEmpty)) {
+            cues = state.cachedCaptionCues
+        }
+        if let firstBeat = state.cachedStoryBeats.first {
+            beatId = firstBeat.beatId
+        }
+    }
+
+    private func runFullPreviewPipeline() async {
+        await rpc("g4.timeline.build")
+        guard !resultText.contains("Lỗi") && !resultText.contains("blocked") else { return }
+        await rpc("g4.render.start")
+        guard !resultText.contains("Lỗi") && !resultText.contains("blocked") else { return }
+        await rpc("g4.render.inspect")
     }
 
     private func syncFormToStageJSON() {
@@ -548,6 +623,8 @@ struct G4ConsoleView: View {
                 reviewNotes: reviewNotes,
                 watchedVideoAndListenedToAudio: reviewed
             )
+            state.isStep3PreviewReady = true
+            state.latestG4PublicationId = pubID.uuidString
             reviewed = false
             resultText = "Canonical preview approval: \(approved.approvalId.uuidString)\nSHA: \(approved.previewSHA256)"
         } catch {
