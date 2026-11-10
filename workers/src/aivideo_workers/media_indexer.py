@@ -17,6 +17,8 @@ from pathlib import Path
 import subprocess
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from .child_process import run_tracked
+
 
 MEDIA_PROFILE_ID = "M-24-SDR-v1"
 TIMELINE_FPS = Fraction(24, 1)
@@ -646,7 +648,7 @@ def generate_proxy_and_mapping(
         "aac",
         str(staging_path),
     ]
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=dynamic_timeout_sec)
+    res = run_tracked(cmd, capture_output=True, text=True, timeout=dynamic_timeout_sec)
     if res.returncode != 0 or not staging_path.is_file() or staging_path.stat().st_size == 0:
         if staging_path.exists():
             staging_path.unlink(missing_ok=True)
@@ -696,7 +698,7 @@ def probe_and_index_real_video(
         str(path),
     ]
     # Allow generous timeout for full-frame packet inspection on long source videos
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=180)
+    res = run_tracked(cmd, capture_output=True, text=True, timeout=180)
     if res.returncode != 0:
         raise MediaMappingError(f"ffprobe failed on {path}: {res.stderr.strip()}")
 

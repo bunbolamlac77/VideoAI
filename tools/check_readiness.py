@@ -163,31 +163,32 @@ def check_contracts_and_registry() -> dict[str, Any]:
 def check_models_presence() -> dict[str, Any]:
     """Fail closed if the real weights or pinned local artifact manifest are unverified.
 
-    Checking `stat().st_size >= 1GB` previously let any large junk file pass.
+    2026-11-10 fix (D14): this now calls the same inspector as the worker
+    (`model_installation.inspect_model_installation`) instead of maintaining a
+    second, divergent definition of "model installed". Release requires `verified`
+    (install manifest + hashes); the worker may still run on `present_unverified`
+    but reports that weaker provenance to the caller.
     """
-    tools_dir = str(ROOT / "tools")
-    if tools_dir not in sys.path:
-        sys.path.insert(0, tools_dir)
-    try:
-        from setup_s11_model import get_target_dir, verify_model_directory
-        target = get_target_dir()
-        result = verify_model_directory(target)
+    from aivideo_workers.model_installation import inspect_model_installation
+
+    status = inspect_model_installation(deep=True)
+    if status["state"] == "verified":
         return {
-            "models_root": str(target.parent),
+            "models_root": status["models_root"],
             "visual_model_installed": True,
-            "weights_byte_size": result["weights_bytes"],
-            "pinned_model_revision": result["revision"],
+            "weights_byte_size": (Path(status["directory"]) / "model.safetensors").stat().st_size,
+            "pinned_model_revision": status.get("revision"),
+            "model_id": status.get("model_id"),
             "status": "VERIFIED_PINNED_LOCAL",
         }
-    except (OSError, ValueError, ImportError, RuntimeError) as exc:
-        # Never mistake a corrupted/partial installation for a ready model.
-        return {
-            "models_root": str(Path.home() / "Library/Application Support/AIVideo/Models"),
-            "visual_model_installed": False,
-            "weights_byte_size": 0,
-            "status": "NOT_VERIFIED",
-            "reason": str(exc),
-        }
+    return {
+        "models_root": status["models_root"],
+        "visual_model_installed": False,
+        "weights_byte_size": 0,
+        "status": "NOT_VERIFIED",
+        "installation_state": status["state"],
+        "reason": status["reason"],
+    }
 
 
 def check_resolve_installation() -> dict[str, Any]:

@@ -138,10 +138,15 @@ class AudioBranchAnalysisResult:
     audio_state: str  # 'no_audio' | 'no_speech' | 'speech_detected'
     speech_segments: List[Dict[str, Any]]
     visual_branch_enabled: bool = True
+    # 2026-11-10 fix (D16): ASR is not wired into the runtime yet, so the ledger must
+    # report 'not_configured' instead of a hard-coded 'completed'.
+    asr_status: str = "not_configured"
 
     def __post_init__(self) -> None:
         if self.audio_state not in ("no_audio", "no_speech", "speech_detected"):
             raise FullFramePipelineError("INVALID_AUDIO_STATE", f"Invalid audio_state: {self.audio_state}")
+        if self.asr_status not in ("no_audio", "completed", "not_configured"):
+            raise FullFramePipelineError("INVALID_ASR_STATUS", f"Invalid asr_status: {self.asr_status}")
         if not self.visual_branch_enabled:
             raise FullFramePipelineError(
                 "VISUAL_BRANCH_DISABLED_BY_AUDIO",
@@ -695,6 +700,7 @@ class FullFrameAnalysisPipeline:
                 audio_state="no_audio",
                 speech_segments=[],
                 visual_branch_enabled=True,
+                asr_status="no_audio",
             )
         elif not raw_audio_transcript_segments:
             audio_res = AudioBranchAnalysisResult(
@@ -702,6 +708,7 @@ class FullFrameAnalysisPipeline:
                 audio_state="no_speech",
                 speech_segments=[],
                 visual_branch_enabled=True,
+                asr_status="not_configured",
             )
         else:
             audio_res = AudioBranchAnalysisResult(
@@ -709,6 +716,7 @@ class FullFrameAnalysisPipeline:
                 audio_state="speech_detected",
                 speech_segments=list(raw_audio_transcript_segments),
                 visual_branch_enabled=True,
+                asr_status="completed",
             )
 
         # Compute union of unique processed frame IDs (never double-counting overlap!)
@@ -770,7 +778,7 @@ class FullFrameAnalysisPipeline:
             total_windows=len(windows),
             visual_scan_status=detailed_status,
             detailed_pass_status=detailed_status,
-            audio_analysis_status="completed",
+            audio_analysis_status=audio_res.asr_status,
             omission_audit_status="completed" if all_windows_done else "pending",
             semantic_understanding_certified=False,
         )

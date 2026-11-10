@@ -170,10 +170,22 @@ class TestReleaseReadiness(unittest.TestCase):
             self.assertFalse(state["passed"])
 
     def test_model_gate_rejects_unverified_weights(self):
-        with mock.patch.object(s11, "verify_model_directory", side_effect=s11.ModelValidationError("checksum failure")):
+        from aivideo_workers import model_installation
+
+        unverified = {
+            "role": "visual_analysis_primary",
+            "models_root": "/tmp/models",
+            "directory": "/tmp/models/visual_analysis_primary",
+            "state": "present_unverified",
+            "reason": "INSTALL_MANIFEST_MISSING: weights exist but integrity is unproven",
+            "verified": False,
+            "deep": True,
+        }
+        with mock.patch.object(model_installation, "inspect_model_installation", return_value=unverified):
             state = readiness.check_models_presence()
             self.assertFalse(state["visual_model_installed"])
             self.assertEqual(state["status"], "NOT_VERIFIED")
+            self.assertEqual(state["installation_state"], "present_unverified")
 
     def test_disabled_capability_is_a_required_release_gate(self):
         from aivideo_workers import g5_capabilities

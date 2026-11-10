@@ -225,6 +225,33 @@ class TestCoverageArithmetic(unittest.TestCase):
         self.assertLessEqual(ledger.vlm_frame_coverage, 1.0)
 
 
+class TestAudioStatusHonesty(unittest.TestCase):
+    def _run(self, has_audio: bool):
+        pipeline = FullFrameAnalysisPipeline()
+        with tempfile.TemporaryDirectory() as tmp:
+            return pipeline.run_or_resume_analysis(
+                source_revision_id="src-audio-001",
+                source_sha256="c" * 64,
+                pts_index=_pts_index(16),
+                total_declared_source_frames=16,
+                checkpoint_path=Path(tmp) / "ckpt.json",
+                has_audio_stream=has_audio,
+                window_inspector_fn=_sampled_inspector(2),
+            )
+
+    def test_audio_without_asr_is_not_reported_as_completed(self) -> None:
+        """D16: no ASR transcript means 'not_configured', never 'completed'."""
+        ledger, _, audio, _ = self._run(has_audio=True)
+        self.assertEqual(audio.audio_state, "no_speech")
+        self.assertEqual(audio.asr_status, "not_configured")
+        self.assertEqual(ledger.audio_analysis_status, "not_configured")
+
+    def test_silent_source_reports_no_audio(self) -> None:
+        ledger, _, audio, _ = self._run(has_audio=False)
+        self.assertEqual(audio.audio_state, "no_audio")
+        self.assertEqual(ledger.audio_analysis_status, "no_audio")
+
+
 class TestPayloadBudget(unittest.TestCase):
     def test_long_source_ledger_payload_stays_under_one_mib(self) -> None:
         """D08: 86,400 frames must not blow the 1 MiB JSON-RPC frame."""

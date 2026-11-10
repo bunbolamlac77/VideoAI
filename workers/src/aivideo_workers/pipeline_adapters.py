@@ -21,6 +21,7 @@ import sys
 import tempfile
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
+from .child_process import run_tracked
 from .runtime_paths import resolve_s11_registry
 
 
@@ -593,7 +594,7 @@ class S11ModelRegistryAndAdapters:
                     "2",
                     str(work_dir / "frame_%04d.jpg"),
                 ]
-                res = subprocess.run(cmd, capture_output=True, check=False, timeout=60)
+                res = run_tracked(cmd, capture_output=True, timeout=60)
                 frame_jpgs = sorted(work_dir.glob("frame_*.jpg"))
                 if res.returncode != 0 or len(frame_jpgs) != len(planned_ids):
                     raise PipelineAdapterError(

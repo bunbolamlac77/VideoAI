@@ -27,6 +27,14 @@ import threading
 import traceback
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional, Set
+from aivideo_workers.child_process import (
+    cleanup_child_subprocesses,
+    is_pid_alive,
+    register_child_pid,
+    register_child_process,
+    unregister_child_pid,
+    unregister_child_process,
+)
 
 _FILE_DIR = os.path.dirname(os.path.abspath(__file__))
 _SRC_DIR = os.path.dirname(_FILE_DIR)
@@ -65,76 +73,6 @@ def _assert_json_numbers_finite(obj):
             _assert_json_numbers_finite(value)
 
 MAX_FRAME_BYTES = 1024 * 1024 # 1 MiB strict limit
-
-# Tracked child subprocesses spawned by this worker (handles + process groups)
-_TRACKED_CHILD_PROCS: Dict[int, Optional[subprocess.Popen]] = {}
-_CHILD_LOCK = threading.Lock()
-
-def register_child_process(proc: subprocess.Popen):
-    with _CHILD_LOCK:
-        _TRACKED_CHILD_PROCS[proc.pid] = proc
-
-def unregister_child_process(proc: subprocess.Popen):
-    with _CHILD_LOCK:
-        _TRACKED_CHILD_PROCS.pop(proc.pid, None)
-
-def register_child_pid(pid: int):
-    with _CHILD_LOCK:
-        if pid not in _TRACKED_CHILD_PROCS:
-            _TRACKED_CHILD_PROCS[pid] = None
-
-def unregister_child_pid(pid: int):
-    with _CHILD_LOCK:
-        _TRACKED_CHILD_PROCS.pop(pid, None)
-
-def cleanup_child_subprocesses():
-    """Cleanly terminate only subprocesses tracked and verified owned by this worker."""
-    with _CHILD_LOCK:
-        tracked = list(_TRACKED_CHILD_PROCS.items())
-
-    for pid, proc in tracked:
-        # Check ownership and state
-        if proc is not None:
-            if proc.poll() is not None:
-                continue
-        elif not is_pid_alive(pid):
-            continue
-
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except OSError:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
-
-    # Wait up to 1.0 second for child processes to exit
-    deadline = time.time() + 1.0
-    for pid, proc in tracked:
-        while time.time() < deadline:
-            if proc is not None:
-                if proc.poll() is not None:
-                    break
-            elif not is_pid_alive(pid):
-                break
-            time.sleep(0.05)
-
-        still_alive = proc.poll() is None if proc is not None else is_pid_alive(pid)
-        if still_alive:
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except OSError:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
-
-        # Reap zombie
-        if proc is not None:
-            try:
-                proc.poll()
-            except Exception:
-                pass
 
 def log_err(msg: str):
     """Write strictly to stderr with timestamp and PID prefix. Protected against BrokenPipeError."""
@@ -194,15 +132,6 @@ def send_response(response: dict):
         out.flush()
     except (BrokenPipeError, OSError):
         pass
-
-def is_pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
 
 def start_parent_watchdog(initial_ppid: int):
     """Background supervisor thread to detect parent termination even if main thread is busy."""
@@ -419,6 +348,7 @@ def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callab
         declared_source_frame_count,
         probe_and_index_real_video,
     )
+    from aivideo_workers.model_installation import inspect_model_installation
     from aivideo_workers.pipeline_adapters import PipelineAdapterError, S11ModelRegistryAndAdapters
     from aivideo_workers.full_frame_pipeline import (
         BoundedPipelineConfig,
@@ -461,29 +391,38 @@ def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callab
     src_sha256 = _compute_file_sha256(src_path)
     declared_frames = declared_source_frame_count(probed, indexed_count=len(pts_entries))
 
-    # Check if S11 visual model adapter is installed offline and build real window inspector
+    # Check if the S11 visual model is installed offline and build the real window inspector.
+    # 2026-11-10 fix (D14): the worker and the release preflight now share one definition
+    # of "installed" (model_installation.inspect_model_installation).
     models_root_override = params.get("models_root_dir")
     s11_reg = S11ModelRegistryAndAdapters(models_root_dir=models_root_override)
     vision_installed = False
     inspector_fn = None
-    try:
-        s11_reg.preflight_adapter_offline(
-            role="visual_analysis_primary",
-            required_files=["config.json", "model.safetensors"],
-        )
-        if inspector_factory is not None:
-            inspector_fn = inspector_factory(src_path)
-        else:
-            sample_count = int(params.get("vision_sample_count", 2))
-            if not 1 <= sample_count <= 16:
-                raise ValueError("vision_sample_count must be between 1 and 16")
-            inspector_fn = s11_reg.build_offline_visual_window_inspector(
-                src_path, sample_count=sample_count
-            )
+    weights_verification = "missing"
+    if inspector_factory is not None:
+        # Python-level test seam only (never reachable from JSON-RPC).
+        inspector_fn = inspector_factory(src_path)
         vision_installed = True
-    except PipelineAdapterError:
-        vision_installed = False
-        inspector_fn = None
+        weights_verification = "test_seam"
+    else:
+        install = inspect_model_installation(models_root_override)
+        weights_verification = str(install["state"])
+        if install["state"] in ("verified", "present_unverified"):
+            try:
+                s11_reg.preflight_adapter_offline(
+                    role="visual_analysis_primary",
+                    required_files=["config.json", "model.safetensors"],
+                )
+                sample_count = int(params.get("vision_sample_count", 2))
+                if not 1 <= sample_count <= 16:
+                    raise ValueError("vision_sample_count must be between 1 and 16")
+                inspector_fn = s11_reg.build_offline_visual_window_inspector(
+                    src_path, sample_count=sample_count
+                )
+                vision_installed = True
+            except PipelineAdapterError:
+                vision_installed = False
+                inspector_fn = None
 
     ckpt_dir = Path(params.get("checkpoint_dir") or tempfile.gettempdir())
     ckpt_path = ckpt_dir / f"g2_ckpt_{source_rev_id[:8]}_{src_sha256[:8]}.json"
@@ -548,6 +487,7 @@ def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callab
         "source_revision_id": source_rev_id,
         "source_sha256": src_sha256,
         "vision_model_installed": vision_installed,
+        "visual_weights_verification": weights_verification,
         "color_decision": probed["color_decision"],
         "coverage_ledger": compact_coverage_ledger_payload(ledger.to_dict()),
         "raw_observations_count": len(raw_obs),
