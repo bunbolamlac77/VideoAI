@@ -146,7 +146,7 @@ class TestG1DataContracts(unittest.TestCase):
 
     def test_sqlite_migration_ddl_validity(self):
         """Invariant S04.T3: Real SQLite WAL on disk file with multiple revisions per claim_id and FK enforcement."""
-        schema_path = os.path.abspath("contracts/migrations/001_initial_g1_schema.sql")
+        schema_path = os.path.abspath("contracts/migrations/fixtures/g1_schema_fixture.sql")
         self.assertTrue(os.path.isfile(schema_path), "Migration script must exist")
 
         with open(schema_path, "r", encoding="utf-8") as f:

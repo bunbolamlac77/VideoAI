@@ -129,7 +129,9 @@ def cleanup_child_subprocesses() -> None:
         if proc is not None:
             try:
                 proc.poll()
-            except Exception:
+            except Exception as exc:
+                from .diagnostics import note_suppressed
+                note_suppressed("child_process.py:132", exc)
                 pass
 
     with _CHILD_LOCK:
@@ -146,7 +148,9 @@ def ffmpeg_has_filter(name: str) -> bool:
             capture_output=True,
             text=True,
         )
-    except Exception:
+    except Exception as exc:
+        from .diagnostics import note_suppressed
+        note_suppressed("child_process.py:149", exc)
         return False
     if result.returncode != 0:
         return False

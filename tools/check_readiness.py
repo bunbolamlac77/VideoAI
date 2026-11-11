@@ -36,6 +36,8 @@ def command(
         output = (completed.stdout + "\n" + completed.stderr).strip()
         return completed.returncode == 0, output
     except Exception as exc:
+        from aivideo_workers.diagnostics import note_suppressed
+        note_suppressed("check_readiness.py:38", exc)
         return False, str(exc)
 
 
@@ -163,6 +165,8 @@ def check_contracts_and_registry() -> dict[str, Any]:
             "exact_photo_shutter_match_gated": shutter_disabled,
         }
     except Exception as exc:
+        from aivideo_workers.diagnostics import note_suppressed
+        note_suppressed("check_readiness.py:165", exc)
         return {
             "passed": False,
             "error": str(exc),
@@ -284,6 +288,8 @@ def check_field_corpus_and_certification(
                 )
             )
         except Exception as exc:
+            from aivideo_workers.diagnostics import note_suppressed
+            note_suppressed("check_readiness.py:286", exc)
             blockers.append(f"MANIFEST_UNREADABLE:{exc}")
     else:
         blockers.append("MANIFEST_MISSING")

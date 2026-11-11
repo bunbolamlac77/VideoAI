@@ -144,7 +144,9 @@ def start_parent_watchdog(initial_ppid: int):
             if curr_ppid != initial_ppid or not is_pid_alive(initial_ppid):
                 try:
                     log_err(f"Parent process (PID {initial_ppid}) has terminated. Cleaning up and exiting.")
-                except Exception:
+                except Exception as exc:
+                    from .diagnostics import note_suppressed
+                    note_suppressed("main_g2.py:147", exc)
                     pass
                 cleanup_child_subprocesses()
                 os._exit(0)
@@ -875,6 +877,8 @@ def validate_and_dispatch(line_bytes: bytes):
                 "result": result
             })
     except Exception as err:
+        from .diagnostics import note_suppressed
+        note_suppressed("main_g2.py:877", err)
         import local_model
         if isinstance(err, local_model.ModelError):
             if not is_notification:

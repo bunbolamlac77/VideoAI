@@ -177,11 +177,11 @@ struct ContentView: View {
                     } label: {
                         HStack(spacing: 6) {
                             Text("NÂNG CAO & CHẨN ĐOÁN")
-                                .font(.system(size: 10, weight: .bold, design: .rounded))
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
                                 .tracking(1.1)
                             Spacer()
                             Image(systemName: showAdvanced ? "chevron.down" : "chevron.right")
-                                .font(.system(size: 9, weight: .bold))
+                                .font(.system(size: 11, weight: .bold))
                         }
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 8)
@@ -218,7 +218,7 @@ struct ContentView: View {
 
     private func sidebarCaption(_ text: String) -> some View {
         Text(text.uppercased())
-            .font(.system(size: 10, weight: .bold, design: .rounded))
+            .font(.system(size: 11, weight: .bold, design: .rounded))
             .tracking(1.1)
             .foregroundStyle(.tertiary)
             .padding(.horizontal, 8)
@@ -352,7 +352,7 @@ struct SidebarRow: View {
 
                 if badge > 0 {
                     Text("\(badge)")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.brandTeal)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -489,6 +489,8 @@ struct ErrorBanner: View {
             Button(action: dismiss) { Image(systemName: "xmark") }
                 .buttonStyle(.borderless)
                 .help("Đóng thông báo")
+                // (P2-11) `.help` is a tooltip, not an accessibility label.
+                .accessibilityLabel("Đóng thông báo")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -506,7 +508,7 @@ struct WorkerStatusCard: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 if state.isStartingWorker {
-                    ProgressView().controlSize(.mini)
+                    ProgressView().controlSize(.small)
                 } else {
                     Circle().fill(state.isWorkerConnected ? Color.green : Color.red).frame(width: 8, height: 8)
                 }
@@ -715,6 +717,7 @@ struct MediaInspectorView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("Mở file bằng ứng dụng mặc định")
+                    .accessibilityLabel("Mở file bằng ứng dụng mặc định")
                 }
 
                 Divider()
@@ -1046,7 +1049,9 @@ struct MediaSectionView: View {
                                         state.cancelBatchAnalysis()
                                     }
                                     .buttonStyle(.bordered)
-                                    .controlSize(.mini)
+                                    // (P2-11) a destructive stop action needs a real target
+                                    .controlSize(.small)
+                                    .accessibilityLabel("Dừng phân tích toàn bộ")
                                 }
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
@@ -1348,7 +1353,15 @@ struct DataSectionView: View {
                     Text("Trạng thái lưu").foregroundStyle(.secondary).frame(width: 140, alignment: .leading)
                     StatusPill(
                         text: state.g1SaveStatus,
-                        color: state.g1SaveStatus.hasPrefix("Lưu lỗi") ? .red : (state.g1SaveStatus.hasPrefix("Đang lưu") ? .blue : .green)
+                        // (P2-07) typed state, not a string prefix
+                        color: {
+                            switch state.g1Persistence {
+                            case .failed, .notReady: return .red
+                            case .saving: return .blue
+                            case .saved: return .green
+                            case .idle, .empty: return .orange
+                            }
+                        }()
                     )
                 }.font(.callout)
                 if !state.g1ReconciliationSummary.isEmpty {
@@ -1509,12 +1522,12 @@ struct G2ReviewItemRowView: View {
                     .font(.system(size: 11, weight: .medium))
                 Spacer()
                 Text(item.status.uppercased())
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(item.status == "resolved" ? .green : .orange)
             }
             if let act = item.resolutionAction, let use = item.resultingAllowedUse {
                 Text("Quyết định: \(act.rawValue) → Quyền dùng: \(use.rawValue)")
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.blue)
             } else {
                 HStack(spacing: 6) {

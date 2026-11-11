@@ -120,7 +120,9 @@ def apply_files(root: Path, state_dir: Path, job_id: str, response: str) -> list
                     os.unlink(tmpname)
             changed.append(rel)
         return changed
-    except Exception:
+    except Exception as exc:
+        from aivideo_workers.diagnostics import note_suppressed
+        note_suppressed("bridge.py:123", exc)
         # Best-effort rollback for exceptions. Power loss mid-batch requires git review.
         for rel, dest, _body, original in reversed(planned):
             if original is None:
@@ -235,6 +237,8 @@ def worker(store: Store, repo: Path, state_dir: Path, checks: list[list[str]], s
                       "Do not claim a macOS runtime test passed unless logs prove it.")
             store.complete(job["id"], "done" if ok else "failed", result)
         except Exception as ex:
+            from aivideo_workers.diagnostics import note_suppressed
+            note_suppressed("bridge.py:237", ex)
             store.complete(job["id"], "failed", f"JOB {job['id']} FAILED: {type(ex).__name__}: {ex}")
 
 

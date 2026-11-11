@@ -96,7 +96,9 @@ def verify_existing_pinned_install(model_dir: str) -> bool:
     try:
         with open(lock_path, "r", encoding="utf-8") as f:
             lock = json.load(f)
-    except Exception:
+    except Exception as exc:
+        from aivideo_workers.diagnostics import note_suppressed
+        note_suppressed("setup_g0_model.py:99", exc)
         return False
 
     expected = lock.get("verified_artifacts") or {}
@@ -326,7 +328,9 @@ def execute_install(app_support_dir: str, python_runtime_path: Optional[str] = N
                 )
                 if result != 0:
                     raise RuntimeError(f"Model registry finalization returned {result}")
-            except Exception:
+            except Exception as exc:
+                from aivideo_workers.diagnostics import note_suppressed
+                note_suppressed("setup_g0_model.py:329", exc)
                 # Restore a previous install rather than leave a partly
                 # registered replacement. The registry must be reverified.
                 if backup_dir and os.path.exists(backup_dir):
@@ -353,7 +357,9 @@ def execute_install(app_support_dir: str, python_runtime_path: Optional[str] = N
         try:
             import fcntl
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        except Exception:
+        except Exception as exc:
+            from aivideo_workers.diagnostics import note_suppressed
+            note_suppressed("setup_g0_model.py:356", exc)
             pass
         os.close(lock_fd)
 

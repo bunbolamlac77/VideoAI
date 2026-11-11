@@ -577,3 +577,42 @@ nhánh S22.
   photo publication phải nằm trong đó.
 - Test: `tests/test_p1_closure.py` (2 case mới), `tests/test_s20_native_render.py`,
   `tests/test_g5_native_provenance.swift`.
+
+---
+
+## Phiên 2026-11-11 (P2) — Xử lý toàn bộ nợ kỹ thuật mục 6
+
+14 nhóm P2 → 14 mục đánh số (P2-01…P2-14; P2-05 gộp vào P2-03 vì cùng một nguyên nhân).
+Test hồi quy: `tests/test_p2_debt.py` — **29 case**, mỗi case kiểm chứng *thuộc tính* chứ
+không phải hình dạng code hiện tại.
+
+### Việc đã làm
+1. **P2-01 god files + danh sách file viết tay**: tách `ProvenanceValue.swift`,
+   `PersistenceState.swift`, `AppState+Media.swift` (−341 dòng), `G3SpeechReview.swift`
+   (−244 dòng); `build_macos_app.sh` và `run_tests.sh` **glob** toàn bộ `Sources` thay vì
+   liệt kê tay. Đây không phải việc thẩm mỹ: danh sách tay đã làm mọi suite Swift fail
+   (cannot find type) trong khi app vẫn build, đúng lúc thêm file mới.
+2. **P2-02 bundle một bản worker**: bỏ bản `Workers/workers/src`; script assert đúng 1
+   `main.py`. Bài học thật: `rm -rf Resources/workers` xoá luôn `Workers/` vì APFS
+   case-insensitive — đã bỏ lệnh đó và thay bằng assert.
+3. **P2-03/05 khoá ghi trong đường đọc**: thêm `withCanonicalRead` (`BEGIN DEFERRED`) và
+   dùng cho `currentG3Approval` / `currentG4Preview` / `currentG5FinalApproval` — các hàm
+   này còn băm file, nên trước đây mỗi lần UI poll là một lần giữ write lock.
+4. **P2-04 UUID + fps**: `ProvenanceValue.uuidsMatch` / `.frameRate` / `.is24fps` dùng chung;
+   xoá `Double(parts[0])` (trap khi `avg_frame_rate` rỗng) khỏi cả hai guard.
+5. **P2-06 ngoại lệ bị nuốt**: `diagnostics.note_suppressed` + ring buffer; 11 file được
+   ghi ngữ cảnh; `tools/fix_gate_integrity.py` (đã áp dụng, còn nhúng code cũ) → `tools/historical/`.
+6. **P2-07 state UI có kiểu**: `PersistenceState`, bỏ mọi `hasPrefix("Đã lưu")`.
+7. **P2-08/09/10 dữ liệu mồi**: "Đã lưu" chỉ khi revision > 1; prompt demo rỗng; UUID cài đặt
+   sinh theo máy (`UserDefaults`) + `ProjectStore.getWorkday`; ngày theo ngày thật.
+8. **P2-11 accessibility**: mọi font ≥ 11 pt, `accessibilityLabel` cho nút icon-only, bỏ `.mini`.
+9. **P2-12/13/14**: `review_workflow.py` khai báo non-production + test chặn import;
+   fixture schema chuyển vào `contracts/migrations/fixtures/` + README nói Swift là chủ sở hữu;
+   doc gốc phải byte-identical với `docs/`; `REVIEW_SUMMARY.md` trỏ về report thật.
+
+### Bằng chứng
+- `workers/.venv/bin/python3 tools/run_python_tests.py`: **424 test · 0 FAIL · 0 ERROR · 4 NOT_RUN**.
+- Heavy (`AIVIDEO_RUN_HEAVY_G2/STORY/TTS=1`): **424 · 0 FAIL · 0 ERROR · 0 SKIP**.
+- `./tools/run_tests.sh`: **EXIT=0**, 23 khối.
+- `./tools/build_macos_app.sh`: BUILD SUCCESSFUL; bundle 736 KB (một bản worker).
+- `swiftc -typecheck -warnings-as-errors` trên `packages/AIVideoCore/Sources`: sạch.

@@ -266,14 +266,6 @@ enum G4S21Guard {
         return output + "\n" + errors
     }
 
-    private static func frameRate(_ raw: Any?) -> Double {
-        guard let s = raw as? String else { return 0 }
-        let parts = s.split(separator: "/")
-        guard let n = Double(parts[0]), n.isFinite, n > 0 else { return 0 }
-        if parts.count == 1 { return n }
-        guard parts.count == 2, let d = Double(parts[1]), d.isFinite, d > 0 else { return 0 }
-        return n / d
-    }
 
     /// Independently inspect the exact S08 preview, not user-supplied QC flags.
     static func verifyPreview(path: String, expectedFrames: Int) throws {
@@ -294,7 +286,7 @@ enum G4S21Guard {
         }
         let v = videos[0], a = audios[0]
         guard v["width"] as? Int == 1080, v["height"] as? Int == 1920,
-              frameRate(v["avg_frame_rate"]) == 24, frameRate(v["r_frame_rate"]) == 24,
+              ProvenanceValue.is24fps(v),
               v["color_primaries"] as? String == "bt709",
               v["color_transfer"] as? String == "bt709",
               v["color_space"] as? String == "bt709",

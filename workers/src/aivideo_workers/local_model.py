@@ -182,6 +182,8 @@ def check_runtime_import() -> Tuple[bool, Optional[str], Optional[str]]:
         import mlx_lm
         return True, mlx_lm.__version__, None
     except Exception as e:
+        from .diagnostics import note_suppressed
+        note_suppressed("local_model.py:184", e)
         return False, None, str(e)
 
 
@@ -227,6 +229,8 @@ def check_status(params: Optional[dict] = None) -> dict:
         with open(lock_file, "r", encoding="utf-8") as f:
             lock_data = json.load(f)
     except Exception as e:
+        from .diagnostics import note_suppressed
+        note_suppressed("local_model.py:229", e)
         return {
             "status": "not_configured",
             "profile_id": profile_id,
@@ -250,7 +254,9 @@ def check_status(params: Optional[dict] = None) -> dict:
                 reg_data = json.load(rf)
                 if reg_data.get("model_path"):
                     model_dir = reg_data["model_path"]
-        except Exception:
+        except Exception as exc:
+            from .diagnostics import note_suppressed
+            note_suppressed("local_model.py:253", exc)
             pass
 
     if not os.path.isdir(model_dir):

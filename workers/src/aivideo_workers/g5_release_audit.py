@@ -272,7 +272,9 @@ def validate_signed_field_manifest(
             return False
         sig_bytes = base64.b64decode(sig)
         pubkey.verify(sig_bytes, canon(payload))
-    except Exception:
+    except Exception as exc:
+        from .diagnostics import note_suppressed
+        note_suppressed("g5_release_audit.py:275", exc)
         return False
 
     cdir = Path(corpus_dir) if corpus_dir is not None else (PROJECT_ROOT / "fixtures" / "smoke")
@@ -487,7 +489,9 @@ def verify_release_manifest(manifest: dict[str, Any], public_key_path: str | Pat
             canon(_release_signed_payload(manifest)),
         )
         return True
-    except Exception:
+    except Exception as exc:
+        from .diagnostics import note_suppressed
+        note_suppressed("g5_release_audit.py:490", exc)
         return False
 
 
@@ -523,7 +527,9 @@ def generate_release_handover_manifest(params: dict[str, Any] | None = None) -> 
         try:
             file_out = subprocess.check_output(["file", str(app_binary)], text=True, timeout=10)
             is_arm64_macho = "Mach-O 64-bit executable arm64" in file_out
-        except Exception:
+        except Exception as exc:
+            from .diagnostics import note_suppressed
+            note_suppressed("g5_release_audit.py:526", exc)
             is_arm64_macho = False
         try:
             app_bundle = app_binary.parents[2]
@@ -532,7 +538,9 @@ def generate_release_handover_manifest(params: dict[str, Any] | None = None) -> 
                 capture_output=True, text=True, timeout=15,
             )
             codesign_verified = cs.returncode == 0
-        except Exception:
+        except Exception as exc:
+            from .diagnostics import note_suppressed
+            note_suppressed("g5_release_audit.py:535", exc)
             codesign_verified = False
 
     git_commit = "UNKNOWN"
@@ -540,7 +548,9 @@ def generate_release_handover_manifest(params: dict[str, Any] | None = None) -> 
         git_commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=str(PROJECT_ROOT), text=True, timeout=5
         ).strip()
-    except Exception:
+    except Exception as exc:
+        from .diagnostics import note_suppressed
+        note_suppressed("g5_release_audit.py:543", exc)
         pass
 
     capabilities_disclosure = {}

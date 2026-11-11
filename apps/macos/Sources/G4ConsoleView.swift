@@ -348,13 +348,13 @@ struct G4ConsoleView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Stage JSON (đồng bộ với form):").font(.caption2).foregroundStyle(.secondary)
                     TextEditor(text: $stageJSON)
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .frame(height: 70)
                         .border(Color.secondary.opacity(0.2))
 
                     Text("Published Assets JSON:").font(.caption2).foregroundStyle(.secondary)
                     TextEditor(text: $assetJSON)
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .frame(height: 70)
                         .border(Color.secondary.opacity(0.2))
                 }
@@ -369,7 +369,7 @@ struct G4ConsoleView: View {
             Card(title: "Nhật ký thực thi G4", symbol: "terminal") {
                 ScrollView {
                     Text(resultText)
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }

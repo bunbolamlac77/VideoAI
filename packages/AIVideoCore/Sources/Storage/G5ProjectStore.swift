@@ -219,9 +219,11 @@ extension ProjectStore {
         }
         let receipt = try G5SQL.json(receiptJSON)
         guard receipt["status"] as? String == "FINAL_TECHNICAL_PASS_HUMAN_RELEASE_REVIEW_REQUIRED",
-              receipt["g3_approval_id"] as? String == currentG3.approvalId.uuidString,
+              ProvenanceValue.uuidsMatch(receipt["g3_approval_id"] as? String,
+                                         currentG3.approvalId.uuidString),
               receipt["g3_manifest_sha256"] as? String == currentG3.manifestSHA256,
-              receipt["g4_approval_id"] as? String == currentG4.approvalId.uuidString,
+              ProvenanceValue.uuidsMatch(receipt["g4_approval_id"] as? String,
+                                         currentG4.approvalId.uuidString),
               receipt["g4_preview_sha256"] as? String == currentG4.previewSHA256,
               let finalSHA = receipt["final_sha256"] as? String, finalSHA.count == 64,
               let drpSHA = receipt["drp_sha256"] as? String, drpSHA.count == 64,
@@ -341,8 +343,8 @@ extension ProjectStore {
                 WHERE project_id=? AND g4_approval_id=? AND final_sha256=?
                 """, [projectId.uuidString, currentG4.approvalId.uuidString, finalSHA]),
                let existingId = UUID(uuidString: existing[0]) {
-                guard existing[2].lowercased() == finalPublicationId.uuidString.lowercased(),
-                      existing[3].lowercased() == drpPublicationId.uuidString.lowercased() else {
+                guard ProvenanceValue.uuidsMatch(existing[2], finalPublicationId.uuidString),
+                      ProvenanceValue.uuidsMatch(existing[3], drpPublicationId.uuidString) else {
                     throw G3StoreError.conflict("Same final MP4 already approved under different publication IDs")
                 }
                 return G5FinalApproval(
@@ -398,7 +400,8 @@ extension ProjectStore {
               currentG4.g3ApprovalId == currentG3.approvalId else {
             return nil
         }
-        return try g5Transaction { db in
+        // (P2-05) read-only: this path also hashes the final MP4 and the .drp
+        return try withCanonicalRead { db in
             guard let found = try G5SQL.row(db, """
                 SELECT f.approval_id,f.final_publication_id,f.drp_publication_id,
                        f.final_sha256,f.drp_sha256,f.plan_sha256,f.reviewed_by,f.qc_receipt_json,
@@ -471,8 +474,10 @@ extension ProjectStore {
         guard receipt["schema"] as? String == "g5-manual-handoff-branch-v1",
               receipt["branch_mode"] as? String == "manual_handoff",
               receipt["isolated_from_managed_timeline"] as? Bool == true,
-              receipt["g3_approval_id"] as? String == currentG3.approvalId.uuidString,
-              receipt["g4_approval_id"] as? String == currentG4.approvalId.uuidString,
+              ProvenanceValue.uuidsMatch(receipt["g3_approval_id"] as? String,
+                                         currentG3.approvalId.uuidString),
+              ProvenanceValue.uuidsMatch(receipt["g4_approval_id"] as? String,
+                                         currentG4.approvalId.uuidString),
               let handoffSHA = receipt["handoff_drp_sha256"] as? String, handoffSHA.count == 64,
               let handoffName = receipt["handoff_project_name"] as? String, !handoffName.isEmpty else {
             throw G3StoreError.blocked("Invalid manual handoff branch receipt")

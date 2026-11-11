@@ -399,7 +399,7 @@ struct G3ConsoleView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Tốc độ: 1.0× (profile khoá)").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                             Text("P-TTS-KOKORO-VI-V1 chỉ chấp nhận 1.0×; engine Kokoro-Vietnamese (Apache-2.0) chạy offline trên CPU, nếu thiếu weights worker trả blocked_tts_runtime_unavailable.")
-                                .font(.system(size: 9))
+                                .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -564,7 +564,7 @@ struct G3ConsoleView: View {
             Card(title: "Nhật ký G3 / Kết quả RPC", symbol: "terminal") {
                 ScrollView {
                     Text(output)
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
@@ -599,7 +599,7 @@ struct G3ConsoleView: View {
 
     private func badge(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .font(.system(size: 11, weight: .medium, design: .monospaced))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(Color.secondary.opacity(0.12), in: Capsule())

@@ -106,7 +106,7 @@ struct StepChip: View {
 
     var body: some View {
         Text(text.uppercased())
-            .font(.system(size: 10, weight: .bold, design: .rounded))
+            .font(.system(size: 11, weight: .bold, design: .rounded))
             .tracking(1.2)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)

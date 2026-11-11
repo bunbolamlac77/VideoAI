@@ -75,19 +75,29 @@ swiftc -sdk "$SDK_PATH" -target arm64-apple-macosx14.0 tools/make_app_icon.swift
 iconutil -c icns "$ICON_TMP" -o "$RESOURCES_DIR/AppIcon.icns"
 rm -rf "$(dirname "$ICON_TMP")"
 
-# 2. Bundle Python Worker runtime into Contents/Resources/Workers/aivideo_workers
+# 2. Bundle the Python worker — exactly one copy.
+# (P2-02) This used to also copy `workers/src` to Resources/workers, doubling the payload
+# (~632 KB x2) for a path nothing resolved to. The single supported location is
+# Resources/Workers/aivideo_workers.
 echo "Bundling Python Worker into Resources..."
 mkdir -p "$RESOURCES_DIR/Workers/aivideo_workers"
 cp -R workers/src/aivideo_workers/* "$RESOURCES_DIR/Workers/aivideo_workers/"
-# Also provide legacy path for compatibility
-mkdir -p "$RESOURCES_DIR/workers"
-cp -R workers/src "$RESOURCES_DIR/workers/"
+# Note: never `rm -rf "$RESOURCES_DIR/workers"` here — the default macOS filesystem is
+# case-insensitive, so that path *is* `Workers/` and would delete the copy we just made.
+# The bundle is assembled from scratch (`rm -rf "$APP_BUNDLE"` above), so a legacy
+# lowercase path cannot exist in the first place. Assert the invariant instead.
+WORKER_COPIES=$(find "$RESOURCES_DIR" -name "main.py" -path "*aivideo_workers*" | wc -l | tr -d ' ')
+if [ "$WORKER_COPIES" -ne 1 ]; then
+    echo "ERROR: expected exactly one bundled worker, found $WORKER_COPIES" >&2
+    exit 1
+fi
 
 # 3. Bundle Model profile lock into Contents/Resources/contracts.
 # (P1-20) Runtime contracts resolve by position from the worker package, so the bundle needs
 # Resources/contracts (two levels above the package).
 mkdir -p "$RESOURCES_DIR/contracts"
-cp -R contracts "$RESOURCES_DIR/Workers/contracts" 2>/dev/null || true
+# One copy is enough: the worker package sits at Resources/Workers/aivideo_workers, so
+# `parents[2]` is Resources and `Resources/contracts` is found by position.
 for contract_file in contracts/*.json contracts/*.sql; do
     if [ -f "$contract_file" ]; then
         cp "$contract_file" "$RESOURCES_DIR/contracts/"
@@ -108,37 +118,20 @@ cat <<EOF > "$RESOURCES_DIR/build_manifest.json"
 EOF
 
 echo "=== [3/4] Compiling Native Swift 6 arm64 Executable ==="
+# (P2-01) Every Swift source is compiled, in a deterministic order. A hand-maintained
+# file list silently dropped new files from the binary (the app linked against a stale
+# symbol table while `swiftc` alone was clean).
+SWIFT_SOURCES=$(find packages/AIVideoCore/Sources apps/macos/Sources -name '*.swift' | LC_ALL=C sort)
+if [ -z "$SWIFT_SOURCES" ]; then
+    echo "ERROR: no Swift sources found" >&2
+    exit 1
+fi
+
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Models/G3StoryRequest.swift \
-  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
-  packages/AIVideoCore/Sources/Storage/G4ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G4S21Guard.swift \
-  packages/AIVideoCore/Sources/Storage/G5ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G5S22Guard.swift \
-  packages/AIVideoCore/Sources/Scheduler/ResourceGovernor.swift \
-  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
-  packages/AIVideoCore/Sources/Publication/G4FilePublisher.swift \
-  packages/AIVideoCore/Sources/Recovery/BackupRestoreService.swift \
-  packages/AIVideoCore/Sources/Media/MediaIndexer.swift \
-  packages/AIVideoCore/Sources/Media/SourceRevisionIdentity.swift \
-  packages/AIVideoCore/Sources/Adapters/ModelAdapterContracts.swift \
-  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
-  packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
-  apps/macos/Sources/AppState.swift \
-  apps/macos/Sources/AppState+ScriptBrief.swift \
-  apps/macos/Sources/AIVideoApp.swift \
-  apps/macos/Sources/ScriptBriefView.swift \
-  apps/macos/Sources/AIVideoTheme.swift \
-  apps/macos/Sources/G3ConsoleView.swift \
-  apps/macos/Sources/G4ConsoleView.swift \
-  apps/macos/Sources/G5ConsoleView.swift \
+  $SWIFT_SOURCES \
   -o "$TARGET_DIR/AIVideo"
 
 echo "=== [4/4] Ad-hoc Code Signing App Bundle ==="

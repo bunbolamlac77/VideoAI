@@ -763,7 +763,9 @@ class S11ModelRegistryAndAdapters:
                 if vlm_config is None and hasattr(mlx_vlm, "load_config"):
                     try:
                         vlm_config = mlx_vlm.load_config(cache_key)
-                    except Exception:
+                    except Exception as exc:
+                        from .diagnostics import note_suppressed
+                        note_suppressed("pipeline_adapters.py:766", exc)
                         vlm_config = {}
                 formatted_prompt = mlx_vlm.prompt_utils.apply_chat_template(
                     vlm_processor,

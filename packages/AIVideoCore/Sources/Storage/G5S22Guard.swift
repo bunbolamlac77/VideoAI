@@ -377,14 +377,6 @@ enum G5S22Guard {
         return output + "\n" + errors
     }
 
-    private static func frameRate(_ raw: Any?) -> Double {
-        guard let s = raw as? String else { return 0 }
-        let parts = s.split(separator: "/")
-        guard let n = Double(parts[0]), n.isFinite, n > 0 else { return 0 }
-        if parts.count == 1 { return n }
-        guard parts.count == 2, let d = Double(parts[1]), d.isFinite, d > 0 else { return 0 }
-        return n / d
-    }
 
     /// Independently inspect the exact S08 2160x3840 24fps final MP4 and .drp archive on disk.
     static func verifyFinalMP4AndDRP(mp4Path: String, drpPath: String, expectedFrames: Int) throws {
@@ -418,7 +410,7 @@ enum G5S22Guard {
         }
         let v = videos[0], a = audios[0]
         guard v["width"] as? Int == 2160, v["height"] as? Int == 3840,
-              frameRate(v["avg_frame_rate"]) == 24, frameRate(v["r_frame_rate"]) == 24,
+              ProvenanceValue.is24fps(v),
               v["color_primaries"] as? String == "bt709",
               v["color_transfer"] as? String == "bt709",
               v["color_space"] as? String == "bt709",
@@ -499,7 +491,7 @@ enum G5S22Guard {
         }
         let v = videos[0], a = audios[0]
         guard v["width"] as? Int == 2160, v["height"] as? Int == 3840,
-              frameRate(v["avg_frame_rate"]) == 24, frameRate(v["r_frame_rate"]) == 24,
+              ProvenanceValue.is24fps(v),
               v["color_primaries"] as? String == "bt709",
               v["color_transfer"] as? String == "bt709",
               v["color_space"] as? String == "bt709",

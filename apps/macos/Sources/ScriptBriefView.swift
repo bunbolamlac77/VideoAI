@@ -25,10 +25,13 @@ struct ScriptBriefCard: View {
     private var filledCount: Int { draft.fields.count }
 
     private var statusColor: Color {
-        if state.briefSaveStatus.hasPrefix("Đã lưu") { return .green }
-        if state.briefSaveStatus.hasPrefix("Đang lưu") { return .blue }
-        if state.briefSaveStatus.hasPrefix("Lỗi") { return .red }
-        return .orange
+        // (P2-07) colour comes from the typed state, never from the message text
+        switch state.briefPersistence {
+        case .saved: return .green
+        case .saving: return .blue
+        case .failed, .notReady: return .red
+        case .idle, .empty: return .orange
+        }
     }
 
     /// One-line digest shown when the card is collapsed.

@@ -118,7 +118,9 @@ extension ProjectStore {
         }
         let receipt = try G4SQL.json(receiptJSON)
         guard receipt["status"] as? String == "PREVIEW_TECHNICAL_PASS_CONTENT_REVIEW_REQUIRED",
-              receipt["g3_approval_id"] as? String == current.approvalId.uuidString,
+              // (P2-03) UUIDs cross the Python/Swift border in both cases; compare as UUIDs.
+              ProvenanceValue.uuidsMatch(receipt["g3_approval_id"] as? String,
+                                         current.approvalId.uuidString),
               receipt["g3_manifest_sha256"] as? String == current.manifestSHA256,
               let previewSHA = receipt["preview_sha256"] as? String,
               previewSHA.count == 64,
@@ -275,7 +277,8 @@ extension ProjectStore {
 
     public func currentG4Preview(projectId: UUID) throws -> G4PreviewApproval? {
         guard let current = try currentG3Approval(projectId: projectId) else { return nil }
-        return try g4Transaction { db in
+        // (P2-05) read-only; this path hashes the preview file inside the closure
+        return try withCanonicalRead { db in
             guard let found = try G4SQL.row(db, """
                 SELECT p.approval_id,p.preview_publication_id,p.preview_sha256,
                        p.plan_sha256,p.reviewed_by,p.qc_receipt_json,

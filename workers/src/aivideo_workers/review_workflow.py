@@ -1,5 +1,16 @@
 """
-workers/src/aivideo_workers/review_workflow.py — S14 Evidence-Backed Targeted Review Workflow,
+workers/src/aivideo_workers/review_workflow.py
+
+⚠️ NOT WIRED INTO PRODUCTION (audit P2-12, 2026-11-11).
+The S14 targeted-review workflow that ships runs in Swift (`ProjectStore.listReviewItems` /
+`resolveReviewItem`, driven by `G2ConsoleView`). This module is a pure-Python model of the
+same rules; only `tests/test_s14_review_workflow.py` imports it. It must NOT be cited as S14
+acceptance evidence, and `tests/test_p2_debt.py` fails if a production module starts
+importing it without this note being updated.
+
+Original header follows.
+
+S14 Evidence-Backed Targeted Review Workflow,
 Resolution Commands, Impact Propagation & Review Ergonomics Metrics.
 Compliant with docs/01-PRODUCT.md, docs/02-ANALYSIS-AND-DATA.md (Sections 3, 11, 12),
 docs/08-ACCURACY-FIRST.md (Section 14), docs/09-UPGRADES-AND-ACCEPTANCE.md (AI-09, DATA-05, UI-06..UI-13, UI-27),

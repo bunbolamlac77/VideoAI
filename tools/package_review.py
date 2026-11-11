@@ -104,7 +104,9 @@ def is_mach_o_binary(filepath: str) -> bool:
                 b"\xcf\xfa\xed\xfe",
                 b"\xca\xfe\xba\xbe"
             ]
-    except Exception:
+    except Exception as exc:
+        from aivideo_workers.diagnostics import note_suppressed
+        note_suppressed("package_review.py:107", exc)
         return False
 
 def compute_zip_manifest_hash(zip_entries: List[Tuple[str, str]]) -> str:
@@ -118,7 +120,9 @@ def compute_zip_manifest_hash(zip_entries: List[Tuple[str, str]]) -> str:
             with open(abs_path, "rb") as sf:
                 while chunk := sf.read(65536):
                     hasher.update(chunk)
-        except Exception:
+        except Exception as exc:
+            from aivideo_workers.diagnostics import note_suppressed
+            note_suppressed("package_review.py:121", exc)
             pass
     return hasher.hexdigest()
 
@@ -151,13 +155,17 @@ def get_git_info() -> dict:
     try:
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
         info["commit_hash"] = commit
-    except Exception:
+    except Exception as exc:
+        from aivideo_workers.diagnostics import note_suppressed
+        note_suppressed("package_review.py:154", exc)
         pass
 
     try:
         branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True).strip()
         info["branch"] = branch
-    except Exception:
+    except Exception as exc:
+        from aivideo_workers.diagnostics import note_suppressed
+        note_suppressed("package_review.py:160", exc)
         pass
 
     try:
@@ -175,14 +183,18 @@ def get_git_info() -> dict:
     try:
         author = subprocess.check_output(["git", "log", "-1", "--pretty=%an <%ae>"], text=True).strip()
         info["author"] = author
-    except Exception:
+    except Exception as exc:
+        from aivideo_workers.diagnostics import note_suppressed
+        note_suppressed("package_review.py:178", exc)
         pass
 
     try:
         status = subprocess.check_output(["git", "status", "--porcelain"], text=True).strip()
         if status:
             info["modified_files"] = status.splitlines()
-    except Exception:
+    except Exception as exc:
+        from aivideo_workers.diagnostics import note_suppressed
+        note_suppressed("package_review.py:185", exc)
         pass
 
     # Check remote sync state explicitly
@@ -196,7 +208,9 @@ def get_git_info() -> dict:
                 info["remote_sync_status"] = "Có thay đổi local chưa commit (Uncommitted changes)"
         else:
             info["remote_sync_status"] = f"Khác remote (Local: {local_hash[:8]} vs Remote: {remote_hash[:8]})"
-    except Exception:
+    except Exception as exc:
+        from aivideo_workers.diagnostics import note_suppressed
+        note_suppressed("package_review.py:199", exc)
         info["remote_sync_status"] = "UNKNOWN (Không thể đối chiếu remote)"
 
     return info
@@ -247,7 +261,9 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
                         line = line.strip()
                         if line:
                             loaded.append(json.loads(line))
-            except Exception:
+            except Exception as exc:
+                from aivideo_workers.diagnostics import note_suppressed
+                note_suppressed("package_review.py:250", exc)
                 pass
         return loaded
 
@@ -355,7 +371,9 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
             # (P1-41) a PASS requires a run identity, not just the word "PASS"
             t1_status, t1_obs = verify_s02_evidence(ev)
             t1_exit = 0 if t1_status == "PASS" else (2 if t1_status == "NOT_RUN" else 1)
-        except Exception:
+        except Exception as exc:
+            from aivideo_workers.diagnostics import note_suppressed
+            note_suppressed("package_review.py:358", exc)
             t1_status = "FAIL"
             t1_obs = "Evidence file corrupted"
             t1_exit = 1
@@ -385,7 +403,9 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
             t2_status = "PASS" if recorded == "PASS" else ("NOT_RUN" if recorded == "NOT_RUN" else "FAIL")
             t2_obs = ev.get("details", "Verified from recorded evidence")
             t2_exit = 0 if t2_status == "PASS" else (2 if t2_status == "NOT_RUN" else 1)
-        except Exception:
+        except Exception as exc:
+            from aivideo_workers.diagnostics import note_suppressed
+            note_suppressed("package_review.py:388", exc)
             t2_status = "FAIL"
             t2_obs = "Evidence file corrupted"
             t2_exit = 1

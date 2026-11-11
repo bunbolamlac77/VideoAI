@@ -107,7 +107,8 @@ final class AppState: ObservableObject {
     @Published var probeResult: MediaProbeResult?
     @Published var isProbing: Bool = false
     @Published var mediaFilter: MediaFilter = .all
-    private var currentlyAccessedSecurityScopedURL: URL? = nil
+    /// (P2-01) internal, not private: the media extension in AppState+Media.swift needs it.
+    var currentlyAccessedSecurityScopedURL: URL? = nil
 
     var videoCount: Int { mediaItems.filter { $0.kind == .video }.count }
     var imageCount: Int { mediaItems.filter { $0.kind == .image }.count }
@@ -129,7 +130,9 @@ final class AppState: ObservableObject {
 
     // Local Neural Model Status & Inference (Gate G0)
     @Published var modelStatus: ModelStatusResult?
-    @Published var modelPrompt: String = "Tóm tắt brief cảnh quay xe máy đèo Prenn buổi sáng sớm."
+    /// (P2-09) Empty by default: a prefilled demo prompt was indistinguishable from the
+    /// user's own input and ended up in inference requests.
+    @Published var modelPrompt: String = ""
     @Published var lastRunPrompt: String?
     @Published var modelInferResult: LocalInferResult?
     @Published var isRunningModelInfer: Bool = false
@@ -143,7 +146,9 @@ final class AppState: ObservableObject {
     @Published var g1Project: ProjectRecord?
     @Published var g1Workday: WorkdayRecord?
     @Published var g1DraftFactText: String = ""
-    @Published var g1SaveStatus: String = "Chưa lưu" // Đang lưu / Đã lưu / Lưu lỗi
+    @Published var g1SaveStatus: String = "Chưa lưu" // display only, never parsed
+    /// (P2-07) The authoritative save state; the message above is for humans.
+    @Published var g1Persistence: PersistenceState = .idle
 
     // MARK: - Brief cho người viết kịch bản (Bước 1)
     // Nguồn ngữ cảnh duy nhất do người dùng viết: MỘT ô text. Thứ bắt buộc là
@@ -153,6 +158,8 @@ final class AppState: ObservableObject {
     // `brief_text`; G3 đọc lại để prefill chủ đề / giọng điệu.
     @Published var briefRawText: String = ""
     @Published var briefSaveStatus: String = "Chưa lưu"
+    /// (P2-07) Authoritative save state for the brief card.
+    @Published var briefPersistence: PersistenceState = .idle
     @Published var latestScriptBrief: ScriptBriefRecord?
     @Published var g1Claims: [ClaimRecord] = []
     @Published var g1ReconciliationSummary: String = ""
@@ -234,15 +241,12 @@ final class AppState: ObservableObject {
     func resolveWorkerScriptPath() -> String? {
         let fm = FileManager.default
 
-        // 1. Check Bundle Resources (Workers/aivideo_workers/main.py or workers/src/aivideo_workers/main.py)
+        // 1. Bundle Resources. There is exactly one bundled location (P2-02); the former
+        //    `workers/src/...` duplicate was never used and only doubled the payload.
         if let bundleRes = Bundle.main.resourceURL {
-            let bundledWorker1 = bundleRes.appendingPathComponent("Workers/aivideo_workers/main.py").path
-            if fm.fileExists(atPath: bundledWorker1) {
-                return bundledWorker1
-            }
-            let bundledWorker2 = bundleRes.appendingPathComponent("workers/src/aivideo_workers/main.py").path
-            if fm.fileExists(atPath: bundledWorker2) {
-                return bundledWorker2
+            let bundledWorker = bundleRes.appendingPathComponent("Workers/aivideo_workers/main.py").path
+            if fm.fileExists(atPath: bundledWorker) {
+                return bundledWorker
             }
         }
 
@@ -457,347 +461,6 @@ final class AppState: ObservableObject {
         }
     }
 
-    // MARK: - Folder & Media Selection (Directory Workspace with Video & Optional Photos)
-
-    nonisolated static let supportedVideoExtensions: Set<String> = [
-        "mp4", "mov", "m4v", "mkv", "avi", "webm"
-    ]
-    nonisolated static let supportedImageExtensions: Set<String> = [
-        "jpg", "jpeg", "png", "heic", "heif", "webp", "tiff", "tif", "bmp"
-    ]
-
-    static func mediaKind(for url: URL) -> MediaItemKind? {
-        let ext = url.pathExtension.lowercased()
-        if supportedVideoExtensions.contains(ext) { return .video }
-        if supportedImageExtensions.contains(ext) { return .image }
-        return nil
-    }
-
-    /// Recursive enumeration can take seconds on large/external volumes — never run it on the main actor.
-    func scanDirectoryAsync(at dirURL: URL) async -> [MediaSourceItem] {
-        await Task.detached(priority: .userInitiated) {
-            Self.scanDirectory(at: dirURL)
-        }.value
-    }
-
-    nonisolated static let skippedDirectoryNames: Set<String> = [
-        ".git", ".svn", ".hg", "CVS", ".venv", "venv", "node_modules",
-        "DerivedData", ".build", "build", "__pycache__", "Pods", "Carthage"
-    ]
-
-    nonisolated static func scanDirectory(at dirURL: URL) -> [MediaSourceItem] {
-        let fm = FileManager.default
-        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey]
-        guard let enumerator = fm.enumerator(
-            at: dirURL,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else {
-            return []
-        }
-
-        var items: [MediaSourceItem] = []
-        let maxItems = 5000
-
-        for case let fileURL as URL in enumerator {
-            guard let resourceValues = try? fileURL.resourceValues(forKeys: Set(keys)) else {
-                continue
-            }
-
-            if resourceValues.isDirectory ?? false {
-                if Self.skippedDirectoryNames.contains(fileURL.lastPathComponent) {
-                    enumerator.skipDescendants()
-                }
-                continue
-            }
-
-            let ext = fileURL.pathExtension.lowercased()
-            let kind: MediaItemKind?
-            if Self.supportedVideoExtensions.contains(ext) {
-                kind = .video
-            } else if Self.supportedImageExtensions.contains(ext) {
-                kind = .image
-            } else {
-                kind = nil
-            }
-
-            if let kind = kind {
-                let size = Int64(resourceValues.fileSize ?? 0)
-                let date = resourceValues.contentModificationDate
-                items.append(MediaSourceItem(
-                    id: fileURL.path,
-                    url: fileURL,
-                    name: fileURL.lastPathComponent,
-                    kind: kind,
-                    fileSize: size,
-                    modifiedDate: date
-                ))
-                if items.count >= maxItems {
-                    break
-                }
-            }
-        }
-
-        return items.sorted {
-            if $0.kind != $1.kind {
-                return $0.kind == .video // Videos first
-            }
-            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
-        }
-    }
-
-    func selectSourceFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Chọn thư mục"
-        panel.message = "Chọn thư mục chứa toàn bộ video và ảnh tư liệu nguồn"
-
-        if panel.runModal() == .OK, let url = panel.url {
-            handleSelectedURL(url)
-        }
-    }
-
-    func selectFileAndProbe() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
-        panel.prompt = "Mở tư liệu"
-        panel.message = "Chọn thư mục hoặc file video/ảnh nguồn"
-
-        if panel.runModal() == .OK {
-            if let first = panel.urls.first {
-                if panel.urls.count == 1 && (first.hasDirectoryPath || (try? first.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true) {
-                    handleSelectedURL(first)
-                } else {
-                    handleSelectedURLs(panel.urls)
-                }
-            }
-        }
-    }
-
-    func handleSelectedURLs(_ urls: [URL]) {
-        guard let first = urls.first else { return }
-        if urls.count == 1 && (first.hasDirectoryPath || (try? first.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true) {
-            handleSelectedURL(first)
-            return
-        }
-
-        stopAccessingCurrentSecurityScopedResource()
-        let fm = FileManager.default
-        var items: [MediaSourceItem] = []
-
-        for url in urls {
-            let ext = url.pathExtension.lowercased()
-            let kind: MediaItemKind?
-            if Self.supportedVideoExtensions.contains(ext) {
-                kind = .video
-            } else if Self.supportedImageExtensions.contains(ext) {
-                kind = .image
-            } else {
-                kind = nil
-            }
-
-            if let kind = kind {
-                let attrs = try? fm.attributesOfItem(atPath: url.path)
-                let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-                let date = attrs?[.modificationDate] as? Date
-                items.append(MediaSourceItem(
-                    id: url.path,
-                    url: url,
-                    name: url.lastPathComponent,
-                    kind: kind,
-                    fileSize: size,
-                    modifiedDate: date
-                ))
-            }
-        }
-
-        self.mediaItems = items.sorted {
-            if $0.kind != $1.kind { return $0.kind == .video }
-            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
-        }
-
-        self.selectedDirectoryPath = first.deletingLastPathComponent().path
-        if let target = items.first(where: { $0.kind == .video }) ?? items.first {
-            selectItemForInspection(target)
-        }
-    }
-
-    func populateSingleFile(url: URL) {
-        guard let kind = Self.mediaKind(for: url) else {
-            self.errorMessage = "Định dạng không được hỗ trợ: .\(url.pathExtension)"
-            return
-        }
-        self.selectedDirectoryPath = url.deletingLastPathComponent().path
-        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
-        let date = attrs?[.modificationDate] as? Date
-        let singleItem = MediaSourceItem(
-            id: url.path,
-            url: url,
-            name: url.lastPathComponent,
-            kind: kind,
-            fileSize: size,
-            modifiedDate: date
-        )
-        self.mediaItems = [singleItem]
-        selectItemForInspection(singleItem)
-    }
-
-    func handleSelectedURL(_ url: URL) {
-        stopAccessingCurrentSecurityScopedResource()
-        self.isBookmarkStale = false
-
-        let isDir = url.hasDirectoryPath || (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
-
-        // Create Security-Scoped Bookmark for persistent access across app launches
-        do {
-            let bookmarkData = try url.bookmarkData(
-                options: .withSecurityScope,
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
-            UserDefaults.standard.set(bookmarkData, forKey: "LastSelectedSourceFolderBookmark")
-            self.isSecurityScoped = true
-        } catch {
-            self.isSecurityScoped = false
-        }
-
-        if isDir {
-            let success = url.startAccessingSecurityScopedResource()
-            if success {
-                self.currentlyAccessedSecurityScopedURL = url
-            }
-            self.selectedDirectoryPath = url.path
-            self.mediaItems = []
-            self.statusMessage = "Đang quét thư mục: \(url.lastPathComponent)…"
-            Task { await self.loadDirectory(url) }
-        } else {
-            // Single file selection
-            populateSingleFile(url: url)
-        }
-    }
-
-    /// Scans off-main, then applies results only if the user hasn't switched folders meanwhile.
-    func loadDirectory(_ url: URL, keepSelection: Bool = false) async {
-        let scanned = await scanDirectoryAsync(at: url)
-        guard selectedDirectoryPath == url.path else { return }
-        self.mediaItems = scanned
-        self.statusMessage = "Đã nạp thư mục: \(url.lastPathComponent) (\(videoCount) video, \(imageCount) ảnh)"
-        if keepSelection, scanned.contains(where: { $0.id == selectedFilePath }) { return }
-        if let target = scanned.first(where: { $0.kind == .video }) ?? scanned.first {
-            selectItemForInspection(target)
-        } else {
-            self.selectedFilePath = ""
-            self.probeResult = nil
-        }
-    }
-
-    func selectItemForInspection(_ item: MediaSourceItem) {
-        self.selectedFilePath = item.id
-        if item.kind == .video {
-            Task {
-                await self.probeFile(path: item.id)
-            }
-        } else {
-            self.probeResult = nil
-            self.isProbing = false
-            self.statusMessage = "Đang xem ảnh đính kèm: \(item.name) (\(item.formattedSize))"
-        }
-    }
-
-    func refreshCurrentDirectory() {
-        guard !selectedDirectoryPath.isEmpty else { return }
-        let url = URL(fileURLWithPath: selectedDirectoryPath)
-        self.statusMessage = "Đang quét lại thư mục…"
-        Task { await self.loadDirectory(url, keepSelection: true) }
-    }
-
-    func restoreSavedBookmark() {
-        stopAccessingCurrentSecurityScopedResource()
-        var isStale = false
-
-        if let data = UserDefaults.standard.data(forKey: "LastSelectedSourceFolderBookmark") {
-            do {
-                let restoredURL = try URL(
-                    resolvingBookmarkData: data,
-                    options: .withSecurityScope,
-                    relativeTo: nil,
-                    bookmarkDataIsStale: &isStale
-                )
-                self.isBookmarkStale = isStale
-                // A stale bookmark still resolves; Apple's guidance is to access it and re-mint the bookmark.
-                let success = restoredURL.startAccessingSecurityScopedResource()
-                if success {
-                    self.currentlyAccessedSecurityScopedURL = restoredURL
-                    if isStale,
-                       let fresh = try? restoredURL.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) {
-                        UserDefaults.standard.set(fresh, forKey: "LastSelectedSourceFolderBookmark")
-                        self.isBookmarkStale = false
-                    }
-                    let isDir = restoredURL.hasDirectoryPath || (try? restoredURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
-                    if isDir {
-                        self.selectedDirectoryPath = restoredURL.path
-                        Task { await self.loadDirectory(restoredURL) }
-                    } else {
-                        populateSingleFile(url: restoredURL)
-                    }
-                } else if isStale {
-                    self.errorMessage = "Quyền truy cập thư mục đã cũ (stale bookmark). Vui lòng chọn lại thư mục để tái cấp quyền."
-                } else {
-                    self.errorMessage = "Không thể cấp quyền truy cập security-scoped cho thư mục đã lưu."
-                }
-                return
-            } catch {
-                // Fallback to legacy single file bookmark
-            }
-        }
-
-        // Legacy file bookmark fallback
-        if let data = UserDefaults.standard.data(forKey: "LastSelectedSourceBookmark") {
-            do {
-                let restoredURL = try URL(
-                    resolvingBookmarkData: data,
-                    options: .withSecurityScope,
-                    relativeTo: nil,
-                    bookmarkDataIsStale: &isStale
-                )
-                self.isBookmarkStale = isStale
-                if isStale {
-                    self.errorMessage = "Quyền truy cập file đã cũ. Vui lòng chọn lại file."
-                } else {
-                    let success = restoredURL.startAccessingSecurityScopedResource()
-                    if success {
-                        self.currentlyAccessedSecurityScopedURL = restoredURL
-                        populateSingleFile(url: restoredURL)
-                    }
-                }
-            } catch {
-                self.errorMessage = "Không thể khôi phục bookmark: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    func probeFile(path: String) async {
-        self.isProbing = true
-        self.errorMessage = nil
-        defer { if selectedFilePath == path || selectedFilePath.isEmpty { isProbing = false } }
-        do {
-            let res = try await worker.probeMedia(filePath: path)
-            // Drop stale results: user may have clicked another item while ffprobe ran.
-            guard selectedFilePath == path else { return }
-            self.probeResult = res
-            self.statusMessage = "Phân tích media thành công: \(URL(fileURLWithPath: path).lastPathComponent)"
-        } catch {
-            guard selectedFilePath == path else { return }
-            self.errorMessage = "Lỗi probe media: \(error.localizedDescription)"
-            self.probeResult = nil
-        }
-    }
-
     // MARK: - Real Local Model Inference (G0 Text Smoke)
 
     func runModelInference() async {
@@ -903,39 +566,104 @@ final class AppState: ObservableObject {
             self.projectStore = store
             self.publicationService = pubService
 
-            let fixedProjId = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!
-            let fixedWorkdayId = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
+            // (P2-10) The default project/workday used to be hard-coded UUIDs, so every
+            // install shared one identity and a stray receipt from another machine could
+            // match it. The id is now stable per install, stored in UserDefaults.
+            let fixedProjId = Self.installProjectId()
+            let fixedWorkdayId = Self.installWorkdayId(for: fixedProjId)
 
             let proj: ProjectRecord
+            let workday: WorkdayRecord
             if let existing = try await store.getProject(id: fixedProjId) {
                 proj = existing
+                if let found = try await store.getWorkday(id: fixedWorkdayId, projectId: fixedProjId) {
+                    workday = found
+                } else {
+                    workday = try await store.createWorkday(
+                        id: fixedWorkdayId, projectId: fixedProjId,
+                        title: "Ngày 1: Tư liệu thực địa", date: Self.todayDateString()
+                    )
+                }
             } else {
-                proj = try await store.createProject(id: fixedProjId, name: "Dự án mặc định (Gate G1)")
-                _ = try await store.createWorkday(id: fixedWorkdayId, projectId: fixedProjId, title: "Ngày 1: Tư liệu thực địa", date: "2026-11-09")
+                proj = try await store.createProject(id: fixedProjId, name: "Dự án của tôi")
+                workday = try await store.createWorkday(
+                    id: fixedWorkdayId, projectId: fixedProjId,
+                    title: "Ngày 1: Tư liệu thực địa", date: Self.todayDateString()
+                )
             }
             self.g1Project = proj
-            self.g1Workday = WorkdayRecord(workdayId: fixedWorkdayId, projectId: fixedProjId, title: "Ngày 1: Tư liệu thực địa", date: "2026-11-09")
+            self.g1Workday = workday
 
             let report = try await pubService.runStartupReconciliation(
                 store: store,
-                projectId: fixedProjId,
+                projectId: proj.projectId,
                 newSessionId: "app-session-\(UUID().uuidString)"
             )
             self.g1ReconciliationSummary = "Reconciled: revoked=\(report.revokedOldAttemptsCount), quarantined=\(report.quarantinedTempsCount), corrupted=\(report.corruptedCommittedBlobsCount)"
-            self.g1Claims = try await store.getLatestClaims(workdayId: fixedWorkdayId)
-            self.g2ReviewItems = try await store.listReviewItems(workdayId: fixedWorkdayId)
+            self.g1Claims = try await store.getLatestClaims(workdayId: workday.workdayId)
+            self.g2ReviewItems = try await store.listReviewItems(workdayId: workday.workdayId)
             await loadScriptBrief()
-            let covRecords = try await store.listCoverageRecords(projectId: fixedProjId)
+            let covRecords = try await store.listCoverageRecords(projectId: proj.projectId)
             if let latestCov = covRecords.first {
                 let pct = String(format: "%.1f", latestCov.frameInputCoverage * 100.0)
                 self.g2ScopeSummary = "Status: \(latestCov.detailedPassStatus) · Coverage: \(pct)% (\(latestCov.uniqueProcessedFrameIds.count)/\(latestCov.totalDeclaredFrames) frames) · Semantic: Chưa chứng nhận"
             } else {
                 self.g2ScopeSummary = "Chưa có bản ghi Coverage G2 trong SQLite · Review items: \(self.g2ReviewItems.count)"
             }
-            self.g1SaveStatus = "Đã lưu (Rev \(proj.currentRevision))"
+            // (P2-08) Opening the store is not a save. The status says what actually
+            // happened, so it cannot read "saved" while the user has typed nothing.
+            if proj.currentRevision > 1 {
+                self.g1SaveStatus = "Đã lưu (Rev \(proj.currentRevision))"
+                self.g1Persistence = .saved
+            } else {
+                self.g1SaveStatus = "Cơ sở dữ liệu đã mở · chưa có thay đổi nào được lưu"
+                self.g1Persistence = .idle
+            }
         } catch {
             self.g1SaveStatus = "Lưu lỗi: \(error.localizedDescription)"
+            self.g1Persistence = .failed
         }
+    }
+
+    // MARK: - Install identity (P2-10)
+
+    private static let installProjectIdKey = "AIVideoInstallProjectId"
+    private static let installWorkdayIdKey = "AIVideoInstallWorkdayId"
+
+    static func installProjectId() -> UUID {
+        if let raw = UserDefaults.standard.string(forKey: installProjectIdKey),
+           let id = UUID(uuidString: raw) {
+            return id
+        }
+        let id = UUID()
+        UserDefaults.standard.set(id.uuidString, forKey: installProjectIdKey)
+        return id
+    }
+
+    /// Derived from the project id so the pairing is stable and impossible to collide with
+    /// a hard-coded fixture id.
+    static func installWorkdayId(for projectId: UUID) -> UUID {
+        if let raw = UserDefaults.standard.string(forKey: installWorkdayIdKey),
+           let id = UUID(uuidString: raw) {
+            return id
+        }
+        var bytes = withUnsafeBytes(of: projectId.uuid) { Array($0) }
+        bytes[6] = (bytes[6] & 0x0F) | 0x40
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        let id = UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+                             bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
+                             bytes[12], bytes[13], bytes[14], bytes[15]))
+        UserDefaults.standard.set(id.uuidString, forKey: installWorkdayIdKey)
+        return id
+    }
+
+    static func todayDateString() -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .iso8601)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date())
     }
 
     func resolveG2ReviewItemInStore(item: TargetedReviewRecord, action: ReviewResolutionAction) async {
@@ -1254,6 +982,7 @@ final class AppState: ObservableObject {
         guard !trimmed.isEmpty else { return }
 
         self.g1SaveStatus = "Đang lưu..."
+        self.g1Persistence = .saving
         do {
             let claim = ClaimRecord(
                 workdayId: wd.workdayId,
@@ -1266,6 +995,7 @@ final class AppState: ObservableObject {
             if let updated = try await store.getProject(id: proj.projectId) {
                 self.g1Project = updated
                 self.g1SaveStatus = "Đã lưu (ACK Rev \(updated.currentRevision))"
+                self.g1Persistence = .saved
             }
             self.g1Claims = try await store.getLatestClaims(workdayId: wd.workdayId)
         } catch {

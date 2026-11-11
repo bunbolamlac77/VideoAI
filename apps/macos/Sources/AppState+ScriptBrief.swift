@@ -81,6 +81,7 @@ extension AppState {
             guard let record = try await store.latestScriptBrief(workdayId: wd.workdayId) else {
                 latestScriptBrief = nil
                 briefSaveStatus = "Chưa lưu"
+                briefPersistence = .empty
                 return
             }
             // Never clobber text the user typed before the store finished opening:
@@ -94,8 +95,10 @@ extension AppState {
                 ? Self.legacyBriefText(record)
                 : record.rawText
             briefSaveStatus = "Đã lưu · \(Self.shortRevision(record.briefRevisionId))"
+            briefPersistence = .saved
         } catch {
             briefSaveStatus = "Lỗi đọc brief: \(error.localizedDescription)"
+            briefPersistence = .failed
         }
     }
 
@@ -105,21 +108,26 @@ extension AppState {
     func saveScriptBrief() async -> Bool {
         guard let store = projectStore, g1Project != nil, g1Workday != nil else {
             briefSaveStatus = "Chưa sẵn sàng cơ sở dữ liệu"
+            briefPersistence = .notReady
             return false
         }
         let draft = currentBriefDraft
         guard !draft.isBlank else {
             briefSaveStatus = "Chưa có nội dung để lưu"
+            briefPersistence = .empty
             return false
         }
         briefSaveStatus = "Đang lưu…"
+        briefPersistence = .saving
         do {
             try await store.saveScriptBrief(draft)
             latestScriptBrief = draft
             briefSaveStatus = "Đã lưu · \(Self.shortRevision(draft.briefRevisionId))"
+            briefPersistence = .saved
             return true
         } catch {
             briefSaveStatus = "Lỗi lưu: \(error.localizedDescription)"
+            briefPersistence = .failed
             return false
         }
     }

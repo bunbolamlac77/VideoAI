@@ -194,7 +194,9 @@ def _maybe_reexec_with_mlx_runtime() -> None:
         import mlx  # noqa: F401
         import mlx_lm  # noqa: F401
         return
-    except Exception:
+    except Exception as exc:
+        from aivideo_workers.diagnostics import note_suppressed
+        note_suppressed("run_python_tests.py:197", exc)
         pass
     candidate = Path.home() / "Library" / "Application Support" / "AIVideo" / "Runtimes" / "g0-mlx-runtime" / "bin" / "python3"
     if candidate.is_file() and os.access(candidate, os.X_OK):

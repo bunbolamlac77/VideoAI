@@ -233,20 +233,29 @@ Ba câu quan trọng nhất:
 
 ## 6. P2 — NỢ KỸ THUẬT
 
-- **God files:** `ProjectStore.swift` 2463, `g3_engine.py` 1800, `AIVideoApp.swift` 1547, `AppState.swift` 1301, `G3ProjectStore.swift` 1114.
-- **Bundle chứa 2 bản worker:** `build_macos_app.sh:80-85` copy cả `Workers/aivideo_workers` và `Workers/workers/src` (632 KB ×2) — "legacy path" không còn ai dùng.
-- **Đọc trạng thái dùng `BEGIN IMMEDIATE`:** `G3ProjectStore`/`G4ProjectStore`/`G5ProjectStore` `current*` ⇒ UI poll chặn writer.
-- **So UUID case-sensitive:** `G4ProjectStore.swift:121` so với `uuidString` (chữ hoa) trong khi `:237` dùng lowercase ⇒ receipt Python bị từ chối oan.
-- **Trap `Double(parts[0])`** khi `avg_frame_rate` rỗng: `G4S21Guard.swift:272`, `G5S22Guard.swift:292`.
-- **String escape sai** in ra literal: `G5S22Guard.swift:302,392`.
-- **`except Exception:` 30 chỗ** (5 chỗ nuốt hoàn toàn) trong `workers/src` và `tools`.
-- **State bằng so khớp chuỗi UI:** `hasPrefix("Đã lưu")`, `== "NATIVE_PREVIEW_VERIFIED"`, `== "ready_for_core_reverification_not_approved"`.
-- **Dữ liệu mồi:** UUID dự án/workday cố định, prompt demo "…đèo Prenn buổi sáng sớm" điền sẵn, `g1SaveStatus = "Đã lưu (Rev …)"` ngay khi khởi tạo.
-- **Accessibility:** font cố định 9–11 pt; 5 nút icon-only thiếu `accessibilityLabel`; `.controlSize(.mini)` cho nút "Dừng".
-- **`review_workflow.py` là code mồ côi:** không có call site production, chỉ test gọi ⇒ không được tính là bằng chứng S14.
-- **Hai nguồn schema:** `contracts/migrations/001_initial_g1_schema.sql` (10 bảng) chỉ dùng trong test; runtime tạo 23 bảng bằng Swift; `migrations/` rỗng.
-- **Doc trùng:** `README.md` và `docs/README.md` khác nhau; `01-PRODUCT.md`/`02-ANALYSIS-AND-DATA.md` trùng byte ở gốc và `docs/`.
-- **`REVIEW_SUMMARY.md`** ghi "189 PASS" trong khi record hiện tại 338.
+Trạng thái 2026-11-11: **14/14 nhóm đã xử lý**, tách thành 14 mục đánh số để truy vết.
+Test hồi quy: `tests/test_p2_debt.py` (29 case). Không có mục nào bị "đánh dấu xong" mà
+không có kiểm chứng.
+
+| # | Vấn đề | Cách xử lý | Kiểm chứng |
+|---|---|---|---|
+| P2-01 | God files: ProjectStore 2463, g3_engine 1800, AIVideoApp 1547, AppState 1301, G3ProjectStore 1114 dòng | Tách theo trách nhiệm: `ProvenanceValue.swift` (so sánh UUID/fps dùng chung), `PersistenceState.swift` (trạng thái lưu có kiểu), `AppState+Media.swift` (chọn/scan/probe media, −341 dòng), `G3SpeechReview.swift` (speech review, −244 dòng). Đồng thời **bỏ danh sách file viết tay** trong `build_macos_app.sh` và `run_tests.sh` (glob toàn bộ `Sources`): danh sách cũ đã âm thầm bỏ file mới khỏi binary test. | `test_p2_debt.py::TestGodFilesAreBeingSplit` (ngân sách dòng + file tách tồn tại), matrix 23 khối |
+| P2-02 | Bundle chứa 2 bản worker (`Workers/aivideo_workers` + `Workers/workers/src`, 632 KB ×2) | Chỉ còn một bản; script **assert** đúng 1 `main.py` trong bundle. Lưu ý: không được `rm -rf Resources/workers` vì APFS không phân biệt hoa/thường — lệnh đó xoá luôn `Workers/` (đã gặp thật khi làm). | `TestBundleHasOneWorker`; `du -sh` = 736 KB; bundle chạy được 42 RPC method |
+| P2-03 | Đọc trạng thái dùng `BEGIN IMMEDIATE` ⇒ UI poll chặn writer | Thêm `withCanonicalRead` (`BEGIN DEFERRED`) trong `ProjectStore`; `currentG3Approval`, `currentG4Preview`, `currentG5FinalApproval` dùng nó (các hàm này còn hash file bên trong). | `TestReadsDoNotTakeTheWriterLock` |
+| P2-04 | So UUID case-sensitive + `Double(parts[0])` trap khi `avg_frame_rate` rỗng | `ProvenanceValue.uuidsMatch` (so theo UUID) và `ProvenanceValue.frameRate/is24fps` (không trap, fail-closed); bỏ bản sao trong 2 guard, dùng chung ở `G4ProjectStore`/`G5ProjectStore`. | `TestCrossBorderValues` |
+| P2-05 | (gộp vào P2-03: cùng một nguyên nhân khoá ghi) | — | — |
+| P2-06 | 56 `except Exception`, trong đó nhiều chỗ nuốt im lặng | Thêm `aivideo_workers/diagnostics.py` (`note_suppressed` → stderr + ring buffer `diag.suppressed`); 11 file được ghi nhận ngữ cảnh; script `tools/fix_gate_integrity.py` (đã áp dụng, còn nhúng code cũ `fixtures/corpus`) chuyển sang `tools/historical/` kèm README "do not run". | `TestNoSilentBroadHandlers`, `TestHistoricalScriptsAreQuarantined` |
+| P2-07 | State UI bằng so khớp chuỗi tiếng Việt (`hasPrefix("Đã lưu")`…) | `PersistenceState` (idle/saving/saved/failed/notReady/empty); màu và nhánh đọc state, message chỉ để hiển thị. | `TestUiStateIsTyped` |
+| P2-08 | `g1SaveStatus = "Đã lưu"` ngay khi mở DB | Chỉ báo "đã lưu" khi `currentRevision > 1`; mở DB ⇒ trạng thái `idle` với message trung thực. | `TestNoSeedData::test_saved_status_requires_a_real_revision` |
+| P2-09 | Prompt demo "…đèo Prenn buổi sáng sớm" điền sẵn | `modelPrompt` mặc định rỗng. | `TestNoSeedData::test_no_seeded_demo_prompt` |
+| P2-10 | UUID dự án/workday cố định `…-0001`/`…-0002` | `installProjectId()` (lưu trong UserDefaults) + workday id suy ra từ project id; thêm `ProjectStore.getWorkday`; ngày tạo theo ngày thật. | `TestNoSeedData::test_no_hardcoded_project_ids` |
+| P2-11 | Font 9–10 pt; 5 nút icon-only thiếu label; `.controlSize(.mini)` cho nút "Dừng" | Toàn bộ text ≥ 11 pt; `accessibilityLabel` cho nút đóng/mở-file/dừng; bỏ hết `.mini`. | `TestAccessibility` |
+| P2-12 | `review_workflow.py` là code mồ côi nhưng dễ bị trích làm bằng chứng S14 | Ghi rõ trong module "NOT WIRED INTO PRODUCTION"; test chặn mọi module production import nó. | `TestOrphanModuleIsDeclared` |
+| P2-13 | Hai nguồn schema: `contracts/migrations/001_initial_g1_schema.sql` (10 bảng) vs 23 bảng do Swift tạo | Chuyển thành `contracts/migrations/fixtures/g1_schema_fixture.sql` + `contracts/migrations/README.md` nói rõ Swift là chủ sở hữu schema; test bắt buộc fixture ⊆ schema runtime và không code production nào đọc fixture. | `TestSingleSchemaSource` |
+| P2-14 | Doc trùng (`README`, `01-PRODUCT`, `02-ANALYSIS-AND-DATA` ở gốc và `docs/`); `REVIEW_SUMMARY.md` ghi "189 PASS" | Test giữ hai bản **byte-identical** (chống trôi); `REVIEW_SUMMARY.md` bỏ con số viết tay, trỏ về `build/reports/python_test_summary.json` và ghi rõ bảng cũ là ảnh chụp lịch sử. | `TestDocsCannotDrift` |
+
+Ghi chú: P2-05 trong bản gốc là cùng một nguyên nhân với P2-03 (khoá ghi trong đường đọc),
+nên được gộp — không có mục nào bị bỏ qua mà không nêu lý do.
 
 ---
 

@@ -428,13 +428,13 @@ struct G5ConsoleView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("4K Stage JSON (đồng bộ với form):").font(.caption2).foregroundStyle(.secondary)
                     TextEditor(text: $stage4KJSON)
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .frame(height: 70)
                         .border(Color.secondary.opacity(0.2))
 
                     Text("Published 4K Assets JSON:").font(.caption2).foregroundStyle(.secondary)
                     TextEditor(text: $asset4KJSON)
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .frame(height: 70)
                         .border(Color.secondary.opacity(0.2))
                 }
@@ -449,7 +449,7 @@ struct G5ConsoleView: View {
             Card(title: "Nhật ký thực thi G5", symbol: "terminal") {
                 ScrollView {
                     Text(resultText)
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }

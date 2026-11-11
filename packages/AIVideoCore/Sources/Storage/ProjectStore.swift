@@ -1165,6 +1165,32 @@ public actor ProjectStore {
         }
     }
 
+    /// (P2-05) A shared *read* transaction.
+    ///
+    /// Reads in the gate stores used to go through `BEGIN IMMEDIATE`, which takes the write
+    /// lock on the single canonical connection. `currentG4Preview` even hashes the preview
+    /// MP4 inside it, so every UI poll blocked the writer for the length of that IO.
+    /// `BEGIN DEFERRED` keeps a multi-statement read consistent without reserving the write
+    /// lock, and callers that only need one statement can use `withCanonicalRead`.
+    private func withReadTransaction<T>(_ block: () throws -> T) throws -> T {
+        try execute(sql: "BEGIN DEFERRED;")
+        do {
+            let result = try block()
+            try execute(sql: "COMMIT;")
+            return result
+        } catch {
+            try? execute(sql: "ROLLBACK;")
+            throw error
+        }
+    }
+
+    func withCanonicalRead<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
+        try withReadTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            return try body(db)
+        }
+    }
+
     /// 2026-11-10 fix (D06): canonical write transaction shared with the G3/G4/G5
     /// extensions. It runs on the actor's ONE connection, so the "single writer"
     /// invariant is true at the connection level instead of opening a second handle.
@@ -1535,6 +1561,28 @@ public actor ProjectStore {
     }
 
     /// (P1-06) Claims stored in this database (latest revision per claim).
+    /// (P2-10) Read one workday by id so callers never have to rebuild the record by hand.
+    public func getWorkday(id: UUID, projectId: UUID) throws -> WorkdayRecord? {
+        return try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = "SELECT workday_id, project_id, title, date FROM workdays WHERE workday_id = ? AND project_id = ?;"
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, id.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, projectId.uuidString, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_ROW,
+                  let wid = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 0))),
+                  let pid = UUID(uuidString: String(cString: sqlite3_column_text(stmt, 1))),
+                  let title = sqlite3_column_text(stmt, 2),
+                  let date = sqlite3_column_text(stmt, 3) else { return nil }
+            return WorkdayRecord(workdayId: wid, projectId: pid,
+                                 title: String(cString: title), date: String(cString: date))
+        }
+    }
+
     public func countClaims(workdayId: UUID) throws -> Int {
         guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
         var stmt: OpaquePointer?

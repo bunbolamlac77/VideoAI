@@ -35,13 +35,18 @@ mkdir -p build/tests build/reports
 mkdir -p build/reports/previous
 mv build/reports/*.jsonl build/reports/previous/ 2>/dev/null || true
 
+# (P2-01) Compile from globbed sources: a hand-maintained file list silently dropped new
+# Swift files from the suite binaries while the app still built.
+CORE_DIR="packages/AIVideoCore/Sources"
+CORE_ALL=$(find "$CORE_DIR" -name '*.swift' | LC_ALL=C sort)
+CORE_IPC="$CORE_DIR/Models/DomainModels.swift $CORE_DIR/WorkerIPC/WorkerClient.swift"
+
 echo "=== [1/2] Compiling and Running Worker IPC Tests (S02) ==="
 swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift \
-  packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
+  $CORE_IPC \
   tests/test_worker_ipc.swift \
   -o build/tests/test_worker_ipc
 
@@ -52,8 +57,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift \
-  packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
+  $CORE_IPC \
   tests/test_resolve_spike.swift \
   -o build/tests/test_resolve_spike
 
@@ -86,8 +90,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift \
-  packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
+  $CORE_ALL \
   tests/test_s02_manual_verification.swift \
   -o build/tests/test_s02_manual_verification
 
@@ -98,8 +101,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  $CORE_ALL \
   tests/test_g1_contracts.swift \
   -o build/tests/test_g1_contracts
 
@@ -110,9 +112,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
-  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  $CORE_ALL \
   tests/test_s06_project_store.swift \
   -o build/tests/test_s06_project_store
 
@@ -123,10 +123,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
-  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
-  packages/AIVideoCore/Sources/Scheduler/ResourceGovernor.swift \
+  $CORE_ALL \
   tests/test_s07_scheduler_fencing.swift \
   -o build/tests/test_s07_scheduler_fencing
 
@@ -137,10 +134,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
-  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
-  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  $CORE_ALL \
   tests/test_s08_publication_reconciler.swift \
   -o build/tests/test_s08_publication_reconciler
 
@@ -151,11 +145,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
-  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
-  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
-  packages/AIVideoCore/Sources/Recovery/BackupRestoreService.swift \
+  $CORE_ALL \
   tests/test_s09_backup_restore_migration.swift \
   -o build/tests/test_s09_backup_restore_migration
 
@@ -166,9 +156,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Media/MediaIndexer.swift \
-  packages/AIVideoCore/Sources/Media/SourceRevisionIdentity.swift \
-  packages/AIVideoCore/Sources/Adapters/ModelAdapterContracts.swift \
+  $CORE_ALL \
   tests/test_s10_s11_g2_foundations.swift \
   -o build/tests/test_s10_s11_g2_foundations
 
@@ -178,7 +166,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Media/SourceRevisionIdentity.swift \
+  $CORE_ALL \
   tests/test_source_revision_identity.swift \
   -o build/tests/test_source_revision_identity
 
@@ -189,7 +177,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift \
+  $CORE_ALL \
   tests/test_g2_coverage_dto.swift \
   -o build/tests/test_g2_coverage_dto
 
@@ -200,8 +188,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Models/G3StoryRequest.swift \
+  $CORE_ALL \
   tests/test_g3_story_request.swift \
   -o build/tests/test_g3_story_request
 
@@ -212,11 +199,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
-  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
-  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  $CORE_ALL \
   tests/test_s12_to_s15_g2_closure.swift \
   -o build/tests/test_s12_to_s15_g2_closure
 
@@ -227,13 +210,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
-  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
-  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  $CORE_ALL \
   tests/test_s19_g3_approval.swift \
   -o build/tests/test_s19_g3_approval
 
@@ -244,13 +221,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
-  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
-  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  $CORE_ALL \
   tests/test_g3_approval_guard.swift \
   -o build/tests/test_g3_approval_guard
 
@@ -261,16 +232,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
-  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
-  packages/AIVideoCore/Sources/Storage/G4ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G4S21Guard.swift \
-  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
-  packages/AIVideoCore/Sources/Publication/G4FilePublisher.swift \
+  $CORE_ALL \
   tests/test_g4_approval.swift \
   -o build/tests/test_g4_approval
 
@@ -281,41 +243,25 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
-  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
-  packages/AIVideoCore/Sources/Storage/G4ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G4S21Guard.swift \
-  packages/AIVideoCore/Sources/Storage/G5ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G5S22Guard.swift \
-  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
-  packages/AIVideoCore/Sources/Publication/G4FilePublisher.swift \
+  $CORE_ALL \
   tests/test_g5_final_and_release.swift \
   -o build/tests/test_g5_final_and_release
 
 TEST_RECORDS_OUT="build/reports/swift_g5_s22_s26_records.jsonl" ./build/tests/test_g5_final_and_release
 
 echo "=== [P1] Job completion (P1-01), backup/restore (P1-05/06/07), out-of-transaction hashing (P1-02) ==="
-CORE_SWIFT="packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
-  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
-  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
-  packages/AIVideoCore/Sources/Recovery/BackupRestoreService.swift"
-
+# (P2-01) these used to hand-list a subset of the core package, which broke as soon as
+# a file moved; the whole package is one module, so compile all of it.
 swiftc -sdk "$SDK_PATH" -target arm64-apple-macosx14.0 -swift-version 6 -parse-as-library \
-  $CORE_SWIFT tests/test_p1_job_completion.swift -o build/tests/test_p1_job_completion
+  $CORE_ALL tests/test_p1_job_completion.swift -o build/tests/test_p1_job_completion
 TEST_RECORDS_OUT="build/reports/swift_p1_job_completion_records.jsonl" ./build/tests/test_p1_job_completion
 
 swiftc -sdk "$SDK_PATH" -target arm64-apple-macosx14.0 -swift-version 6 -parse-as-library \
-  $CORE_SWIFT tests/test_p1_backup_restore.swift -o build/tests/test_p1_backup_restore
+  $CORE_ALL tests/test_p1_backup_restore.swift -o build/tests/test_p1_backup_restore
 TEST_RECORDS_OUT="build/reports/swift_p1_backup_restore_records.jsonl" ./build/tests/test_p1_backup_restore
 
 swiftc -sdk "$SDK_PATH" -target arm64-apple-macosx14.0 -swift-version 6 -parse-as-library \
-  $(find packages/AIVideoCore/Sources -name '*.swift') \
-  tests/test_p1_hashing_outside_transaction.swift -o build/tests/test_p1_hashing_outside_transaction
+  $CORE_ALL tests/test_p1_hashing_outside_transaction.swift -o build/tests/test_p1_hashing_outside_transaction
 TEST_RECORDS_OUT="build/reports/swift_p1_hashing_records.jsonl" ./build/tests/test_p1_hashing_outside_transaction
 
 echo "=== [G5 receipt] P0-03: native receipt is bound to the approved plan/G3/G4 chain ==="
@@ -323,7 +269,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  $(find packages/AIVideoCore/Sources -name '*.swift') \
+  $CORE_ALL \
   tests/test_g5_receipt_binding.swift \
   -o build/tests/test_g5_receipt_binding
 
@@ -334,13 +280,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
-  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
-  packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
-  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  $CORE_ALL \
   tests/test_g3_llm_approval.swift \
   -o build/tests/test_g3_llm_approval
 
@@ -351,8 +291,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DataContracts.swift \
-  packages/AIVideoCore/Sources/Models/G3StoryRequest.swift \
+  $CORE_ALL \
   tests/test_g3_story_scope.swift \
   -o build/tests/test_g3_story_scope
 
@@ -363,7 +302,7 @@ swiftc -sdk "$SDK_PATH" \
   -target arm64-apple-macosx14.0 \
   -swift-version 6 \
   -parse-as-library \
-  $(find packages/AIVideoCore/Sources -name '*.swift') \
+  $CORE_ALL \
   tests/test_g5_native_provenance.swift \
   -o build/tests/test_g5_native_provenance
 

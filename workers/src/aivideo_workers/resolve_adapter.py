@@ -34,7 +34,9 @@ def get_resolve():
     try:
         import DaVinciResolveScript as dvr
         return dvr.scriptapp("Resolve")
-    except Exception:
+    except Exception as exc:
+        from .diagnostics import note_suppressed
+        note_suppressed("resolve_adapter.py:37", exc)
         return None
 
 def check_resolve_status() -> dict:
@@ -156,7 +158,9 @@ def run_g0_spike(output_drp_path: str = "fixtures/AIVideo_G0_Spike.drp", force_f
             curr_proj = pm.GetCurrentProject()
             if curr_proj and curr_proj.GetName().startswith("AIVideo_G0_Spike_"):
                 pm.CloseProject(curr_proj)
-        except Exception:
+        except Exception as exc:
+            from .diagnostics import note_suppressed
+            note_suppressed("resolve_adapter.py:159", exc)
             pass
 
     # 1. Create unique project
