@@ -1,5 +1,13 @@
 # AIVideo safety hardening audit — 2026-11-10
 
+> ⚠️ **ẢNH CHỤP LỊCH SỬ — không phải trạng thái hiện tại.**
+> Giữ nguyên nội dung để tra cứu quá trình; nguồn đúng hiện tại là
+> [`README.md`](../README.md) và
+> [`docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](../docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md).
+> Sau ngày ghi trong tài liệu, dự án đã qua kiểm toán 2026-11-11 (9 P0 + 54 P1 + 14 nhóm P2) và
+> một số chi tiết đã đổi: `fixtures/corpus` → `fixtures/smoke`, schema do Swift sở hữu,
+> TTS là Kokoro-Vietnamese, Whisper chưa nối, gate G2/G5 vẫn IN_REVIEW.
+
 Source snapshot: user-supplied `AIVideo_handoff.zip` (sha256 `b2d379869a6a1f6b65dd2c556a8d6ccf7575b593690d2a807fede6f04c8fd34f`). Archive metadata references `92762facc60fde5dd4cb8ab3749c64ffd9a4a54a`, but that is **not** proof of synchronization with GitHub HEAD.
 
 This audit patched the S11 installer, G0 installer, `.app` install step, release preflight, strict Python JSON-RPC framing, and CI coverage; added failure-injection tests. It did **not** install model weights, build the macOS GUI app, run DaVinci Resolve Studio, or certify field-video E0/E1.

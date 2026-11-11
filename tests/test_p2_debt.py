@@ -321,7 +321,13 @@ class TestDocsCannotDrift(unittest.TestCase):
     def test_review_summary_points_at_the_report(self) -> None:
         text = (_ROOT / "REVIEW_SUMMARY.md").read_text()
         self.assertIn("python_test_summary.json", text)
-        self.assertNotIn("189 PASS", text)
+        # The old hand-written count must not survive as a current claim. It may only appear
+        # inside the historical banner that says it is out of date.
+        current_lines = [
+            line for line in text.splitlines()
+            if "189 PASS" in line and "lần chạy cũ" not in line
+        ]
+        self.assertEqual(current_lines, [], "stale hand-written pass count is still claimed")
 
 
 if __name__ == "__main__":

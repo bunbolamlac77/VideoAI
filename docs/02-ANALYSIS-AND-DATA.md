@@ -1,5 +1,10 @@
 # 02 — Dữ liệu, bằng chứng, snapshot nguồn và quyền sử dụng thông tin
 
+> **Trạng thái triển khai (2026-11-11):** đặc tả dưới đây đã được hiện thực hoá và kiểm thử;
+> xem [`README.md`](../README.md) để biết trạng thái hiện tại và
+> [`AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](AUDIT_20261111_REVIEW_AND_TEST_PLAN.md) cho các
+> lỗi đã đóng. Chỗ nào đặc tả khác mã đang chạy, mã + audit là nguồn đúng.
+
 **Phiên bản đặc tả:** 3.1 · **Ngày:** 06/11/2026.  
 **Trạng thái:** đặc tả để triển khai theo cổng kiểm chứng; chưa phải mã nguồn, ứng dụng đã chạy hoặc kết quả benchmark.
 
@@ -245,7 +250,7 @@ App-private/read-only bảo vệ hành vi bình thường của ứng dụng, kh
 
 Chi tiết streaming, cửa sổ, pixels/tokens và profile toàn-frame nằm ở [07-OPTIMIZATION.md](07-OPTIMIZATION.md), [08-ACCURACY-FIRST.md](08-ACCURACY-FIRST.md). Adaptive refinement bổ sung cho baseline, không thay baseline bằng lấy mẫu thưa mà vẫn báo đạt.
 
-Không có audio stream trả `no_audio`; có audio nhưng không nhận ra lời trả `no_speech`. Hai trạng thái này không tắt nhánh hình. Sound-event detector là capability riêng; ASR không tự chứng nhận tiếng click/còi. Thiếu detector đạt gate thì giữ năng lực đó chưa được chứng minh.
+Không có audio stream trả `no_audio`; **có audio nhưng ASR chưa chạy** trả `audio_present_untranscribed` (chỉ khi ASR đã chạy mà không thấy lời mới là `no_speech`). Hai trạng thái này không tắt nhánh hình. Sound-event detector là capability riêng; ASR không tự chứng nhận tiếng click/còi. Thiếu detector đạt gate thì giữ năng lực đó chưa được chứng minh.
 
 Mỗi asset theo dõi `visual_scan`, `detailed_pass`, `audio_analysis`, `semantic_analysis`, `omission_audit` riêng. Một vùng lỗi giữ nguyên trong denominator/báo cáo; không xóa khỏi tập cần xử lý để tạo coverage 100% giả.
 

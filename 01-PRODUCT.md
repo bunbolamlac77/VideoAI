@@ -1,5 +1,10 @@
 # 01 — Sản phẩm, phạm vi hỗ trợ và luồng cộng tác
 
+> **Trạng thái triển khai (2026-11-11):** đặc tả dưới đây đã được hiện thực hoá và kiểm thử;
+> xem [`README.md`](../README.md) để biết trạng thái hiện tại và
+> [`AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](AUDIT_20261111_REVIEW_AND_TEST_PLAN.md) cho các
+> lỗi đã đóng. Chỗ nào đặc tả khác mã đang chạy, mã + audit là nguồn đúng.
+
 **Phiên bản:** 3.1 · **Ngày:** 06/11/2026.  
 **Trạng thái:** đặc tả để triển khai; chưa phải ứng dụng đã xây dựng, chưa có kết quả benchmark hoặc nghiệm thu. Các phạm vi E0/E1 và ngưỡng chất lượng là mục tiêu kiểm chứng, không phải năng lực đã đạt.
 

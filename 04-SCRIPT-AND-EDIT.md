@@ -1,5 +1,10 @@
 # 04 — Kịch bản có bằng chứng, media conform và dựng đúng bản duyệt
 
+> **Trạng thái triển khai (2026-11-11):** đặc tả dưới đây đã được hiện thực hoá và kiểm thử;
+> xem [`README.md`](../README.md) để biết trạng thái hiện tại và
+> [`AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](AUDIT_20261111_REVIEW_AND_TEST_PLAN.md) cho các
+> lỗi đã đóng. Chỗ nào đặc tả khác mã đang chạy, mã + audit là nguồn đúng.
+
 **Phiên bản:** 3.1 · **Ngày:** 06/11/2026.  
 **Trạng thái:** đặc tả sẵn sàng để triển khai; các thuật toán, preset và tích hợp Resolve chưa được chứng nhận bằng lần chạy thực.
 
@@ -177,7 +182,7 @@ Profile màu phải lưu đầy đủ tham số số, working/output settings v�
 - Offset audio/video được giữ riêng; offset do camera và drift giữa phiên không tự bằng nhau.
 - Không kéo audio để khớp bằng mắt. Drift correction chỉ dùng khi có phép đo/căn cứ và transform revision rõ.
 - Voice/caption/beat cues cùng tham chiếu WAV đã duyệt; sửa voice làm stale những cue phụ thuộc.
-- Silence có chủ ý có nhãn trong edit plan; `no_audio`, `no_speech` và khoảng im lặng trong thành phẩm là ba tình huống khác nhau.
+- Silence có chủ ý có nhãn trong edit plan; `no_audio`, `audio_present_untranscribed`/`no_speech` và khoảng im lặng trong thành phẩm là những tình huống khác nhau.
 - Mix giữ dialogue dễ nghe và âm hiện trường quan trọng; nhạc/SFX có quyền dùng và không giả làm bằng chứng nguồn.
 - Final phải kiểm âm sau encode/mux, bao gồm clipping, lỗi kênh, thiếu/lặp từ và sync; có audio stream chưa đủ đạt.
 

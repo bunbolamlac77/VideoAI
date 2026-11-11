@@ -1,5 +1,11 @@
 # ECC DEBUG TASKLIST — AIVideo v3.1
 
+> ⚠️ **ẢNH CHỤP LỊCH SỬ (vòng `orch-fix-defect` trước 2026-11-11).**
+> Danh sách T01–T15 bên dưới đã hoàn tất; một số kết luận đã được thay thế bởi kiểm toán
+> 2026-11-11 — đặc biệt: `AIVIDEO_CONTRACTS_DIR` nay **bị từ chối** hoàn toàn
+> (`CONTRACTS_DIR_FORBIDDEN`), không còn là "bỏ biến cho key". Nguồn đúng hiện tại:
+> [`README.md`](../README.md), [`docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](AUDIT_20261111_REVIEW_AND_TEST_PLAN.md).
+
 **Operation:** `orch-fix-defect` (ECC gated pipeline)
 **Intake:** sửa toàn bộ lỗi tồn đọng được phát hiện trong [AUDIT_20261110_FULL_EVALUATION.md](AUDIT_20261110_FULL_EVALUATION.md).
 **Size tier:** **large** — cross-cutting (Python pipeline contract, benchmark, Swift stores, tests, docs), có thay đổi contract nội bộ và open questions.

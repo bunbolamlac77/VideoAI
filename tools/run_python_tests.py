@@ -65,6 +65,7 @@ REQUIREMENT_MARKERS = (
     ("test_smoke_corpus_honesty", "AI-05"),
     ("test_corpus_labels", "AI-05"),
     ("test_p1_", "INV-05"),
+    ("test_p31_", "RES-03"),
     ("test_wedding_scenes", "AI-03"),
     ("test_script_brief_parser", "STORY-01"),
     ("test_s16_story_llm", "STORY-01"),

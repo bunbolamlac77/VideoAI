@@ -17,7 +17,7 @@ enters the repository**; only the public key and its SHA-256 fingerprint are pin
 
 ```bash
 workers/.venv/bin/python3 tools/sign_field_corpus.py \
-  --corpus fixtures/corpus --labels fixtures/corpus/labels \
+  --corpus fixtures/smoke --labels fixtures/smoke/labels   # smoke: KHÔNG dùng làm field evidence \
   --out reports/evidence/signed_field_corpus_manifest.json
 
 workers/.venv/bin/python3 tools/sign_field_corpus.py --verify
@@ -42,3 +42,16 @@ The repository currently ships five synthetic title cards labelled by an agent, 
    checks that the pin matches the committed PEM).
 5. Revoke the old public key by removing it from any release artefact; old manifests
    will fail verification, which is the intent.
+
+---
+
+## Trạng thái hiện tại (2026-11-11)
+
+- `fixtures/smoke/` là **title card 1,5 s tổng hợp**, nhãn do agent ⇒ `tools/check_readiness.py`
+  phải trả **NO-GO**. Muốn GO: cung cấp footage thật + nhãn người + manifest ký Ed25519.
+- `model_installation.inspect_model_installation()` chỉ kiểm bộ artifact của **vision**
+  (`config.json`, `model.safetensors`, `tokenizer.json`, `preprocessor_config.json`). Với role
+  `story_synthesis` và `tts_kokoro_vi`, hàm này trả `incomplete` vì chúng có layout khác — đó
+  **không** phải lỗi cài đặt; 4 case model thật (`AIVIDEO_RUN_HEAVY_*`) là bằng chứng chúng chạy.
+- `AIVIDEO_CONTRACTS_DIR` không còn được dùng cho key: worker từ chối biến này
+  (`CONTRACTS_DIR_FORBIDDEN`).

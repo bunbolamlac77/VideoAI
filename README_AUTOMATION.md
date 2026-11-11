@@ -1,4 +1,14 @@
-# AIVideo AutoLoop Add-on for the existing Bridge v2
+# (ARCHIVED — DO NOT ENABLE) AIVideo AutoLoop add-on
+
+> ⚠️ **Tài liệu lưu trữ, không dùng cho dự án này.**
+> Add-on mô tả dưới đây gửi mã nguồn, `git status`, log test và tài liệu tiến độ tới **OpenAI
+> API** để "viết code". Điều đó vi phạm trực tiếp bất biến số 1 của dự án
+> ([GEMINI.md](GEMINI.md)): *100% local, không gọi API AI đám mây*. Nó cũng không nằm trong
+> `tools/build_macos_app.sh` hay `tools/run_tests.sh`, nên không ảnh hưởng tới bằng chứng kiểm thử.
+>
+> Nếu bạn vẫn muốn dùng nó cho mục đích khác: hãy coi đây là tài liệu của một công cụ **bên
+> ngoài**, không phải một phần sản phẩm, và đừng trích nó như bằng chứng chất lượng.
+
 
 ## What is and is not automated
 

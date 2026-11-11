@@ -1,5 +1,10 @@
 # 10 — UI/UX macOS: bàn biên tập AIVideo
 
+> **Trạng thái triển khai (2026-11-11):** đặc tả dưới đây đã được hiện thực hoá và kiểm thử;
+> xem [`README.md`](../README.md) để biết trạng thái hiện tại và
+> [`AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](AUDIT_20261111_REVIEW_AND_TEST_PLAN.md) cho các
+> lỗi đã đóng. Chỗ nào đặc tả khác mã đang chạy, mã + audit là nguồn đúng.
+
 **Phiên bản:** 3.1 · **Ngày:** 06/11/2026.  
 **Trạng thái:** đặc tả để triển khai; chưa phải giao diện đã được lập trình hoặc kiểm thử trên MacBook. Các target và fixture là điều kiện cần kiểm, không phải kết quả đã đạt.  
 **Nền tảng mục tiêu:** ứng dụng macOS native bằng SwiftUI, core Swift và AppKit/AVKit khi cần; Python subprocess workers và DaVinci Resolve theo kiến trúc v3.1. M1 Pro 16 GB là cấu hình mục tiêu kế thừa, chưa phải máy đã được đo trong bản này; cần ghi nhận OS/toolchain/runtime trước khi chốt deployment target.

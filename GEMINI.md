@@ -1,89 +1,135 @@
-# AIVideo — Antigravity Engineering Guidelines & Rules
+# AIVideo — Hướng dẫn kỹ thuật & quy tắc cho agent
 
-Dự án: **AIVideo v3.1** — Trợ lý phân tích và dựng video POV tiếng Việt trên macOS.
-Kiến trúc: **SwiftUI (Native macOS)** + **Swift Core (`ProjectStore`, SQLite WAL)** + **Python Workers (stdio JSON-RPC)** + **renderer ffmpeg native** (mặc định; DaVinci Resolve Studio là tuỳ chọn cho timeline quản lý / bàn giao `.drp`).
-Mục tiêu phần cứng: **Apple Silicon M1 Pro, 16 GB Unified RAM**.
+Dự án: **AIVideo v3.1** — trợ lý phân tích và dựng video POV tiếng Việt trên macOS.
+Kiến trúc: **SwiftUI (native)** + **Swift core (`ProjectStore`, SQLite WAL, writer duy nhất)** +
+**Python worker (stdio JSON-RPC 2.0, 42 method)** + **renderer ffmpeg native** (mặc định;
+DaVinci Resolve Studio là tuỳ chọn cho timeline quản lý / bàn giao `.drp`).
+Mục tiêu phần cứng: **Apple Silicon M1 Pro, 16 GB RAM hợp nhất**.
 
----
-
-## 1. Nguyên Tắc Cốt Lõi Bất Di Bất Dịch (Core Invariants)
-
-1. **100% Local Inference**: Toàn bộ mô hình AI (VLM Qwen3-VL 4B, VieNeu-TTS, Whisper large-v3) và xử lý media chạy offline cục bộ trên máy Mac. **Tuyệt đối không gọi Cloud AI API** hoặc cloud fallback trong bất kỳ tình huống nào.
-2. **Swift Core Độc Quyền Ghi Database (Single-Writer)**:
-   - Chỉ Swift actor `ProjectStore` được quyền ghi/sửa SQLite canonical database (WAL mode).
-   - Python Worker chỉ đọc dữ liệu hoặc nhận task qua JSON-RPC stdio và trả về kết quả tính toán; **không bao giờ mở kết nối write trực tiếp tới SQLite chuẩn**.
-3. **Bằng Chứng Nguồn Minh Bạch (Provenance & Evidence First)**:
-   - Mọi fact, claim, cut, shot selection trong kịch bản phải truy vết được nguồn: hash nội dung file media, timecode (IN/OUT frames) hoặc brief revision.
-   - `Unknown` là trạng thái hợp lệ; nếu thiếu tư liệu, báo rõ `Unknown` thay vì bịa đặt (hallucinate).
-4. **Ngân Sách RAM 16 GB & Heavy Lease Governor**:
-   - Tuân thủ nghiêm ngặt Resource Governor: Không bao giờ chạy đồng thời các tác vụ nặng (VLM inference + TTS batch + DaVinci 4K render). Luôn yêu cầu Lease trước khi cấp phát tài nguyên.
-5. **Tiêu Chuẩn Video & Renderer**:
-   - Định dạng mặc định: Video dọc (9:16). Preview 1080×1920; Final 2160×3840 (4K), chuẩn **24/1 fps**, audio tiếng Việt 1×.
-   - Render mặc định bằng ffmpeg native (`native_render.py`): caption burn-in + `.srt`, crossfade/dip-to-black, ảnh chèn `illustrative_only`, receipt `native-render-receipt-v1`.
-   - DaVinci Resolve scripting chỉ dùng cho nhánh legacy managed timeline / `.drp` handoff; thiếu Resolve là **warning**, không phải blocker.
+Trạng thái thực tế: xem [`README.md`](README.md) và
+[`docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md).
 
 ---
 
-## 2. Tích Hợp 5 Bộ Công Cụ & Kỹ Năng (Installed Skills & Tools)
+## 1. Bất biến (có test canh — đừng vi phạm)
 
-### ① `planning-with-files` (Quản Lý Tiến Độ Bằng File)
-- **Tập tin trạng thái**: Mọi phiên làm việc phức tạp hoặc dài hạn phải duy trì 3 file cốt lõi trong repository:
-  - `task_plan.md`: Lộ trình công việc, các phase, checklist bước hiện tại (đồng bộ với `PROGRESS_TRACKER.md` và các bước S00–S26).
-  - `findings.md`: Các phát hiện kỹ thuật, thông số mô hình, giới hạn benchmark, cấu hình thực tế.
-  - `progress.md`: Nhật ký những gì đã hoàn thành, kết quả test chạy thật, bằng chứng nghiệm thu.
-- **Quy tắc**: Cập nhật `progress.md` và `task_plan.md` ngay sau mỗi bước chỉnh sửa lớn; không tuyên bố hoàn thành khi chưa thỏa mãn điều kiện nghiệm thu.
+1. **Suy luận 100% local.** Không gọi API AI đám mây, không fallback cloud. Model lấy từ registry
+   có pin; `model_installation.inspect_model_installation(deep=True)` phải trả `verified`.
+2. **Swift core là writer duy nhất của SQLite.**
+   - Chỉ actor `ProjectStore` (và extension G3/G4/G5 của nó) được ghi.
+   - Python/gate store chỉ đọc, qua `SQLITE_OPEN_READONLY`; đường đọc dùng transaction
+     `BEGIN DEFERRED` (`withCanonicalRead`), đường ghi dùng `BEGIN IMMEDIATE`.
+   - `tests/test_single_writer_invariants.py` chặn mọi write handle ngoài `ProjectStore`.
+3. **Một nguồn schema.** Swift tạo 23 bảng + `PRAGMA user_version = 2`; cột thêm về sau đi qua
+   `ProjectStore.migrateAdditiveColumns`. File SQL trong `contracts/migrations/fixtures/` chỉ là
+   fixture test (xem `contracts/migrations/README.md`).
+4. **Bằng chứng trước.** Mỗi claim/cut/approval gắn `sha256` + timecode + publication id.
+   `Unknown` là giá trị hợp lệ; không suy diễn khi thiếu tư liệu.
+5. **Một lease cho việc nặng.** VLM inference, TTS batch, render 4K đều qua
+   `ResourceGovernor` (`withHeavyLease` / `startHeavyAttempt`). Không chạy song song hai việc nặng.
+6. **Chuẩn video.** Preview 1080×1920, final 2160×3840, **24/1 fps**, Rec.709, audio Việt 1×.
+   Caption burn-in từ đúng text đã duyệt; photo insert là `illustrative_only` và phải có
+   publication S08.
+7. **Bundle chỉ một worker.** `Resources/Workers/aivideo_workers`; script build assert đúng 1
+   `main.py`.
 
-### ② `ui-ux-pro-max` (Thiết Kế UI/UX Chuẩn macOS)
-- **Công cụ tra cứu**: Sử dụng script tra cứu thiết kế nội bộ:
-  ```bash
-  python3 ~/.gemini/config/plugins/ui-ux-pro-max/skills/ui-ux-pro-max/scripts/search.py "<query>" --stack swiftui
-  ```
-- **Quy chuẩn giao diện (theo `10-UI-UX-MACOS.md`)**:
-  - Giao diện "Bàn biên tập bình tĩnh" (Calm Editor): Sidebar tinh gọn, Canvas preview lớn, Inspector bên phải.
-  - Hỗ trợ đầy đủ Light Mode & Dark Mode sử dụng macOS Semantic Colors.
-  - Bảng màu nhận diện: Primary Teal `#0F766E` (Light) / `#5EEAD4` (Dark), kết hợp SF Pro & SF Symbols native.
-  - Monospaced digits (`.monospacedDigit()`) cho toàn bộ timecode, duration và chỉ số kỹ thuật.
-  - Kích thước chạm/click tối thiểu: 44×44 pt; spacing tuân thủ thang 4, 8, 12, 16, 24, 32 pt.
+## 2. Quy tắc kỹ thuật bắt buộc
 
-### ③ `superpowers` (Quy Trình Kỹ Sư & TDD)
-- **Test-Driven Development (TDD Red/Green/Refactor)**:
-  - Viết test trước khi thêm logic mới: Swift test (`swift test`) cho Core / Store; Python test (`pytest tests/`) cho Worker.
-  - Chạy test kiểm chứng trước khi xác nhận hoàn thành bất kỳ task nào.
-- **Systematic Debugging**: Luôn tái hiện lỗi bằng minimal reproduction test, phân tích root cause trước khi sửa code; không sửa tạm hoặc đoán mò.
-- **Subagent-Driven Execution**: Tự động chia nhỏ task theo bước S00–S26 và ủy nhiệm thực thi có kiểm soát.
+### 2.1. Không nhận "đường dẫn/định danh do người gọi chọn" từ RPC
 
-### ④ `Anthropic Skills` (Bộ Kỹ Năng Tài Liệu, Kiểm Thử & Chuyên Môn)
-- Sử dụng `webapp-testing` và `skill-creator` khi tạo quy trình kiểm thử mới hoặc mở rộng kỹ năng.
-- Sử dụng `pdf`, `docx`, `pptx`, `xlsx` khi xử lý trích xuất tài liệu nguồn, xuất báo cáo QC và biên bản nghiệm thu Gates G0–G5.
+Các tham số sau bị **từ chối** (không phải tuỳ chọn): `checkpoint_dir`, `models_root_dir`
+(+ env `AIVIDEO_MODELS_ROOT`), `registry_path`, `app_binary_path`, `staging_root`,
+`allow_overwrite`, `inspector_factory`. Root/model/contract do app cấp qua env:
+`AIVIDEO_APP_SUPPORT`, `AIVIDEO_RENDER_ROOT`, `AIVIDEO_G3_STAGING_ROOT`,
+`AIVIDEO_G4_WORK_ROOT`, `AIVIDEO_G5_WORK_ROOT`. `AIVIDEO_CONTRACTS_DIR` bị từ chối — contract
+resolve theo vị trí package/bundle.
 
-### ⑤ `SKILL.md` (Chuẩn Kỹ Năng Dự Án)
-- Mọi skill mới của dự án được lưu tại `.agents/skills/<skill-name>/SKILL.md` với đầy đủ frontmatter YAML (`name`, `description`).
+### 2.2. Không tự khai trạng thái
 
----
+- Model: chỉ `verified` khi manifest khai đúng **hash trọng số đã pin**, không chỉ khớp size.
+- Voice/cut: `voice_review_status` chỉ là `verified` sau khi người dùng nghe WAV; nếu chưa, worker
+  trả `unverified` và kết quả cut phải tách `verified` / `unverified`.
+- Nhãn corpus: `acceptance_eligible` chỉ khi có **signed manifest** (human + field_footage).
+- Release manifest: phải ký Ed25519 (`sign_release_manifest`); `manifest_sha256` là checksum,
+  **không** phải chữ ký.
+- Ad-hoc signature là blocker của preflight (chỉ bỏ qua bằng `--allow-adhoc`).
 
-## 3. Lệnh Kiểm Thử & Nghiệm Thu Thường Dùng
+### 2.3. Không băm/ffprobe trong transaction ghi
+
+Đo bằng chứng (hash artifact, đọc JSON, ffprobe) phải xong **trước** `BEGIN IMMEDIATE`; trong
+transaction chỉ so sánh row và INSERT. Mẫu đúng: `G5S22Guard.measureFile` /
+`readPublishedArtifact` → `withTransaction` chỉ kiểm tra. (P1-02 còn 2 chỗ: xem
+[`docs/PROPOSED_REMAINING_FIXES.md`](docs/PROPOSED_REMAINING_FIXES.md).)
+
+### 2.4. Không nuốt ngoại lệ
+
+`except Exception` phải gọi `aivideo_workers.diagnostics.note_suppressed(context, exc)` hoặc
+re-raise/ghi log. `tests/test_p2_debt.py` chặn handler im lặng.
+
+### 2.5. Nguồn build
+
+`tools/build_macos_app.sh` và `tools/run_tests.sh` **glob** toàn bộ `packages/AIVideoCore/Sources`
++ `apps/macos/Sources`. Không quay lại liệt kê tay: danh sách tay từng làm mọi suite Swift fail
+trong khi app vẫn build.
+
+### 2.6. SDK
+
+Luôn `-sdk /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`. `xcrun --show-sdk-path` trả
+MacOSX27 và không build được với swiftc 6.3.3.
+
+## 3. File trạng thái (bắt buộc cập nhật)
+
+- `task_plan.md` — lộ trình, gate nào còn mở và **vì sao**.
+- `findings.md` — phát hiện kỹ thuật, giới hạn đo được.
+- `progress.md` — nhật ký + bằng chứng chạy thật (số liệu, không phải lời kể).
+
+Quy tắc: cập nhật ngay sau mỗi thay đổi lớn; không tuyên bố hoàn thành khi chưa có output lệnh
+chứng minh.
+
+## 4. Lệnh thường dùng
 
 ```bash
-# Chạy toàn bộ test Python của workers và contracts (hỗ trợ chạy độc lập từng file)
-for t in tests/test_*.py; do
-  echo "Running $t..."
-  workers/.venv/bin/python3 "$t"
-done
-
-# Chạy test suite Python với báo cáo JSONL có cấu trúc
+# Python (428 case; thêm 3 cờ dưới để chạy 4 case model thật)
 workers/.venv/bin/python3 tools/run_python_tests.py
+AIVIDEO_RUN_HEAVY_G2=1 AIVIDEO_RUN_HEAVY_STORY=1 AIVIDEO_RUN_HEAVY_TTS=1 \
+  workers/.venv/bin/python3 tools/run_python_tests.py
 
-# Chạy test cụ thể theo từng Gate (ví dụ Gate G1, G2, G3)
-workers/.venv/bin/python3 tests/test_g1_contracts.py
-workers/.venv/bin/python3 tests/test_s10_media_indexer.py
-workers/.venv/bin/python3 tests/test_s16_to_s19_g3.py
-
-# Kiểm tra Swift Core package (biên dịch trực tiếp qua swiftc với SDK tương thích)
-./tools/run_s06_tests.sh
-
-# Chạy toàn bộ ma trận kiểm thử hồi quy Swift + Python + Codesign
+# Ma trận đầy đủ (build + codesign + 17 suite Swift + Python): 23 khối
 ./tools/run_tests.sh
 
-# Đóng gói và cài đặt ứng dụng macOS vào /Applications
-./tools/build_macos_app.sh --install
+# Build app
+./tools/build_macos_app.sh            # thêm --install để cài vào /Applications
+
+# Typecheck chặt
+SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+swiftc -sdk "$SDK" -target arm64-apple-macosx14.0 -swift-version 6 \
+  -parse-as-library -typecheck -warnings-as-errors \
+  $(find packages/AIVideoCore/Sources -name '*.swift')
+
+# Preflight (NO-GO là đúng khi thiếu field corpus)
+workers/.venv/bin/python3 tools/check_readiness.py; echo "exit=$?"
 ```
+
+## 5. UI (Calm Editor)
+
+- Sidebar 4 bước + nhóm "Nâng cao & Chẩn đoán"; Canvas preview lớn; Inspector phải.
+- Light/Dark bằng semantic colors; Teal `#0F766E` / `#5EEAD4`; monospaced digits cho timecode.
+- Chữ tối thiểu **11 pt**; nút icon-only phải có `accessibilityLabel`; không dùng
+  `.controlSize(.mini)` cho hành động (đặc biệt là nút "Dừng").
+- Màu trạng thái đọc từ `PersistenceState`, **không** so khớp tiền tố chuỗi tiếng Việt.
+- Trạng thái "đã lưu" chỉ khi đã có revision thật; không seed dữ liệu demo.
+
+## 6. Bẫy đã gặp (đừng lặp lại)
+
+1. **APFS không phân biệt hoa/thường** — `rm -rf Resources/workers` xoá luôn `Resources/Workers`.
+2. **`git stash` trên file untracked** từng làm mất bản sửa; muốn chứng minh "đỏ trước fix" thì
+   copy sang `/tmp`.
+3. **Plan hash là thứ approval pin** — thêm khoá vào plan dict làm mọi approval invalid.
+4. **`fixtures/smoke` không phải field corpus** — đừng trích nó làm bằng chứng chất lượng.
+5. **Không dùng `sqlite3` ghi** khi kiểm thử; chỉ `-readonly`.
+
+## 7. Skill của dự án
+
+`.agents/skills/aivideo-workflow/SKILL.md` (quy trình S00–S26) và
+`.agents/skills/aivideo-ui-designer/SKILL.md` (HIG/SwiftUI). Skill mới đặt tại
+`.agents/skills/<name>/SKILL.md` với frontmatter `name`, `description`.

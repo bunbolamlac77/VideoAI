@@ -267,6 +267,8 @@ struct TestG4Approval {
         assert(g4Revoked == nil)
         print("PASS S21.T3: source tampering invalidates G3 and G4 approvals")
         await store.close()
+        try testNoFileIOInsideG4Transaction()
+        print("PASS S21.P1_02B: no file IO inside G4 write transaction")
 
         if let outPath = ProcessInfo.processInfo.environment["TEST_RECORDS_OUT"], !outPath.isEmpty {
             let records: [[String: Any]] = [
@@ -277,7 +279,9 @@ struct TestG4Approval {
                 ["testcase_id": "S21.T2", "requirement_id": "INV-05/DATA-08", "status": "PASS",
                  "expected": "G4 dependency tampering invalidates current preview", "observed": "PASS S21.T2: G4 dependency tampering invalidates current preview", "exit_status": 0],
                 ["testcase_id": "S21.T3", "requirement_id": "INV-05/DATA-01", "status": "PASS",
-                 "expected": "Source tampering invalidates G3 and G4 approvals", "observed": "PASS S21.T3: source tampering invalidates G3 and G4 approvals", "exit_status": 0]
+                 "expected": "Source tampering invalidates G3 and G4 approvals", "observed": "PASS S21.T3: source tampering invalidates G3 and G4 approvals", "exit_status": 0],
+                ["testcase_id": "S21.P1_02B", "requirement_id": "INV-05", "status": "PASS",
+                 "expected": "No file IO runs inside the G4 write transaction", "observed": "PASS S21.P1_02B: no file IO inside G4 write transaction", "exit_status": 0]
             ]
             let url = URL(fileURLWithPath: outPath)
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -287,6 +291,42 @@ struct TestG4Approval {
                    let s = String(data: d, encoding: .utf8) { lines += s + "\n" }
             }
             try lines.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    // (P1-02B) No file IO may happen inside the G4 write transaction.
+    // The slice is bounded by the method's own braces: a plain "everything after" slice
+    // would also cover `currentG4Preview`, which legitimately hashes the preview.
+    static func testNoFileIOInsideG4Transaction() throws {
+        let path = "packages/AIVideoCore/Sources/Storage/G4ProjectStore.swift"
+        let source = try String(contentsOfFile: path, encoding: .utf8)
+        guard let methodStart = source.range(of: "public func approveG4Preview"),
+              let txStart = source.range(of: "g4Transaction {",
+                                         range: methodStart.upperBound..<source.endIndex) else {
+            throw NSError(domain: "g4", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "approveG4Preview no longer opens a g4Transaction"
+            ])
+        }
+        var depth = 0
+        var index = txStart.lowerBound
+        var end = source.endIndex
+        while index < source.endIndex {
+            let character = source[index]
+            if character == "{" { depth += 1 }
+            if character == "}" {
+                depth -= 1
+                if depth == 0 { end = source.index(after: index); break }
+            }
+            index = source.index(after: index)
+        }
+        let body = String(source[txStart.lowerBound..<end])
+        for forbidden in ["fileSHA(", "verifyBindings(", "G3ApprovalGuard.verify(",
+                          "verifyPreview(", "verifyS21Evidence(", "readApprovedInputs("] {
+            if body.contains(forbidden) {
+                throw NSError(domain: "g4", code: 2, userInfo: [
+                    NSLocalizedDescriptionKey: "G4 write transaction still performs IO: \(forbidden)"
+                ])
+            }
         }
     }
 }

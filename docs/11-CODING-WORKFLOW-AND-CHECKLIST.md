@@ -1,5 +1,10 @@
 # 11 — Quy trình code AIVideo và checklist theo từng bước
 
+> **Trạng thái triển khai (2026-11-11):** đặc tả dưới đây đã được hiện thực hoá và kiểm thử;
+> xem [`README.md`](../README.md) để biết trạng thái hiện tại và
+> [`AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](AUDIT_20261111_REVIEW_AND_TEST_PLAN.md) cho các
+> lỗi đã đóng. Chỗ nào đặc tả khác mã đang chạy, mã + audit là nguồn đúng.
+
 **Phiên bản:** 3.1 · **Ngày:** 06/11/2026.  
 **Trạng thái:** kế hoạch triển khai; tất cả công việc bên dưới chưa được xác nhận hoàn thành.  
 **Mục đích:** biết chính xác đang code đến đâu, cần làm gì tiếp, bằng chứng nào cho phép tích một mục.
@@ -481,7 +486,7 @@ và bước đã đủ điều kiện hoàn thành hay chưa.
 - [ ] S12.2 — Ghi frameID/PTS/crop/resolution thực vào model; hợp các ID duy nhất để tính coverage, không cộng trùng overlap.
 - [ ] S12.3 — Giữ quan sát đầu tiên độc lập với câu chuyện kỳ vọng trong brief; guided revisit lưu vai trò riêng, không viết đè quan sát ban đầu.
 - [ ] S12.4 — Merge cửa sổ dựa trên source/interval/đối tượng có uncertainty; truy xuất context dài, không chỉ nối các bản tóm tắt.
-- [ ] S12.5 — ASR/audio chạy theo nhánh riêng; no_audio/no_speech không chặn hình; omission audit quay lại nguồn và các biên batch.
+- [ ] S12.5 — ASR/audio chạy theo nhánh riêng; no_audio/audio_present_untranscribed/no_speech không chặn hình; omission audit quay lại nguồn và các biên batch.
 - [ ] S12.6 — Checkpoint sau đơn vị đã commit; resume dùng đúng profile/input revisions, phần lỗi decode giữ interval và mẫu số báo cáo trung thực.
 
 **Kiểm tra**

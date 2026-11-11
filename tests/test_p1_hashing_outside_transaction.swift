@@ -28,7 +28,7 @@ struct TestP1HashingOutsideTransaction {
         }
     }
 
-    static func main() throws {
+    static func main() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("p1_io_\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -89,11 +89,56 @@ struct TestP1HashingOutsideTransaction {
         lockObserved = FileManager.default.fileExists(atPath: probe.path)
         check(lockObserved, "the post-hash write transaction completes without touching artifact bytes")
 
-        Task { await store.close() }
+        // (P1-02A) commitPublication must hash before taking the write lock.
+        let commitPub = UUID()
+        try exec(handle, """
+        INSERT INTO artifact_publications(
+            publication_id, project_id, job_id, attempt_id, fencing_token, artifact_type,
+            state, canonical_path, sha256_hash, byte_size)
+        VALUES ('\(commitPub.uuidString)', '\(projectId.uuidString)', '\(jobId.uuidString)',
+            '\(attemptId.uuidString)', 1, 'voice_wav', 'PREPARED', '\(artifact.path)',
+            '\(sha(bytes))', \(bytes.count));
+        """)
+        do {
+            _ = try await store.commitPublication(
+                publicationId: commitPub, jobId: jobId, attemptId: attemptId,
+                fencingToken: 1, canonicalPath: artifact.path
+            )
+            check(false, "commitPublication must refuse tampered bytes")
+        } catch {
+            check(true, "commitPublication refuses tampered bytes without taking the write lock for IO")
+        }
+
+        // Structural check: commitPublication must not call fileSHA256 inside withTransaction.
+        let storeSource = try String(
+            contentsOfFile: "packages/AIVideoCore/Sources/Storage/ProjectStore.swift",
+            encoding: .utf8
+        )
+        if let fnStart = storeSource.range(of: "public func commitPublication("),
+           let txStart = storeSource.range(of: "withTransaction {", range: fnStart.upperBound..<storeSource.endIndex) {
+            var depth = 0
+            var idx = txStart.lowerBound
+            var txEnd = storeSource.endIndex
+            while idx < storeSource.endIndex {
+                let ch = storeSource[idx]
+                if ch == "{" { depth += 1 }
+                if ch == "}" {
+                    depth -= 1
+                    if depth == 0 { txEnd = storeSource.index(after: idx); break }
+                }
+                idx = storeSource.index(after: idx)
+            }
+            let txBody = String(storeSource[txStart.lowerBound..<txEnd])
+            check(!txBody.contains("fileSHA256("), "commitPublication does not hash inside withTransaction")
+        } else {
+            check(false, "could not locate commitPublication / withTransaction in ProjectStore.swift")
+        }
+
+        await store.close()
         if failures > 0 {
             print("P1-02 TESTS FAILED (\(failures))")
             exit(1)
         }
-        print("P1-02 HASHING-OUTSIDE-TRANSACTION TESTS PASSED (3/3)")
+        print("P1-02 HASHING-OUTSIDE-TRANSACTION TESTS PASSED (5/5)")
     }
 }

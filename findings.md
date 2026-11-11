@@ -226,3 +226,24 @@
 - **Sidebar không dùng `List` nữa**: `List` + selection tự vẽ highlight accent, chồng lên style riêng sẽ lệch màu chữ. Dùng `ScrollView` + `SidebarRow` để kiểm soát hoàn toàn tile số, tint và accent bar.
 - **Giữ nguyên hành vi**: cùng `AppSection`, cùng `detailView`, cùng toolbar; chỉ đổi trình bày. Cửa sổ mặc định vẫn mở Bước 1.
 - **Bẫy đã gặp**: `Picker(.segmented)` 4 mục trong cột 160pt bị cắt chữ ⇒ đổi sang `.menu`. Nhãn nút dài ("Dựng & Render Preview tự động (ffmpeg)") bị truncate trong HStack ⇒ rút gọn nhãn thay vì nhồi layout.
+
+---
+
+## Trạng thái hiện tại (2026-11-11) — phần này thay thế các con số cũ bên trên
+
+- Bộ test hiện tại: **424 case Python** (0 FAIL / 0 ERROR / 4 NOT_RUN; heavy: 0 skip) và
+  **17 suite Swift** trong ma trận 23 khối (`./tools/run_tests.sh` exit 0). Con số "189 PASS"
+  ở mục 1 là của vòng trước.
+- **Model:** vision = Qwen3-VL-4B-Instruct-4bit (pin `90eeb026…`), story = Qwen3-8B-4bit,
+  TTS = **Kokoro-Vietnamese** (không phải VieNeu). **Whisper chưa nối** vào runtime:
+  ledger ghi `asr_status=not_configured`, audio có tiếng nhưng chưa ASR là
+  `audio_present_untranscribed` (không phải `no_speech`).
+- **Corpus:** `fixtures/corpus` đã đổi tên thành `fixtures/smoke` và **không** phải bằng chứng
+  hiện trường (title card 1,5 s, nhãn agent, 0 claim/0 event) ⇒ `check_readiness.py` NO-GO.
+- **Schema:** Swift sở hữu 23 bảng + `user_version = 2`; file SQL chỉ là fixture test.
+- **Release manifest:** ký **Ed25519** (không phải HMAC-SHA256); E0/E1 chỉ certify khi
+  `runs_sha256` khớp manifest đã ký.
+- **Hiệu năng G2:** decode mỗi cửa sổ có `-frames:v` (không đọc toàn file); hash artifact
+  ngoài transaction; observation phân trang qua `g2.get_raw_observations`.
+- **Còn mở:** P1-02 (nhánh G4/`commitPublication`) và P1-31 (transition vs plan) đang sửa một
+  phần — code đề xuất trong `docs/PROPOSED_REMAINING_FIXES.md`.

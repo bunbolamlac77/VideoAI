@@ -1,5 +1,10 @@
 # 03 — Model local, profile thực thi và ngân sách tài nguyên
 
+> **Trạng thái triển khai (2026-11-11):** đặc tả dưới đây đã được hiện thực hoá và kiểm thử;
+> xem [`README.md`](../README.md) để biết trạng thái hiện tại và
+> [`AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](AUDIT_20261111_REVIEW_AND_TEST_PLAN.md) cho các
+> lỗi đã đóng. Chỗ nào đặc tả khác mã đang chạy, mã + audit là nguồn đúng.
+
 **Phiên bản:** 3.1 · **Ngày:** 06/11/2026.  
 **Trạng thái:** đặc tả sẵn sàng để triển khai; chưa phải ứng dụng đã chạy, cấu hình đã đạt benchmark hoặc chứng nhận hiệu năng.
 
@@ -51,9 +56,9 @@ Kích thước dưới đây là ước lượng artifact được kế thừa, 
 |---|---|---:|---|
 | Thị giác nền | `mlx-community/Qwen3-VL-4B-Instruct-4bit` | Khoảng 3,11 GB | Vượt bài hiểu hành động, OCR, thời gian và bộ nhớ trên POV thật |
 | Thị giác đối chiếu | `mlx-community/Qwen3-VL-8B-Instruct-4bit` | Khoảng 5,78 GB | Chạy tuần tự; chỉ bật khi cải thiện nhiệm vụ cần thiết và còn headroom |
-| Tổng hợp/kịch bản | `mlx-community/Qwen3-8B-4bit` | Khoảng 4,62 GB | JSON hợp lệ, giữ claim/provenance, tiếng Việt và kịch bản khả thi |
+| Tổng hợp/kịch bản | `mlx-community/Qwen3-8B-4bit` (`P-STORY-SYNTH-v1`) | 4,3 GB đã cài | Đã nối thật trong `generate_story` (`script_engine=llm`): chỉ viết lại claim đã duyệt, sai schema/số liệu thì fallback nguyên văn |
 | ASR | `ggerganov/whisper.cpp`, `ggml-large-v3.bin` | Khoảng 3,1 GB | Bản đa ngôn ngữ; đo riêng tiếng Việt và nguồn khó |
-| TTS tiếng Việt | `pnnbao-ump/VieNeu-TTS-v3-Turbo` | Kiểm kê theo revision | Ứng viên ONNX/CPU fp32 qua SDK `vieneu`; nghe và kiểm lời thật |
+| TTS tiếng Việt | `contextboxai/Kokoro-Vietnamese` (Apache-2.0, 82M) | 327 MB (`kokoro_vi.pth`) + voicepacks | Engine thay VieNeu: preset voicepack, CPU fp32, RTF ≈ 0.3 đo trên M1 Pro; xuất 24 kHz rồi resample 48 kHz PCM16 |
 | Tạo ứng viên ảnh/shot | `facebook/dinov2-base` | Kiểm kê theo revision | Đo recall ứng viên; embedding không được tự xác nhận cùng sự kiện |
 
 Qwen3-VL 4B và 8B cùng họ không tạo thành hai nguồn sự thật độc lập. Đồng thuận giữa chúng không được nhân thành confidence mới. DINOv2 tạo ứng viên để kiểm tra tiếp, không thay thế temporal/geometric verification.

@@ -1,22 +1,46 @@
-# Task Plan: AIVideo v3.1 Triển Khai & Nghiệm Thu Hoàn Tất
+# Task Plan: AIVideo v3.1 — triển khai & nghiệm thu
 
-## Goal
-Hoàn thiện toàn bộ các khuyến nghị từ báo cáo thẩm định độc lập (`AIVideo-review(20261109-153047).zip`):
-1. Khắc phục triệt để 3 lỗ hổng P0 (RPC capability override, faked AI provenance, tự khai báo chứng nhận E0/E1).
-2. Xử lý triệt để lỗi runner khiến báo cáo cũ hiển thị 162 FAIL và ca skip thiếu font; chứng minh bằng **189 PASS · 0 FAIL · 0 BLOCKED · 0 NOT_RUN** trên macOS Apple Silicon M1 Pro.
-3. Tích hợp inference neural offline thực tế cho Qwen3-VL 4B qua `mlx_vlm` trên GPU Apple Silicon.
-4. Nghiệm thu S15 trên 5 video chuyến đi held-out độc lập chuẩn Rec.709 với pipeline full-frame và kiểm định không rò rỉ dữ liệu.
-5. Triển khai cơ chế xác minh chữ ký mật mã (HMAC-SHA256) và đối chiếu băm SHA-256 từng file video đối với manifest E0/E1.
+## Goal (cập nhật 2026-11-11)
+
+Đưa dự án từ "đã chạy được" tới "chứng nhận được", và không tuyên bố gì vượt quá bằng chứng:
+
+1. Đóng **9 P0 + 54 P1 + 14 nhóm P2** của kiểm toán 2026-11-11, mỗi lỗi có test hồi quy.
+2. Giữ đúng bất biến: single-writer SQLite, một nguồn schema (Swift), mọi kết luận có
+   `sha256` + timecode, 100% local.
+3. Chỉ đóng Gate G2 và S25 khi có **footage thật + nhãn người** và **fault run thật**; trước đó
+   ghi 🟡 IN_REVIEW dù mã đã xong.
+4. Bằng chứng phải tái lập được bằng lệnh, không phải bằng lời kể.
+
+Trạng thái bằng chứng gần nhất: Python **428 run · 0 FAIL · 0 ERROR · 4 NOT_RUN**
+(heavy: 0 skip); `./tools/run_tests.sh` **exit 0, 23 khối**; `build_macos_app.sh`
+**BUILD SUCCESSFUL**; `check_readiness.py` **exit 2 / NO-GO** (đúng).
 
 ## Gate Status Summary
-- **Gate G0 (S00–S03)**: 🟢 DONE — Native macOS app bundle (`AIVideo.app`), stdio JSON-RPC 2.0 worker, Resolve Studio scripting spike 24fps vertical 9:16.
-- **Gate G1 (S04–S09)**: 🟢 DONE — SQLite WAL single-writer actor (`ProjectStore`), APFS snapshot, Resource Governor, 4-stage publication cycle, online backup & recovery.
-- **Gate G2 (S10–S15)**: 🟡 IN_REVIEW — Media indexer CFR 24/1, Rec.709 color policy, Qwen3-VL 4B offline multimodal inference và sliding window pipeline đều chạy thật. **Không có benchmark thực địa**: 5 clip trong `fixtures/smoke/` là title card 1,5 s (1080×1920, 36 frame) do agent gán nhãn, 0 claim/0 event — chỉ dùng cho smoke test. Preflight báo NO-GO cho tới khi có signed field corpus.
-- **Gate G3 (S16–S19)**: 🟢 DONE — Storyboard sinh kịch bản ràng buộc nguồn, VieNeu-TTS adapter gate, beam search cut selection (`SEARCH-v1`), và `G3ApprovalGuard`.
-- **Gate G4 (S20–S21)**: 🟢 DONE — DaVinci Resolve managed timeline 2160x3840 24fps, QC preview tự động, raster captions, và `G4S21Guard`.
-- **Gate G5 (S22–S26)**: 🟡 IN_REVIEW — mã nguồn + guard S22 có test, nhưng **S25 chưa có bằng chứng**: `g5.fault.run_suite` nay tự báo `SELF_TEST_ONLY` (chạy trong thư mục tạm, không chạm DB canonical) và không thể tự cấp chứng nhận; release manifest ghi rõ `s25_fault_evidence.certified = false` cho tới khi có real fault run.
 
-> Sửa ngày 2026-11-11 theo [docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md](docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md): bỏ các tuyên bố "held-out thực tế" và "DONE" không có bằng chứng.
+- **G0 (S00–S03)**: 🟢 DONE — app bundle arm64, worker stdio, bookmark/security-scope, Resolve spike.
+- **G1 (S04–S09)**: 🟢 DONE — `ProjectStore` single-writer WAL, snapshot, governor, publication 4 pha,
+  backup/restore, migration tại chỗ (`user_version = 2`).
+- **G2 (S10–S15)**: 🟡 IN_REVIEW — media indexer CFR 24/1, Rec.709, Qwen3-VL 4B và pipeline cửa sổ
+  chạy thật. **Chưa có benchmark hiện trường**: `fixtures/smoke/` là 5 title card 1,5 s
+  (1080×1920, 36 frame), nhãn do agent, 0 claim/0 event. Preflight NO-GO tới khi có signed field corpus.
+- **G3 (S16–S19)**: 🟢 DONE — story ràng buộc nguồn, Kokoro-Vietnamese TTS + cổng nghe WAV,
+  `SEARCH-v1` (node budget tính cả lookahead), `G3ApprovalGuard` + scope revalidation.
+- **G4 (S20–S21)**: 🟢 DONE — preview 1080×1920 (native ffmpeg hoặc Resolve), QC tự động,
+  `G4S21Guard`.
+- **G5 (S22–S26)**: 🟡 IN_REVIEW — guard S22 có test; `g5.fault.run_suite` tự báo `SELF_TEST_ONLY`;
+  release manifest ký **Ed25519**, `s25_fault_evidence.certified = false` cho tới khi có real fault run.
+
+## Việc còn mở (không giấu)
+
+| Việc | Điều kiện đóng | Ghi chú |
+|---|---|---|
+| Chứng nhận G2 | footage Rec.709 thật + nhãn người + manifest ký + `runs_sha256` khớp | `tools/check_readiness.py` sẽ GO khi xong |
+| Fault run S25 | chạy thật trên DB canonical | evidence tự khai bị từ chối (`validate_real_fault_suite_evidence`) |
+| ~~P1-02 nhánh G4 + `commitPublication`~~ | ✅ đã áp dụng: `verifyS21Evidence`/`readApprovedInputs` + băm trước transaction | `test_p1_hashing_outside_transaction.swift` 5/5, `S21.P1_02B` |
+| ~~P1-31 transition so với plan~~ | ✅ đã áp dụng: transition phải khớp `plan.transitions` | `tests/test_p31_transition_source.py` 4/4 |
+
+## Nhật ký công việc
+
 
 ## Milestones & Checklist
 - [x] **P0 - RPC Capability Override Guard**: Tạo [`g5_release_guards.py`](file:///Users/phuthanh/APP_CaNhan/AIVideo/workers/src/aivideo_workers/g5_release_guards.py) và khóa RPC endpoint `g5.capability.evaluate` / `g5.photo.match`.

@@ -2243,6 +2243,29 @@ public actor ProjectStore {
         completeJob: Bool = true,
         idempotencyKey: String? = nil
     ) throws -> ArtifactPublicationRecord {
+        // (P1-02) Measure the canonical bytes BEFORE the write lock. Hashing a 4K master
+        // inside `BEGIN IMMEDIATE` blocked the single canonical writer — and therefore the
+        // whole app — for the duration of the IO.
+        guard let prePublication = try getPublicationInternal(id: publicationId) else {
+            throw ProjectStoreError.publicationNotFound(publicationId)
+        }
+        guard let preExpectedHash = prePublication.sha256Hash, !preExpectedHash.isEmpty else {
+            throw ProjectStoreError.integrityViolation(
+                "Cannot commit publication \(publicationId): no verified sha256 recorded"
+            )
+        }
+        guard FileManager.default.fileExists(atPath: canonicalPath) else {
+            throw ProjectStoreError.integrityViolation(
+                "Cannot commit publication \(publicationId): canonical file missing at \(canonicalPath)"
+            )
+        }
+        let preMeasuredHash = try Self.fileSHA256(atPath: canonicalPath)
+        guard preMeasuredHash == preExpectedHash else {
+            throw ProjectStoreError.integrityViolation(
+                "Cannot commit publication \(publicationId): bytes changed (expected \(preExpectedHash), found \(preMeasuredHash))"
+            )
+        }
+
         return try withTransaction {
             try verifyAttemptAuthorityInternal(jobId: jobId, attemptId: attemptId, fencingToken: fencingToken)
             guard var pub = try getPublicationInternal(id: publicationId) else {
@@ -2250,9 +2273,7 @@ public actor ProjectStore {
             }
 
             // 2026-11-10 fix (P1-1): a publication may only be committed by the job/attempt
-            // that created it, and the canonical bytes must still match the digest recorded
-            // at verification time. Previously any valid attempt could commit any publication
-            // and only file existence was checked.
+            // that created it.
             guard pub.jobId == jobId,
                   pub.attemptId == attemptId,
                   pub.fencingToken == fencingToken else {
@@ -2260,18 +2281,24 @@ public actor ProjectStore {
                     "Publication \(publicationId) does not belong to job \(jobId) / attempt \(attemptId) / fencing \(fencingToken)"
                 )
             }
-            guard FileManager.default.fileExists(atPath: canonicalPath) else {
-                throw ProjectStoreError.integrityViolation("Cannot commit publication \(publicationId): canonical file missing at \(canonicalPath)")
-            }
-            guard let expectedHash = pub.sha256Hash, !expectedHash.isEmpty else {
+            // The row must still describe the bytes that were measured outside the lock.
+            guard let expectedHash = pub.sha256Hash, expectedHash == preExpectedHash,
+                  preMeasuredHash == expectedHash else {
                 throw ProjectStoreError.integrityViolation(
-                    "Cannot commit publication \(publicationId): no verified sha256 recorded"
+                    "Cannot commit publication \(publicationId): the publication changed while the commit was preparing"
                 )
             }
-            let actualHash = try Self.fileSHA256(atPath: canonicalPath)
-            guard actualHash == expectedHash else {
+            // A metadata check is constant-time and still catches a file deleted or replaced
+            // in between; the bytes themselves were verified above, outside the write lock.
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: canonicalPath) else {
                 throw ProjectStoreError.integrityViolation(
-                    "Cannot commit publication \(publicationId): bytes changed (expected \(expectedHash), found \(actualHash))"
+                    "Cannot commit publication \(publicationId): canonical file missing at \(canonicalPath)"
+                )
+            }
+            if let onDisk = attrs[.size] as? Int64,
+               let recorded = pub.byteSize, recorded > 0, onDisk != Int64(recorded) {
+                throw ProjectStoreError.integrityViolation(
+                    "Cannot commit publication \(publicationId): file size changed while committing"
                 )
             }
 

@@ -267,6 +267,130 @@ enum G4S21Guard {
     }
 
 
+    /// (P1-02) The approved script inputs, read once on a private read-only connection.
+    struct ApprovedInputs {
+        let scriptRevisionId: String
+        let candidate: [String: Any]
+        let manifest: [String: Any]
+        let totalFrames: Int
+    }
+
+    static func readApprovedInputs(
+        databasePath: String, projectId: UUID, g3ApprovalId: UUID
+    ) throws -> ApprovedInputs {
+        guard !databasePath.isEmpty else {
+            throw reject("S21 verification needs the canonical database on disk")
+        }
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(databasePath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let db = handle else {
+            throw reject("Cannot open the canonical database read-only for S21 inputs")
+        }
+        defer { sqlite3_close(db) }
+        guard let approval = try row(db, """
+            SELECT a.manifest_sha256,a.script_revision_id,a.manifest_json,s.candidate_json
+            FROM g3_approvals a JOIN g3_scripts s
+              ON s.script_revision_id=a.script_revision_id
+            JOIN g3_selected chosen ON chosen.project_id=a.project_id
+              AND chosen.script_revision_id=a.script_revision_id
+            WHERE a.project_id=? AND a.approval_id=?
+            """, [projectId.uuidString, g3ApprovalId.uuidString]) else {
+            throw reject("G3 approval is missing for this project")
+        }
+        guard let manifestData = approval[2].data(using: .utf8),
+              let manifest = try? JSONSerialization.jsonObject(with: manifestData) as? [String: Any],
+              let candidateData = approval[3].data(using: .utf8),
+              let candidate = try? JSONSerialization.jsonObject(with: candidateData) as? [String: Any],
+              let totalFrames = manifest["total_frames"] as? Int, totalFrames > 0 else {
+            throw reject("G3 approval payload is not readable JSON")
+        }
+        return ApprovedInputs(
+            scriptRevisionId: approval[1], candidate: candidate,
+            manifest: manifest, totalFrames: totalFrames
+        )
+    }
+
+    /// (P1-02) Verify the whole S21 evidence set on a private read-only connection.
+    ///
+    /// Hashing the preview and a dozen dependencies inside `BEGIN IMMEDIATE` blocked the
+    /// single canonical writer for seconds. This runs the same checks — G3 approval
+    /// re-verification, dependency bytes, binding derivation, container header, ffprobe —
+    /// before the write transaction opens, which afterwards only compares DB rows.
+    static func verifyS21Evidence(
+        databasePath: String,
+        project: UUID,
+        scriptRevisionId: String,
+        candidate: [String: Any],
+        manifest: [String: Any],
+        dependencyIDs: [String],
+        previewPublicationId: UUID,
+        previewSHA: String,
+        expectedFrames: Int
+    ) throws {
+        guard !databasePath.isEmpty else {
+            throw reject("S21 verification needs the canonical database on disk")
+        }
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(databasePath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let db = handle else {
+            throw reject("Cannot open the canonical database read-only for S21 verification")
+        }
+        defer { sqlite3_close(db) }
+
+        // 1. The G3 approval must still hold, measured against the published cut/WAV bytes.
+        try G3ApprovalGuard.verify(
+            db: db, projectId: project, scriptRevisionId: scriptRevisionId,
+            candidate: candidate, manifest: manifest
+        )
+
+        // 2. Derive the dependency set from the approved cut, not from the RPC list.
+        try verifyBindings(
+            db: db, project: project, candidate: candidate,
+            manifest: manifest, dependencyIDs: dependencyIDs
+        )
+
+        // 3. The preview must be a committed MP4 whose bytes are still the approved ones.
+        guard let pub = try row(db, """
+            SELECT state,artifact_type,sha256_hash,canonical_path,byte_size
+            FROM artifact_publications WHERE publication_id=? AND project_id=?
+            """, [previewPublicationId.uuidString, project.uuidString]),
+            pub[0] == "COMMITTED", pub[1] == "g4_preview_mp4",
+            pub[2] == previewSHA,
+            let expectedSize = Int64(pub[4]), expectedSize > 1024 else {
+            throw reject("G4 preview is not a committed S08 MP4")
+        }
+        let previewFile = URL(fileURLWithPath: pub[3])
+        let previewHandle = try FileHandle(forReadingFrom: previewFile)
+        let header = try previewHandle.read(upToCount: 16) ?? Data()
+        try previewHandle.close()
+        guard header.count >= 12,
+              String(data: header[4..<8], encoding: .ascii) == "ftyp" else {
+            throw reject("Published preview is not an MP4 container")
+        }
+        let (measuredSHA, measuredSize) = try measureFile(pub[3])
+        guard measuredSHA == previewSHA, measuredSize == expectedSize else {
+            throw reject("Published G4 preview bytes changed")
+        }
+        try verifyPreview(path: pub[3], expectedFrames: expectedFrames)
+    }
+
+    /// Streamed SHA-256 + size for one artifact.
+    static func measureFile(_ path: String, maxBytes: Int64 = 4 * 1024 * 1024 * 1024) throws -> (String, Int64) {
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        var total: Int64 = 0
+        while true {
+            let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            if chunk.isEmpty { break }
+            total += Int64(chunk.count)
+            guard total <= maxBytes else { throw reject("Published artifact is too large") }
+            hasher.update(data: chunk)
+        }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return (digest, total)
+    }
+
     /// Independently inspect the exact S08 preview, not user-supplied QC flags.
     static func verifyPreview(path: String, expectedFrames: Int) throws {
         guard (1...4319).contains(expectedFrames) else {

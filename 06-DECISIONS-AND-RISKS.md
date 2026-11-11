@@ -1,5 +1,10 @@
 # 06 — Quyết định kiến trúc, phạm vi hỗ trợ và rủi ro còn lại
 
+> **Trạng thái triển khai (2026-11-11):** đặc tả dưới đây đã được hiện thực hoá và kiểm thử;
+> xem [`README.md`](../README.md) để biết trạng thái hiện tại và
+> [`AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](AUDIT_20261111_REVIEW_AND_TEST_PLAN.md) cho các
+> lỗi đã đóng. Chỗ nào đặc tả khác mã đang chạy, mã + audit là nguồn đúng.
+
 **Phiên bản đặc tả:** 3.1 · **Ngày:** 06/11/2026.  
 **Trạng thái:** các quyết định dưới đây đã được chốt trong thiết kế để triển khai; chưa có build, benchmark hoặc chứng nhận vận hành kèm bộ Markdown này.
 

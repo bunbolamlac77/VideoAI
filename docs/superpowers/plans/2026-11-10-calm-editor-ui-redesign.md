@@ -1,5 +1,13 @@
 # Calm Editor Workflow Redesign Implementation Plan
 
+> ⚠️ **ẢNH CHỤP LỊCH SỬ — không phải trạng thái hiện tại.**
+> Giữ nguyên nội dung để tra cứu quá trình; nguồn đúng hiện tại là
+> [`README.md`](../../../README.md) và
+> [`docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](../../../docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md).
+> Sau ngày ghi trong tài liệu, dự án đã qua kiểm toán 2026-11-11 (9 P0 + 54 P1 + 14 nhóm P2) và
+> một số chi tiết đã đổi: `fixtures/corpus` → `fixtures/smoke`, schema do Swift sở hữu,
+> TTS là Kokoro-Vietnamese, Whisper chưa nối, gate G2/G5 vẫn IN_REVIEW.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Chuyển đổi toàn bộ giao diện macOS từ 9 tab kỹ thuật rời rạc sang Quy trình biên tập 4 bước tuyến tính (Calm Editor Workflow) với dữ liệu liên kết ngầm tự động (Zero-UUID copy-paste).

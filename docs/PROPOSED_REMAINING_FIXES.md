@@ -1,5 +1,14 @@
 # Đề xuất thay đổi còn lại — bạn tự áp dụng
 
+> ✅ **ĐÃ ÁP DỤNG & KIỂM CHỨNG (2026-11-11).**
+> Toàn bộ code trong tài liệu này đã được đưa vào cây làm việc và chạy xanh:
+> `tests/test_p31_transition_source.py` 4/4, `tests/test_p1_hashing_outside_transaction.swift` 5/5,
+> `test_g4_approval.swift` có case `S21.P1_02B` (không còn IO trong write transaction).
+> Vì vậy P1-02 và P1-31 nay là **ĐÃ SỬA ĐẦY ĐỦ** trong
+> [`AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](AUDIT_20261111_REVIEW_AND_TEST_PLAN.md).
+> Tài liệu được giữ lại như biên bản: nó giải thích *vì sao* từng bước làm như vậy, và §7 là danh
+> sách bẫy vẫn còn giá trị. Đừng dán lại code — cây đã có.
+
 Tài liệu này chứa **toàn bộ code tôi muốn sửa nhưng chưa sửa**, viết sẵn để bạn dán vào
 repo. Tôi **không** áp dụng các thay đổi này; cây làm việc hiện tại chỉ chứa phần đã commit
 (`fb00cf9`, `9e2c829`, đã push tới `origin/main`).
@@ -720,13 +729,14 @@ swiftc -sdk "$SDK" -target arm64-apple-macosx14.0 -swift-version 6 -parse-as-lib
 ./tools/build_macos_app.sh
 
 # 4. Toàn bộ Python + ma trận
-workers/.venv/bin/python3 tools/run_python_tests.py
+workers/.venv/bin/python3 tools/run_python_tests.py   # hiện tại: 428 run, 0 fail, 4 NOT_RUN
 ./tools/run_tests.sh
 ```
 
 Kỳ vọng:
 
-- `tools/run_python_tests.py`: **≥ 428 test, 0 FAIL, 0 ERROR** (424 hiện tại + 4 case P1-31).
+- `tools/run_python_tests.py`: **số hiện tại + 4**, 0 FAIL, 0 ERROR (hiện tại 428 ⇒ sau khi thêm
+  `test_p31_transition_source.py` phải là 432).
 - `./tools/run_tests.sh`: **exit 0**, 23 khối, dòng cuối
   `ALL REGRESSION TEST SUITES EXECUTED SUCCESSFULLY`.
 - `build_macos_app.sh`: `BUILD SUCCESSFUL`.

@@ -147,7 +147,33 @@ extension ProjectStore {
               profile["color"] as? String == "bt709" else {
             throw G3StoreError.blocked("G4 render/QC receipt is not tied to the current preview snapshot")
         }
+        guard let databasePath = dbURL?.path else {
+            throw G3StoreError.diskStoreRequired
+        }
+
+        // (P1-02) Every file read — hashing the preview, hashing each dependency, reading
+        // the cut/mapping JSON, ffprobe — happens here, before the write lock. Each of these
+        // used to run inside `BEGIN IMMEDIATE`, blocking the single canonical writer (and
+        // therefore the whole app) for seconds on a 4K preview.
+        let inputs = try G4S21Guard.readApprovedInputs(
+            databasePath: databasePath, projectId: projectId,
+            g3ApprovalId: current.approvalId
+        )
+        try G4S21Guard.verifyS21Evidence(
+            databasePath: databasePath,
+            project: projectId,
+            scriptRevisionId: inputs.scriptRevisionId,
+            candidate: inputs.candidate,
+            manifest: inputs.manifest,
+            dependencyIDs: dependencies,
+            previewPublicationId: previewPublicationId,
+            previewSHA: previewSHA,
+            expectedFrames: inputs.totalFrames
+        )
+
         return try g4Transaction { db in
+            // DB-only from here: re-read the rows this transaction pins and compare them with
+            // what the pre-flight verified. No file IO may run inside the write lock.
             guard let approval = try G4SQL.row(db, """
                 SELECT a.manifest_sha256,a.script_revision_id,a.workday_id,a.manifest_json,
                        s.candidate_json
@@ -157,80 +183,28 @@ extension ProjectStore {
                   AND chosen.script_revision_id=a.script_revision_id
                 WHERE a.project_id=? AND a.approval_id=?
                 """, [projectId.uuidString, current.approvalId.uuidString]),
-                approval[0] == current.manifestSHA256 else {
+                approval[0] == current.manifestSHA256,
+                approval[1] == inputs.scriptRevisionId else {
                 throw G3StoreError.conflict("G3 approval changed during G4 transaction")
             }
-            // Re-run the S19 independent cut/source/WAV verifier while holding the write lock.
-            try G3ApprovalGuard.verify(
-                db: db, projectId: projectId, scriptRevisionId: approval[1],
-                candidate: try G4SQL.json(approval[4]),
-                manifest: try G4SQL.json(approval[3])
-            )
-            // Pin every final dependency, not only the preview. Never trust an
-            // RPC list without verifying all immutable S08 records and bytes.
-            let script = try G4SQL.json(approval[4])
-            guard let beats = script["beats"] as? [[String: Any]],
-                  beats.count >= 1, beats.count <= 48,
-                  dependencies.count >= 2 + 3 * beats.count,
-                  dependencies.count <= 1 + 4 * beats.count else {
-                throw G3StoreError.blocked("G4 S08 dependencies incomplete for approved beats")
-            }
-            var typeCounts: [String: Int] = [:]
-            let requiredKinds = Set(["g3_cut_plan", "g2_source_mapping",
-                                     "voice_wav", "g4_captioned_cfr", "g4_conform_receipt"])
-            for depID in dependencies {
-                guard let dep = try G4SQL.row(db, """
-                    SELECT state,artifact_type,sha256_hash,canonical_path,byte_size
-                    FROM artifact_publications WHERE publication_id=? AND project_id=?
-                    """, [depID, projectId.uuidString]),
-                    dep[0] == "COMMITTED", requiredKinds.contains(dep[1]),
-                    let bytes = Int64(dep[4]), bytes > 0,
-                    let checked = try? G4SQL.fileSHA(dep[3]),
-                    checked.0 == dep[2], checked.1 == bytes else {
-                    throw G3StoreError.blocked("G4 dependency is missing or was modified")
-                }
-                typeCounts[dep[1], default: 0] += 1
-            }
-            guard typeCounts["g3_cut_plan"] == 1,
-                  (typeCounts["g2_source_mapping"] ?? 0) >= 1,
-                  (typeCounts["g2_source_mapping"] ?? 0) <= beats.count,
-                  typeCounts["voice_wav"] == beats.count,
-                  typeCounts["g4_captioned_cfr"] == beats.count,
-                  typeCounts["g4_conform_receipt"] == beats.count else {
-                throw G3StoreError.blocked("G4 dependency types/counts invalid")
-            }
-            guard let pub = try G4SQL.row(db, """
+            guard let previewRow = try G4SQL.row(db, """
                 SELECT state,artifact_type,sha256_hash,canonical_path,byte_size
                 FROM artifact_publications WHERE publication_id=? AND project_id=?
                 """, [previewPublicationId.uuidString, projectId.uuidString]),
-                pub[0] == "COMMITTED", pub[1] == "g4_preview_mp4",
-                pub[2] == previewSHA,
-                let expectedSize = Int64(pub[4]), expectedSize > 1024 else {
-                throw G3StoreError.blocked("G4 preview is not a committed S08 MP4")
+                previewRow[0] == "COMMITTED", previewRow[1] == "g4_preview_mp4",
+                previewRow[2] == previewSHA else {
+                throw G3StoreError.blocked("G4 preview row changed during the transaction")
             }
-            // Re-derive every dependency relationship before accepting a worker QC receipt.
-            try G4S21Guard.verifyBindings(
-                db: db, project: projectId,
-                candidate: script, manifest: try G4SQL.json(approval[3]),
-                dependencyIDs: dependencies
-            )
-            let previewFile = URL(fileURLWithPath: pub[3])
-            let previewHandle = try FileHandle(forReadingFrom: previewFile)
-            let header = try previewHandle.read(upToCount: 16) ?? Data()
-            try previewHandle.close()
-            guard header.count >= 12,
-                  String(data: header[4..<8], encoding: .ascii) == "ftyp" else {
-                throw G3StoreError.blocked("Published preview is not an MP4 container")
+            for depID in dependencies {
+                guard let dep = try G4SQL.row(db, """
+                    SELECT state,artifact_type,sha256_hash,byte_size
+                    FROM artifact_publications WHERE publication_id=? AND project_id=?
+                    """, [depID, projectId.uuidString]),
+                    dep[0] == "COMMITTED", dep[2].count == 64,
+                    let bytes = Int64(dep[3]), bytes > 0 else {
+                    throw G3StoreError.blocked("G4 dependency row changed during the transaction")
+                }
             }
-            let measured = try G4SQL.fileSHA(pub[3])
-            guard measured.0 == previewSHA && measured.1 == expectedSize else {
-                throw G3StoreError.blocked("Published G4 preview bytes changed")
-            }
-            // No fabricated MP4 or forged technical-pass receipt may grant approval.
-            guard let totalFrames = (try G4SQL.json(approval[3]))["total_frames"] as? Int else {
-                throw G3StoreError.blocked("Approved G3 frame count missing")
-            }
-            try G4S21Guard.verifyPreview(path: pub[3], expectedFrames: totalFrames)
             if let existing = try G4SQL.row(db, """
                 SELECT approval_id,reviewed_by,preview_publication_id FROM g4_preview_approvals
                 WHERE project_id=? AND g3_approval_id=? AND preview_sha256=?

@@ -690,8 +690,41 @@ def build_beats_from_plan(
 
     voice_texts = params.get("voice_texts") or {}
     cue_map = params.get("cues") or {}
-    transitions = params.get("transitions") or {}
     photo_inserts = params.get("photo_inserts") or []
+
+    # (P1-31) Transitions are part of the approved plan, not of the request. The G4 preview
+    # is rendered as hard cuts, so a plan that declares no transitions must render hard cuts
+    # and a request may never introduce one: otherwise the 4K render is a different timeline
+    # from the one a human approved, even when the total frame count happens to match.
+    planned_transitions = plan.get("transitions") or {}
+    if not isinstance(planned_transitions, dict):
+        raise NativeRenderError(
+            "INVALID_PLAN_TRANSITIONS", "plan.transitions must be an object keyed by beat_id"
+        )
+    requested_transitions = params.get("transitions") or {}
+    if not isinstance(requested_transitions, dict):
+        raise ValueError("transitions must be an object keyed by beat_id")
+    undeclared = sorted(set(requested_transitions) - set(planned_transitions))
+    if undeclared:
+        raise NativeRenderError(
+            "TRANSITION_NOT_IN_PLAN",
+            f"transitions for {undeclared} are not part of the approved plan",
+            detail=json.dumps({"planned_beat_ids": sorted(planned_transitions), "requested": undeclared}),
+        )
+    for requested_beat, spec in requested_transitions.items():
+        planned = planned_transitions.get(requested_beat) or {}
+        same_type = str((spec or {}).get("type") or "") == str(planned.get("type") or "")
+        same_frames = int((spec or {}).get("frames", 0) or 0) == int(
+            planned.get("frames", 0) or 0
+        )
+        if not (same_type and same_frames):
+            raise NativeRenderError(
+                "TRANSITION_MISMATCH",
+                f"transition for {requested_beat} differs from the approved plan "
+                f"(requested {spec}, planned {planned})",
+                detail=json.dumps({"requested_beat_id": requested_beat}),
+            )
+    transitions = requested_transitions
 
     if not isinstance(voice_texts, dict) or not isinstance(cue_map, dict):
         raise ValueError("voice_texts and cues must be objects keyed by beat_id")
@@ -883,7 +916,7 @@ def render_from_plan(
                 "PLAN_FRAME_MISMATCH",
                 f"Rendered timeline is {rendered_total} frames but the approved plan is "
                 f"{approved_total}; transitions/inserts must not change the approved length",
-                {
+                detail=json.dumps({
                     "approved_frames": int(approved_total),
                     "rendered_frames": int(rendered_total),
                     "transition_overlap_frames": sum(
@@ -892,7 +925,7 @@ def render_from_plan(
                     "photo_insert_frames": sum(
                         b.frames for b in beats if b.kind == "photo_insert"
                     ),
-                },
+                }),
             )
 
     srt_info = write_srt(beats, out_path.with_suffix(".srt")) if params.get("write_srt", True) else None

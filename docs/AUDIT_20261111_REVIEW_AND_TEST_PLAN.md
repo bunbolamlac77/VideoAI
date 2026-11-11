@@ -155,7 +155,7 @@ Ba câu quan trọng nhất:
 | # | Vấn đề | Bằng chứng |
 |---|---|---|
 | P1-01 | Job bị đánh `SUCCEEDED` khi commit **một** publication, dù còn artifact anh em đang PREPARED — **ĐÃ SỬA 2026-11-11** (`expected_publication_count`, migration ALTER TABLE, `jobIsFullyPublishedInternal`, `openPublicationJob`) | test `tests/test_p1_job_completion.swift` |
-| P1-02 | Hash/ffprobe/ffmpeg chạy **bên trong** `BEGIN IMMEDIATE` (busy_timeout 3000 ms) — **ĐÃ SỬA một phần 2026-11-11**: nhánh S22 đo và băm artifact trên connection read-only trước transaction (`G5S22Guard.measureFile/readPublishedArtifact`, `verifyFinalBindings(fileReader:)`); **G4/S21 và transaction của `commitPublication` vẫn còn băm trong transaction** | `G4S21Guard.swift:283` từ `G4ProjectStore.swift:231`; `ProjectStore.swift:2118` | ĐÃ SỬA MỘT PHẦN 2026-11-11: S22 đã đo hash/đọc plan ngoài transaction; G4/S21 và `commitPublication` vẫn băm trong `BEGIN IMMEDIATE`.
+| P1-02 | Hash/ffprobe/ffmpeg chạy **bên trong** `BEGIN IMMEDIATE` (busy_timeout 3000 ms) — **ĐÃ SỬA ĐẦY ĐỦ 2026-11-11**: cả ba nhánh đều đo băm/ffprobe ngoài write transaction — S22 (`G5S22Guard.measureFile`/`readPublishedArtifact`, `verifyFinalBindings(fileReader:)`), G4/S21 (`G4S21Guard.readApprovedInputs` + `verifyS21Evidence` trên connection `READONLY`) và `commitPublication` (băm trước `withTransaction`, trong transaction chỉ so row + size). Test: `test_p1_hashing_outside_transaction.swift` (5/5) và `test_g4_approval.swift::S21.P1_02B` | `G4S21Guard.swift:283` từ `G4ProjectStore.swift:231`; `ProjectStore.swift:2118` | ĐÃ SỬA MỘT PHẦN 2026-11-11: S22 đã đo hash/đọc plan ngoài transaction; G4/S21 và `commitPublication` vẫn băm trong `BEGIN IMMEDIATE`.
 | P1-03 | `ResourceGovernor` brick vĩnh viễn — **ĐÃ SỬA 2026-11-11**: reclaim khi PID đã chết (`kill(pid,0)`) **và** heartbeat quá hạn, reap PID tái sử dụng; test S07.T4 | `ResourceGovernor.swift` |
 | P1-04 | Cấp attempt trước khi xin lease — **ĐÃ SỬA 2026-11-11**: reserve lease → `allocateAttempt` → `bind`; lease bị từ chối trả `attempt == nil`, attempt cũ không bị revoke; test S07.T5 | `ResourceGovernor.swift` |
 | P1-05 | Backup không atomic — **ĐÃ SỬA 2026-11-11**: closure pins/publications đọc từ chính snapshot (`SnapshotClosure.read`, mở `immutable=1`); thiếu blob pinned ⇒ backup fail | test `tests/test_p1_backup_restore.swift` |
@@ -194,7 +194,7 @@ Ba câu quan trọng nhất:
 | P1-28 | "Validate VLM output" chỉ validate dict tự dựng; U+FFFD bị xoá lặng | `pipeline_adapters.py:749,793-795` | **ĐÃ SỬA 2026-11-11** (kèm test hồi quy).
 | P1-29 | `subject_track_id` bịa theo cửa sổ ⇒ logic merge chết | `pipeline_adapters.py:788` → `full_frame_pipeline.py:392-400` | **ĐÃ SỬA 2026-11-11** (kèm test hồi quy).
 | P1-30 | Omission audit ghi `recovered_evidence` mà không kiểm gì | `full_frame_pipeline.py:903-931` | **ĐÃ SỬA 2026-11-11** (kèm test hồi quy).
-| P1-31 | Crossfade/photo làm tổng frame khác plan ⇒ G4/G5 guard chặn dù worker báo PASS | `native_render.py:114-118,795` | **ĐÃ SỬA MỘT PHẦN 2026-11-11**: độ dài timeline bị chặn bởi `PLAN_FRAME_MISMATCH`; transition vẫn do plan khai (`transitions`), chưa đối chiếu với G4 preview đã duyệt. `PLAN_FRAME_MISMATCH` khi `expected_frames` khác `plan.total_frames` (transition/photo insert không được đổi độ dài).
+| P1-31 | Crossfade/photo làm tổng frame khác plan ⇒ G4/G5 guard chặn dù worker báo PASS | `native_render.py:114-118,795` | **ĐÃ SỬA ĐẦY ĐỦ 2026-11-11**: transition phải có trong `plan.transitions` và khớp type+frames (`TRANSITION_NOT_IN_PLAN`/`TRANSITION_MISMATCH`); plan không khai ⇒ hard-cut. Test: `tests/test_p31_transition_source.py` (4/4).
 | P1-32 | Photo insert không có publication; guard chỉ cần `illustrative_only` | `native_render.py:721-752`, `G5S22Guard.swift:384-388` | **ĐÃ SỬA 2026-11-11** (kèm test hồi quy). Photo insert bắt buộc `photo_sha256` khớp bytes **và** `photo_publication_id` (UUID S08); guard kiểm cả hai và đòi publication nằm trong chuỗi đã duyệt.
 | P1-33 | Filtergraph thiếu escape `;`/newline; caption bị `%{}` expansion | `native_render.py:121-125,143-150` | **ĐÃ SỬA 2026-11-11** (kèm test hồi quy).
 | P1-34 | Đọc cả MP4 4K vào RAM để băm | `native_render.py:589` | **ĐÃ SỬA 2026-11-11** (kèm test hồi quy).
@@ -376,12 +376,11 @@ Gate (7): `g3_scripts, g3_selected, g3_voice_reviews, g3_approvals, g4_preview_a
 **Vòng 4 — Hiệu năng & UX**
 12. P1-24 (`-ss` seek), P1-25 (phân trang observation), P1-31/32 (transition/photo vào plan), P1-46..54.
 
-**Trạng thái 2026-11-11 (sau khi vá):** cả 6 vòng ở trên đã thực hiện. 9/9 P0 và 54/54 P1
-đã có bản vá + test hồi quy, trừ hai hạn chế còn mở được ghi rõ: **P1-02** chỉ sửa nhánh S22
-(G4/S21 và `commitPublication` vẫn băm trong transaction) và một phần **P1-31** (độ dài timeline
-nay bị chặn, nhưng transition vẫn do caller khai như `transitions` của plan). Bằng chứng chạy:
-`tools/run_python_tests.py` 395 PASS/0 FAIL (heavy: 395 PASS, 0 skip) và `./tools/run_tests.sh`
-exit 0 với 23 khối.
+**Trạng thái 2026-11-11 (đã đóng toàn bộ):** 9/9 P0, 54/54 P1 và 14/14 nhóm P2 đã có bản vá +
+test hồi quy. Hai mục từng ghi "sửa một phần" nay đã đầy đủ: **P1-02** (S22 + G4/S21 +
+`commitPublication`) và **P1-31** (transition phải khớp `plan.transitions`).
+Bằng chứng chạy: `tools/run_python_tests.py` **428 PASS/0 FAIL/4 NOT_RUN** (heavy: 0 skip) và
+`./tools/run_tests.sh` **exit 0, 23 khối**.
 
 **Định nghĩa "xong" nên đổi:** *"xong" = một video 30–60 s đi từ thư mục nguồn tới MP4 2160×3840 mở được, mọi con số trên UI đều truy được về một dòng DB/bằng chứng, giết app giữa chừng vẫn resume được, và `git push` bị chặn nếu bất kỳ case nào không PASS.*
 

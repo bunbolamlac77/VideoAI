@@ -1,4 +1,13 @@
 # BÁO CÁO ĐÁNH GIÁ CHUYÊN SÂU & HƯỚNG DẪN KỸ THUẬT DÀNH CHO LOCAL AI
+
+> ⚠️ **BÁO CÁO LỊCH SỬ (11/2026), KHÔNG PHẢI TRẠNG THÁI HIỆN TẠI.**
+> Đây là bản đánh giá độc lập trước vòng kiểm toán 2026-11-11. Nó vẫn đọc được như tài liệu
+> lịch sử, nhưng: điểm số bên dưới đã cũ; TTS hiện là **Kokoro-Vietnamese** (không phải
+> VieNeu); **Whisper chưa nối** vào runtime (`asr_status=not_configured`); các P0/P1 nêu trong
+> báo cáo này đã được xử lý và có test hồi quy. Nguồn đúng hiện tại: [`README.md`](README.md) và
+> [`docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md).
+
+
 **Dự án:** AIVideo v3.1 (POV Video Intelligence Assistant on macOS)  
 **Tác giả đánh giá:** Principal Systems Architect & Senior macOS/Apple Silicon Engineer  
 **Thời điểm kiểm toán:** Tháng 11/2026  
@@ -10,7 +19,7 @@
 
 | Hạng mục kiến trúc | Điểm (Thang 10) | Nhận xét khắt khe của Kỹ sư Trưởng |
 | :--- | :---: | :--- |
-| **Bảo vệ 100% Local Inference** | **9.8/10** | Rất tốt. Không có bất kỳ API cloud nào. Toàn bộ MLX Qwen3-VL, Whisper.cpp, VieNeu-TTS đều chạy offline cục bộ trên máy Mac. |
+| **Bảo vệ 100% Local Inference** | **9.8/10** | Rất tốt. Không có bất kỳ API cloud nào. Toàn bộ MLX Qwen3-VL, Whisper (chưa nối vào runtime), Kokoro-Vietnamese TTS đều chạy offline cục bộ trên máy Mac. |
 | **Mô hình Single-Writer SQLite (WAL)** | **9.5/10** | Đúng chuẩn kiến trúc. Chỉ actor `ProjectStore` của Swift Core được ghi SQLite. Python workers bị cô lập tuyệt đối khỏi quyền write database trực tiếp. |
 | **Bảo đảm Bằng chứng & Truy xuất nguồn** | **9.7/10** | Chặt chẽ. Mọi claim, shot, cut đều gắn liền sha256 file nguồn, frame range IN/OUT và revision journal. |
 | **Quản trị Concurrency & IPC Stdio** | **9.2/10** | Khung truyền tin JSON-RPC 1 MiB có timeout, cancellation handler, bounded pipe queue. Tuy nhiên còn một số điểm rò rỉ tài nguyên tiềm ẩn đã được khắc phục bên dưới. |

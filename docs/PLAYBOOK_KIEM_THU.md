@@ -1,408 +1,319 @@
 # PLAYBOOK KIỂM THỬ — AIVideo v3.1
 
-**Mục đích:** Danh mục đầy đủ mọi **chức năng**, **đường đi**, **thao tác** và **lệnh** cần thực hiện để test dự án, kèm **kỳ vọng** và **cách phát hiện lỗi**.
-**Đi kèm:** [AUDIT_20261111_REVIEW_AND_TEST_PLAN.md](AUDIT_20261111_REVIEW_AND_TEST_PLAN.md) — mỗi mã `P0-xx`/`P1-xx` dưới đây trỏ về mục phát hiện tương ứng trong báo cáo.
-**Môi trường đã đo trong phiên đánh giá:** macOS 26.7.1 (arm64), Swift 6.3.3, ffmpeg 7.1.1 (có `drawtext`), Python venv 3.12.11, model Qwen3-VL 4B + Qwen3-8B-4bit + Kokoro-Vietnamese đã cài tại `~/Library/Application Support/AIVideo/Models/`.
+**Cập nhật:** 2026-11-11, sau khi đóng 9 P0 + 54 P1 + 14 nhóm P2.
+**Trạng thái code:** mọi case trong tài liệu này đã được kiểm chứng trên cây hiện tại; những
+case từng là "lỗi đang tồn tại" nay là **test hồi quy** (nếu ai làm hỏng lại, test đỏ).
 
----
+Tài liệu liên quan: [`README`](../README.md) · [kiểm toán 2026-11-11](AUDIT_20261111_REVIEW_AND_TEST_PLAN.md) ·
+[đề xuất còn lại](PROPOSED_REMAINING_FIXES.md).
 
 ## PHẦN 0 — CÁCH DÙNG PLAYBOOK
 
-1. Chạy **Tầng A** (static/unit) trước — nó là hàng rào rẻ nhất.
-2. Mỗi case có: **ID · Mục tiêu · Thao tác/Lệnh · Kỳ vọng · Cách chứng minh lỗi**.
-3. Kết quả ghi theo mẫu cuối tài liệu (PASS/FAIL/NOT_RUN/BLOCKED + bằng chứng).
-4. **Luật vàng:** một case chỉ PASS khi *bạn đã cố tình làm hỏng* điều kiện của nó ít nhất một lần và thấy nó FAIL. Nếu không có cách nào làm nó FAIL, nó là test trang trí.
+1. Chạy tầng A trước (tự động). Tầng A xanh mới có nghĩa để chạy tầng B/C.
+2. Kết quả ghi theo mẫu ở PHẦN 7: PASS / FAIL / NOT_RUN / BLOCKED + bằng chứng (đường dẫn file,
+   đoạn log, mã lỗi).
+3. **Luật vàng:** một case chỉ PASS khi *bạn đã cố tình làm hỏng* điều kiện của nó ít nhất một
+   lần và thấy nó FAIL. Không có cách làm nó FAIL ⇒ đó là test trang trí, phải viết lại.
 
-Ký hiệu: ✅ = có thể tự động hoá; 🖐 = cần thao tác tay trên app; 🕐 = chậm (>2 phút).
+Ký hiệu: ✅ tự động hoá · 🖐 cần thao tác tay · 🕐 chậm (> 2 phút).
 
----
+## PHẦN 1 — CHUẨN BỊ
 
-## PHẦN 1 — CHUẨN BỊ MÔI TRƯỜNG
+### 1.1. Tiên quyết
 
-### 1.1. Kiểm tra tiên quyết
-
-| # | Thao tác | Kỳ vọng |
-|---|---|---|
-| E-01 | `sw_vers` | macOS ≥ 14 (máy tham chiếu: 26.7.1) |
-| E-02 | `swiftc --version` và `ls /Library/Developer/CommandLineTools/SDKs/` | Swift 6.x + SDK **tương thích** (không dùng `xcrun --show-sdk-path` nếu trả `MacOSX27` — không build được, đã xác nhận trong phiên này) |
-| E-03 | `ffmpeg -version \| head -1` và `ffmpeg -hide_banner -filters \| grep drawtext` | Có ít nhất 1 dòng `drawtext`. Thiếu ⇒ render caption phải báo `FFMPEG_DRAWTEXT_UNAVAILABLE`, không được crash |
-| E-04 | `workers/.venv/bin/python3 -V` | 3.x ≤ 3.12 (venv hiện tại 3.12.11) |
-| E-05 | `ls "$HOME/Library/Application Support/AIVideo/Models"` | Phải có `visual_analysis_primary`, `story_synthesis`, `tts_kokoro_vi`, `g0-text` |
-| E-06 | `workers/.venv/bin/python3 -c "import mlx_vlm, mlx_whisper"`* | (*nếu dự kiến) ASR chưa có — kỳ vọng **FAIL import mlx_whisper** và đây là sự thật hiện trạng, không phải lỗi máy |
-| E-07 | `sqlite3 --version`, `/opt/homebrew/bin/ffprobe` | Có |
+| ID | Kiểm tra | Lệnh | Kỳ vọng |
+|---|---|---|---|
+| E-01 | Swift + SDK đúng | `swiftc --version` và `ls /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk` | Swift 6.3.x; SDK này phải tồn tại (**không** dùng `xcrun --show-sdk-path`, nó trả MacOSX27 và build sẽ fail) |
+| E-02 | Python runtime của worker | `workers/.venv/bin/python3 -V` | 3.12.x |
+| E-03 | ffmpeg/ffprobe | `ffmpeg -version \| head -1` | 7.x; nằm trong PATH mà app nhìn thấy (`/opt/homebrew/bin`) |
+| E-04 | Model đã cài | `workers/.venv/bin/python3 -c "from aivideo_workers.model_installation import inspect_model_installation as i; print(i(deep=True))"` | `state=verified`, có `pinned_weights_sha256` |
+| E-05 | ASR | `workers/.venv/bin/python3 -c "import mlx_whisper"` | **FAIL** là đúng hiện trạng: ASR chưa nối vào runtime |
 
 ### 1.2. Biến môi trường
 
-| Biến | Ý nghĩa | Dùng ở đâu |
+| Biến | Ý nghĩa | Ai đặt |
 |---|---|---|
-| `AIVIDEO_PYTHON` | Đường dẫn python cho app + harness Swift | `AppState`, `run_tests.sh`, CI |
-| `AIVIDEO_APP_SUPPORT` | Gốc dữ liệu app | DB, models, runtimes |
-| `AIVIDEO_RUN_HEAVY_G2=1` / `_STORY=1` / `_TTS=1` | Bật 4 test model thật (đang NOT_RUN) | `tests/test_s15*`, `test_s16_story_llm`, `test_s17_*` |
-| `AIVIDEO_RUN_UI_TESTS=1` | Cho phép S02 launch app qua Finder | `test_s02_manual_verification.swift` |
-| `AIVIDEO_RELEASE_TEAM_ID` | Team ID bắt buộc cho release | `tools/check_readiness.py` |
-| `AIVIDEO_VLM_MAX_PIXELS` | Ngân sách pixel cho VLM (mặc định 589824) | `pipeline_adapters.py` |
-| `AIVIDEO_G4_WORK_ROOT` / `AIVIDEO_G5_WORK_ROOT` / `AIVIDEO_RENDER_ROOT` | Root render (do Swift đặt) | `g4_resolve`, `g5_final`, `native_render` |
-| `AIVIDEO_G3_STAGING_ROOT` | Root staging G3 | `g3_engine` |
-| `AIVIDEO_G5_SIMULATE_FREE_BYTES` | **Hook test** — nên bị gỡ khỏi production (P1-17) | `g5_final.py` |
+| `AIVIDEO_PYTHON` | python cho app + harness | bạn / CI |
+| `AIVIDEO_REPO_ROOT` | trỏ app về checkout | bạn (khi chạy app build) |
+| `AIVIDEO_APP_SUPPORT` | profile dir; **model root** = `<dir>/Models` | app / test |
+| `AIVIDEO_RENDER_ROOT` | root cho renderer ffmpeg | app (P1-15) |
+| `AIVIDEO_G3_STAGING_ROOT`, `AIVIDEO_G4_WORK_ROOT`, `AIVIDEO_G5_WORK_ROOT` | staging theo gate | app |
+| `AIVIDEO_RELEASE_TEAM_ID` | Team ID bắt buộc khi release | CI |
+| `AIVIDEO_RUN_HEAVY_G2` / `_STORY` / `_TTS` | bật 4 case model thật | bạn |
+| `AIVIDEO_TEST_HARNESS=1` | chỉ khi đó `AIVIDEO_G5_SIMULATE_FREE_BYTES` mới có hiệu lực | test |
 
-### 1.3. Bộ fixture cần chuẩn bị thủ công (chưa có trong repo)
+**Bị từ chối có chủ đích:** `AIVIDEO_CONTRACTS_DIR`, `AIVIDEO_MODELS_ROOT` (worker raise
+`CONTRACTS_DIR_FORBIDDEN` / `MODELS_ROOT_FORBIDDEN`). Đừng "sửa" bằng cách export chúng.
 
-| Fixture | Mục đích | Lệnh tạo |
+### 1.3. Fixture
+
+| Thứ cần | Đường dẫn | Ghi chú |
 |---|---|---|
-| `spec-medium.mp4` 60 s 1080×1920, có nói | Đo end-to-end thật | `ffmpeg -f lavfi -i testsrc2=size=1080x1920:rate=24:duration=60 -f lavfi -i sine=frequency=440:duration=60 -shortest -c:v libx264 -pix_fmt yuv420p -c:a aac /tmp/spec-medium.mp4` |
-| `spec-long.mp4` 10 phút | Kiểm payload > 1 MiB (P1-25) | như trên, `duration=600` |
-| `vfr-no-nbframes.mkv` | Kiểm mẫu số coverage (P1-26) | `ffmpeg -f lavfi -i testsrc2=size=640x360:rate=30:duration=10 -c:v libx265 -x265-params vfr=1 /tmp/vfr.mkv` |
-| `cup-cap3.mov` 4K30, 3 phút | Đo decode mỗi cửa sổ (P1-24) | `ffmpeg -f lavfi -i testsrc2=size=3840x2160:rate=30:duration=180 /tmp/spec-4k.mov` |
-| `title có nháy.mp4` và thư mục `/tmp/aiv;b` | Kiểm escape filtergraph (P1-33 ảnh hưởng) | `cp /tmp/spec-medium.mp4 "/tmp/title có nháy.mp4"; mkdir -p "/tmp/aiv;b"` |
-| Folder ảnh cưới 5–10 ảnh | Kiểm photo insert `illustrative_only` | dùng ảnh JPEG cá nhân bất kỳ |
+| Smoke clips | `fixtures/smoke/*.mp4` | **title card 1,5 s tổng hợp** (1080×1920, 36 frame), nhãn do agent — chỉ để smoke, **không** phải field corpus |
+| Checkpoint cũ | `fixtures/smoke/ckpt_trip-holdout-*.json` | bị `.gitignore` cho `ckpt_v2_*`; phục vụ test resume |
+| Field corpus thật | bạn tự chuẩn bị | cần ≥5 clip Rec.709 + nhãn người + manifest ký Ed25519 |
 
----
+## PHẦN 2 — TẦNG A: TỰ ĐỘNG
 
-## PHẦN 2 — TẦNG A: KIỂM THỬ TĨNH & UNIT (tự động hoá)
-
-### 2.1. Bộ Python (279 case)
+### 2.1. Python (428 case)
 
 | ID | Mục tiêu | Lệnh | Kỳ vọng |
 |---|---|---|---|
-| A-PY-01 ✅ | Toàn bộ test Python | `workers/.venv/bin/python3 tools/run_python_tests.py` | `tests_run=279, failures=0, errors=0, skipped=4, exit 0` |
-| A-PY-02 ✅ | Đếm JSONL khớp summary | `wc -l build/reports/python_test_records.jsonl` | 279 |
-| A-PY-03 ✅ | 4 case model thật phải chạy | `AIVIDEO_RUN_HEAVY_G2=1 AIVIDEO_RUN_HEAVY_STORY=1 AIVIDEO_RUN_HEAVY_TTS=1 workers/.venv/bin/python3 tools/run_python_tests.py` | `skipped=0`; nếu FAIL ⇒ model thật chưa đáp ứng pipeline |
-| A-PY-04 ✅ | Chạy từng file độc lập (không phụ thuộc PYTHONPATH) | `for t in tests/test_*.py; do workers/.venv/bin/python3 "$t" \|\| echo "FAIL $t"; done` | Không dòng `FAIL` |
-| A-PY-05 ✅ | Test riêng từng gate | `workers/.venv/bin/python3 tests/test_g1_contracts.py`, `test_s10_media_indexer.py`, `test_s16_to_s19_g3.py`, `test_s20_native_render.py`, `test_s22_to_s26_g5.py` | Mỗi file exit 0 |
+| A-PY-01 ✅ | Toàn bộ Python | `workers/.venv/bin/python3 tools/run_python_tests.py` | `428 run · 0 fail · 0 error · 4 NOT_RUN` |
+| A-PY-02 ✅ | Record khớp summary | đọc `build/reports/python_test_summary.json` và đếm dòng `python_test_records.jsonl` | số dòng = `tests_run`; 4 record `NOT_RUN` là 4 case model thật |
+| A-PY-03 ✅ | 4 case model thật chạy được | thêm `AIVIDEO_RUN_HEAVY_G2=1 AIVIDEO_RUN_HEAVY_STORY=1 AIVIDEO_RUN_HEAVY_TTS=1` | `skipped=0`, 0 fail (S15 ≈ 110 s, S16 ≈ 11 s, TTS ≈ 4 s/case) |
+| A-PY-04 ✅ | Chạy lẻ từng file | `for t in tests/test_*.py; do workers/.venv/bin/python3 "$t" \|\| echo "FAIL $t"; done` | không dòng `FAIL` |
+| A-PY-05 ✅ | Traceability | `python3 -c "import json,collections;rows=[json.loads(l) for l in open('build/reports/python_test_records.jsonl')];print(collections.Counter(r['requirement_id'] for r in rows).most_common(3))"` | `JOB-04` ≤ 7 (không còn 151 record rơi vào mặc định) |
 
-### 2.2. Bộ Swift (21 file, cần SDK đúng)
+### 2.2. Swift (17 suite trong ma trận)
 
-Biến `SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`. Mẫu chạy một suite:
-
-```bash
-swiftc -sdk "$SDK" -target arm64-apple-macosx14.0 -swift-version 6 -parse-as-library \
-  packages/AIVideoCore/Sources/Models/DomainModels.swift tests/test_g2_coverage_dto.swift \
-  -o /tmp/t_g2dto && TEST_RECORDS_OUT=/tmp/t_g2dto.jsonl /tmp/t_g2dto
-```
-
-| ID | Suite | Nguồn Swift cần biên dịch | Điều phải kiểm |
+| ID | Mục tiêu | Lệnh | Kỳ vọng |
 |---|---|---|---|
-| A-SW-01 ✅ | `test_worker_ipc` (S02) | DomainModels, WorkerClient | Banner phải in `passed/total` thật (P1-38) |
-| A-SW-02 ✅ | `test_resolve_spike` (S03) | như trên | Nếu BLOCKED ⇒ **exit ≠ 0** (P1-40) |
-| A-SW-03 ✅ | `test_g1_contracts` | DomainModels, DataContracts | 5 case |
-| A-SW-04 ✅ | `test_s06_project_store` | DataContracts, G2AnalysisAndReviewEngine, ProjectStore | 6 case + ca `S06.BRIEF` |
-| A-SW-05 ✅ | `test_s07_scheduler_fencing` | + ResourceGovernor | Governor brick (P1-03) |
-| A-SW-06 ✅ | `test_s08_publication_reconciler` | + ArtifactPublisher | Reconciler + job sibling (P1-01) |
-| A-SW-07 ✅ | `test_s09_backup_restore_migration` | + BackupRestoreService | Restore path (P1-06) |
-| A-SW-08 ✅ | `test_s10_s11_g2_foundations` | MediaIndexer, SourceRevisionIdentity, ModelAdapterContracts | — |
-| A-SW-09 ✅ | `test_source_revision_identity` | SourceRevisionIdentity | **Phải phát JSONL** (P1-39) |
-| A-SW-10 ✅ | `test_g2_coverage_dto` | DomainModels | range expansion |
-| A-SW-11 ✅ | `test_g3_story_request` | DataContracts, G3StoryRequest | scope id thật (P0-09) |
-| A-SW-12 ✅ | `test_s12_to_s15_g2_closure` | + WorkerClient | 4 case |
-| A-SW-13 ✅ | `test_s19_g3_approval` | + G3ProjectStore, G3ApprovalGuard, ArtifactPublisher | 3 case |
-| A-SW-14 ✅ | `test_g3_approval_guard` | như trên | 2 case |
-| A-SW-15 ✅ | `test_g4_approval` | + G4ProjectStore, G4S21Guard, G4FilePublisher | 4 case |
-| A-SW-16 ✅ | `test_g5_final_and_release` | + G5ProjectStore, G5S22Guard | 6 case (cần ffmpeg) |
-| A-SW-17 ✅ | `test_g5_native_provenance` | toàn bộ `packages/AIVideoCore/Sources/**/*.swift` | receipt native — phải phát JSONL (P1-39) |
+| A-SW-01 ✅ | Build app | `./tools/build_macos_app.sh` | `BUILD SUCCESSFUL`; bundle có **đúng 1** `Workers/aivideo_workers/main.py`; không còn `Resources/workers` |
+| A-SW-02 ✅ | Typecheck chặt | `swiftc -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk -target arm64-apple-macosx14.0 -swift-version 6 -parse-as-library -typecheck -warnings-as-errors $(find packages/AIVideoCore/Sources -name '*.swift')` | không lỗi, không cảnh báo |
+| A-SW-03 ✅ | Suite lẻ | `swiftc -sdk … $(find packages/AIVideoCore/Sources -name '*.swift') tests/<suite>.swift -o /tmp/x && /tmp/x` | exit 0; banner `ALL … (n/n)` với `n` = số case thật |
+| A-SW-04 ✅ | Banner không tautology | đổi 1 assertion thành no-op rồi chạy lại | banner báo `n-1/n` và exit ≠ 0 |
 
-### 2.3. Ma trận gộp + build
+### 2.3. Ma trận gộp
 
 | ID | Lệnh | Kỳ vọng |
 |---|---|---|
-| A-ALL-01 🕐 ✅ | `./tools/run_tests.sh` | exit 0 **và** đọc lại log: không banner giả, không BLOCKED |
-| A-ALL-02 ✅ | `./tools/build_macos_app.sh` | exit 0, `apps/macos/build/AIVideo.app` tồn tại |
-| A-ALL-03 ✅ | `./tools/run_s06_tests.sh` | exit 0 (hoặc 2 = NOT_RUN khi thiếu SDK, **không phải PASS**) |
-| A-ALL-04 ✅ | `codesign --verify --deep --strict apps/macos/build/AIVideo.app` | không lỗi |
-| A-ALL-05 ✅ | `du -sh apps/macos/build/AIVideo.app/Contents/Resources/Workers/*` | Phát hiện 2 bản worker trùng (P2) |
-| A-ALL-06 ✅ | `bash -n tools/*.sh` | không lỗi cú pháp |
+| A-ALL-01 🕐 ✅ | `./tools/run_tests.sh` | **exit 0**, 23 khối, dòng cuối `ALL REGRESSION TEST SUITES EXECUTED SUCCESSFULLY`; không có `[FAIL]` thật (dòng `print("❌ FAIL…")` in ra từ source là bình thường) |
+| A-ALL-02 ✅ | Record được giữ lại | `ls build/reports/previous/*.jsonl \| wc -l` ≥ 1 — ma trận không xoá bằng chứng cũ |
+| A-ALL-03 ✅ | Resolve spike | nếu Resolve đóng: script ghi `BLOCKED` và exit 2, ma trận vẫn exit 0 nhưng **không** tính PASS cho S03 |
 
 ### 2.4. Preflight & đóng gói
 
 | ID | Lệnh | Kỳ vọng |
 |---|---|---|
-| A-PF-01 ✅ | `workers/.venv/bin/python3 tools/check_readiness.py; echo $?` | **exit 2** + blocker `UNVERIFIED_INPUT_REQUIRES_SIGNED_FIELD_CORPUS` |
-| A-PF-02 ✅ | `AIVIDEO_RELEASE_TEAM_ID=ABCDE12345 workers/.venv/bin/python3 tools/check_readiness.py` | Phải **thất bại** vì app ký ad-hoc (kiểm P1-22) |
-| A-PF-03 ✅ | `workers/.venv/bin/python3 tools/package_review.py /tmp/review.zip; echo $?` | Hiện tại luôn `0` — **fail case**: đổi 1 test sang FAIL rồi chạy lại phải trả ≠ 0 (P0-05) |
-| A-PF-04 ✅ | Xoá `build/reports/swift_s12_s15_records.jsonl` → `package_review.py` | S12–S15 phải là NOT_RUN, **không** DONE (P0-05) |
+| A-PF-01 ✅ | `workers/.venv/bin/python3 tools/check_readiness.py; echo $?` | **exit 2** với blocker `UNVERIFIED_INPUT_REQUIRES_SIGNED_FIELD_CORPUS` và `APP_BUNDLE_NOT_VERIFIED` (app ký ad-hoc) |
+| A-PF-02 ✅ | `AIVIDEO_RELEASE_TEAM_ID=ABCDE12345 workers/.venv/bin/python3 tools/check_readiness.py` | vẫn fail: app ad-hoc ≠ Team ID (P1-22) |
+| A-PF-03 ✅ | `--allow-adhoc` | `… --allow-adhoc` ⇒ hết blocker chữ ký nhưng **vẫn** NO-GO vì corpus |
+| A-PF-04 ✅ | `python3 tools/package_review.py /tmp/review.zip; echo $?` | xanh ⇒ 0; xoá 1 record PASS ⇒ DONE biến NOT_RUN và **exit ≠ 0** (P0-05/P1-41) |
 
----
+## PHẦN 3 — TẦNG B: ĐƯỜNG WORKER (JSON-RPC trực tiếp)
 
-## PHẦN 3 — TẦNG B: KIỂM THỬ ĐƯỜNG WORKER (JSON-RPC trực tiếp)
+Gọi qua `workers/src/aivideo_workers/main.py` với stdio; hoặc dùng `WorkerClient` trong test.
 
-Mẫu gọi RPC (stdin JSON Lines, một dòng/một request):
+### 3.1. Wire protocol
 
-```bash
-cd /Users/phuthanh/APP_CaNhan/AIVideo
-RPC() { printf '%s\n' "$1" | PYTHONPATH=workers/src workers/.venv/bin/python3 -m aivideo_workers.main_g2; }
-```
-
-### 3.1. Hệ thống & wire protocol
-
-| ID | Request | Kỳ vọng |
+| ID | Thao tác | Kỳ vọng |
 |---|---|---|
-| B-01 ✅ | `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` | `capabilities` liệt kê 32 method; policy rõ |
-| B-02 ✅ | `system.ping` | `pong` cùng `id` |
-| B-03 ✅ | JSON hỏng (thiếu `jsonrpc`) | trả `-32600 INVALID_REQUEST`, không crash |
-| B-04 ✅ | Request > 1 MiB | `-32010` / `messageTooLarge`; worker **vẫn sống** với request kế tiếp |
-| B-05 ✅ | Method không tồn tại | `-32601 METHOD_NOT_FOUND` |
-| B-06 ✅ | In ra stderr bất kỳ (`print(..., file=sys.stderr)`) | Không làm hỏng stdout JSONL |
+| B-01 ✅ | `initialize` | `protocolVersion 2.0`, `capabilities` gồm 42 method |
+| B-02 ✅ | Method lạ | lỗi `-32601` |
+| B-03 ✅ | Params sai kiểu | lỗi `-32602`, không có stack trace ra stdout |
+| B-04 ✅ | Log lẫn stdout | stdout chỉ có JSON; log đi stderr |
+| B-05 ✅ | `ping` | `pong` + `server_time` |
 
 ### 3.2. Media & phân tích G2
 
-| ID | Request / thao tác | Kỳ vọng | Bắt lỗi |
-|---|---|---|---|
-| B-10 ✅ | `media.probe` với `fixtures/corpus/trip-holdout-01-dalat.mp4` | width 1080, height 1920, fps `24/1`, 36 frame | — |
-| B-11 ✅ | `media.probe` với file không tồn tại / file rác | lỗi rõ ràng, không traceback | — |
-| B-12 ✅ | `g2.analyze_source` với `_inspector_fn` | `INSPECTOR_OVERRIDE_FORBIDDEN` | — |
-| B-13 ✅ | `g2.analyze_source` với `checkpoint_dir=/tmp/g2probe` rồi xem file checkpoint | **Kỳ vọng đúng: RPC phải TỪ CHỐI `checkpoint_dir`.** Hiện tại nó chấp nhận ⇒ **FAIL (P0-01)** | Đọc `checkpoint_dir` |
-| B-14 ✅ | Tự viết `g2_ckpt_<rev>_<sha>.json` có `raw_observations` bịa, gọi lại với model bị chặn | **Phải trả `blocked_model_unavailable`, không được trả observation.** Hiện tại trả `completed` ⇒ **FAIL (P0-01)** | Resume path |
-| B-15 🕐 ✅ | `g2.analyze_source` trên `/tmp/spec-medium.mp4` | `status=completed`; `window_coverage` phải < 1.0 nếu sample 2/16 (kỳ vọng mới); ledger ghi `denominator_source` | P0-02, P1-26 |
-| B-16 ✅ | Như B-15 nhưng `vision_sample_count=2` và `=16` | Response phải echo `vision_sample_count`; coverage phải khác nhau đúng tỉ lệ | — |
-| B-17 🕐 ✅ | `g2.analyze_source` trên `/tmp/spec-long.mp4` | Không được `RESULT_TOO_LARGE`; nếu có ⇒ **FAIL (P1-25)** | payload size |
-| B-18 ✅ | Đo decode mỗi cửa sổ | `ffmpeg -benchmark -i clip -vf "select='eq(n,0)'" …` vs thêm `-frames:v 1`: thời gian phải ~1/30. Nếu chênh lớn ⇒ **P1-24** | |
-| B-19 ✅ | `g2.analyze_source` trên `/tmp/vfr.mkv` (thiếu nb_frames/duration) | Ledger phải ghi `denominator_source=index_fallback` và **từ chối** chấm coverage (P1-26) | |
-| B-20 ✅ | Clip không audio | `audio_branch_state` phải là `no_audio`; clip **có** audio chưa ASR phải là `audio_present_untranscribed`, **không** `no_speech` (P1-27) | |
-| B-21 ✅ | `models_root_dir=/tmp/fake` tự tạo + manifest khớp size | **Phải từ chối** (P1-12) | |
-| B-22 ✅ | `AIVIDEO_VLM_MAX_PIXELS=abc` | fail-closed ngay, không dùng default ngầm | |
-| B-23 ✅ | Kill worker giữa chừng khi đang decode | Không còn tiến trình `ffmpeg` mồ côi: `pgrep -fl ffmpeg` | |
+| ID | Thao tác | Kỳ vọng |
+|---|---|---|
+| B-10 ✅ | `media.probe` với `fixtures/smoke/trip-holdout-01-dalat.mp4` | 1080×1920, `24/1`, 36 frame |
+| B-11 ✅ | `g2.analyze_source` với `checkpoint_dir=/tmp/x` | **từ chối** `CHECKPOINT_DIR_FORBIDDEN` (P0-01) |
+| B-12 ✅ | `g2.analyze_source` với `models_root_dir` hoặc env `AIVIDEO_MODELS_ROOT` | **từ chối** `MODELS_ROOT_FORBIDDEN` **trước** mọi IO (P1-12) |
+| B-13 ✅ | Tự viết `g2_ckpt_*.json` có `raw_observations` bịa, gọi lại khi model bị chặn | `blocked_model_unavailable`, **không** trả observation (P0-01) |
+| B-14 ✅ | Checkpoint có provenance lạ | `CHECKPOINT_PROVENANCE_MISMATCH` (P0-01) |
+| B-15 🕐 ✅ | Phân tích clip dài, sample 2/16 | `window_coverage` < 1.0; ledger có `denominator_source`; `VISUAL_SAMPLE_OUTSIDE_WINDOW` không xuất hiện (P0-02, P1-26) |
+| B-16 ✅ | Clip không có `nb_frames` và `duration` | `COVERAGE_DENOMINATOR_UNAVAILABLE` — **không** lấy index làm mẫu số (P1-26) |
+| B-17 🕐 ✅ | Clip dài (7200 cửa sổ) | response **không** vượt 1 MiB; `raw_observations_truncated=true` + `raw_observations_next_offset`; gọi `g2.get_raw_observations` để lấy trang tiếp (P1-25) |
+| B-18 ✅ | `g2.get_raw_observations` với `source_revision_id="../../etc/passwd"` | `ValueError` — không nhận đường dẫn (P1-25) |
+| B-19 ✅ | Inspector trả 1/16 frame | `window_frame_coverage = 1/16`, `truncation_detected=false`; trả 0 frame ⇒ raise (P0-02) |
+| B-20 ✅ | Audio | không audio ⇒ `no_audio`; **có audio nhưng chưa ASR** ⇒ `audio_present_untranscribed` (P1-27); `asr_status=not_configured` |
 
-### 3.3. G3 — kịch bản, thoại, cut, đề xuất duyệt
+### 3.3. G3 — kịch bản, thoại, cut, duyệt
 
-| ID | Request | Kỳ vọng | Bắt lỗi |
-|---|---|---|---|
-| B-30 ✅ | `g3.story.generate` với `claims: []` | `blocked_no_eligible_claims` | — |
-| B-31 ✅ | Claim `origin=visual_model` thiếu `evidence_sha256` | Vào `excluded` với lý do rõ | — |
-| B-32 ✅ | Claim không có `review_status` | **Phải** bị loại hoặc `needs_review`; hiện có thể lọt (P2) | — |
-| B-33 ✅ | `script_engine="llm"` với 3 claim thật | `script_engine` trả trong `candidates[].script_engine`; nếu fallback deterministic phải có cờ cảnh báo (P2) | P0-08 |
-| B-34 ✅ | Text LLM có địa danh không có trong claim ("Đà Lạt", "buổi sáng") | **Phải** bị `faithfulness` chặn; hiện chỉ kiểm chữ số ⇒ **FAIL (P1-37)** | — |
-| B-35 ✅ | `g3.voice.trial` khi `AIVIDEO_TTS_MODEL_DIR` trống | `blocked_tts_runtime_unavailable` | — |
-| B-36 ✅ | `g3.voice.trial` khi **import** kokoro hỏng (`sys.modules['kokoro_vietnamese']=None`) | **Phải** `blocked_tts_runtime_unavailable`; hiện ⇒ `-32603` (P1-36) | — |
-| B-37 ✅ | `g3.voice.phrases` 3 câu | `combined_wav` + offset theo sample thật; lệch tổng mẫu ⇒ ValueError | — |
-| B-38 ✅ | `g3.cut.search` **không** truyền voice verification | `BLOCKED_VOICE_NOT_VERIFIED` | P0-07 |
-| B-39 🕐 ✅ | `g3.cut.search` 8 beat × 64 option, `beam_width=8`, `node_budget=5000`, `forward_check=true` | Wall-clock phải **tỉ lệ** với `node_budget`; chênh nhiều bậc ⇒ P1-35 | |
-| B-40 ✅ | `g3.cut.search` (`shot_id` hỗn hợp int/str) | Phải trả lỗi nghiệp vụ, không `-32603` (P2) | |
-| B-41 ✅ | `g3.cut.stage` với `script_revision_id="rev-01"` không tồn tại | Phải `blocked_*` rõ (UI không được gửi — P1-46) | |
-| B-42 ✅ | `g3.approval.propose` thiếu `cut_publication_id` | `blocked_cut_not_published_by_core` | — |
-| B-43 ✅ | `g3.approval.propose` với manifest đúng | `ready_for_core_reverification_not_approved` + `manifest_sha256` 64 hex | — |
-| B-44 ✅ | `g3.metrics.script_ready` | Phải trả `DESCRIPTIVE_PASS_NOT_GATE_EVIDENCE` khi không có nhãn người | — |
+| ID | Thao tác | Kỳ vọng |
+|---|---|---|
+| B-30 ✅ | `g3.voice.trial` khi chưa nghe WAV | `voice_review_status="unverified"` (P0-07) |
+| B-31 ✅ | `g3.cut.search` với `voice_review_status="unverified"` | tách biệt `verified` / `unverified` trong kết quả, không trộn (P0-07) |
+| B-32 ✅ | `eligible_claims` khi thiếu scope revalidation | lý do `missing_scope_revalidation`, **không** mặc định "hoàn tất" (P0-09) |
+| B-33 ✅ | LLM narration không có provenance đầy đủ | từ chối (P0-08): cần `voice_text_origin`, `voice_text_sha256`, `voice_prompt_sha256`, `voice_model_id` |
+| B-34 ✅ | LLM thêm địa danh không có trong claim ("Đà Lạt") | `STORY_INVENTED_ENTITY` (P1-37) |
+| B-35 ✅ | LLM thêm chữ số không có trong claim | `STORY_INVENTED_FACT` |
+| B-36 ✅ | TTS runtime chết ở `infer` | `blocked_tts_runtime_unavailable`, **không** `-32603` (P1-36) |
+| B-37 ✅ | `g3.cut.search` với `node_budget=500` và `forward_check=true` | dừng trong vài giây; `nodes_visited` ≤ ngân sách × hằng số nhỏ (P1-35) |
+| B-38 ✅ | `stage_cut_plan` với `script_revision_id` không tồn tại | từ chối; UI còn chặn nút Stage khi chưa lưu revision (P1-46) |
 
 ### 3.4. Render native & G4/G5
 
-| ID | Request | Kỳ vọng | Bắt lỗi |
-|---|---|---|---|
-| B-50 ✅ | `video.render.native` 1 beat 48 frame | MP4 1080×1920, `nb_read_frames=48`, có `.srt` | — |
-| B-51 ✅ | Caption chứa `Anh nói: "Đừng 'thử' \\ ; %{pts}"` | Burn đúng nguyên văn, `%{pts}` **không** bị expand (P1-33) | |
-| B-52 ✅ | `beat_id="x;nullsrc"` hoặc staging root `/tmp/aiv;b` | Phải bị từ chối trước khi gọi ffmpeg (P1-33) | |
-| B-53 ✅ | `g4.render.native` với `allow_overwrite=true` | **Phải bị từ chối** (P1-15) | |
-| B-54 ✅ | `g4.render.native` với `staging_root=/tmp/evil` | **Phải bị từ chối** nếu ngoài managed root (P1-15) | |
-| B-55 ✅ | `g4.render.native` có crossfade | Receipt `total_frames` phải bằng `plan.total_frames` sau khi cộng overlap; nếu lệch ⇒ guard G4 chặn (P1-31) | |
-| B-56 ✅ | Photo insert ngoài root | `blocked` (đã có test) | — |
-| B-57 ✅ | `g4.preview.technical_qc` với hash sai | FAIL | — |
-| B-58 ✅ | `g5.render.native_4k` với `AIVIDEO_G5_SIMULATE_FREE_BYTES=999` | **Phải bị bỏ qua trong production** (P1-17) | |
-| B-59 ✅ | `g5.fault.run_suite` khi worker chạy ở thư mục không có DB | Phải **không** PASS khi môi trường thật không tồn tại (P0-04) | |
-| B-60 ✅ | `g5.release.manifest` rồi sửa `version` trong output rồi tính lại hash | Phải phát hiện chữ ký sai; hiện chưa ký (P1-18) | |
-| B-61 ✅ | `g5.eval.e0_e1_accounting` với `runs` bịa + manifest thật đã ký | **Không được** `CERTIFIED` (P1-19) | |
-| B-62 ✅ | `g5.preferences.manage` với `profile_path=/tmp/footprint.json` | **Phải bị chặn** (P1-16) | |
-| B-63 ✅ | `g5.capability.evaluate` với `registry_path` | Bị chặn (đã có test) | — |
+| ID | Thao tác | Kỳ vọng |
+|---|---|---|
+| B-50 ✅ | `video.render.native` không có `AIVIDEO_RENDER_ROOT` | `blocked_untrusted_render_root` |
+| B-51 ✅ | Gửi `staging_root` / `allow_overwrite` | `STAGING_ROOT_FORBIDDEN` / `OVERWRITE_FORBIDDEN` (P1-15) |
+| B-52 ✅ | Caption chứa `%{pts}` | burn nguyên văn (`expansion=none`) (P1-33) |
+| B-53 ✅ | `beat_id` chứa `;` hoặc newline | `INVALID_BEAT_ID` / `UNSAFE_FILTERGRAPH_TOKEN` (P1-33) |
+| B-54 ✅ | `plan.total_frames` khác độ dài render | `PLAN_FRAME_MISMATCH` (P1-31) |
+| B-55 ✅ | Photo insert thiếu `photo_sha256` / `photo_publication_id` | `PHOTO_HASH_REQUIRED` / `PHOTO_PUBLICATION_REQUIRED` (P1-32) |
+| B-56 ✅ | Photo insert có bytes khác hash đã khai | `PHOTO_BYTES_CHANGED` (P1-32) |
+| B-57 ✅ | `g4.preview.technical_qc` với hash sai | FAIL |
+| B-58 ✅ | Receipt native có `plan_sha256` khác plan đã duyệt | `G5S22Guard.verifyNativeReceipt` throw (P0-03) |
+| B-59 ✅ | `.drp` chỉ là ZIP thường (không có `Project.db`) | `DRP_STRUCTURE_INVALID` (P1-23) |
+| B-60 ✅ | `g5.fault.run_suite` trên DB canonical | tự báo `SELF_TEST_ONLY`, manifest ghi `certified=false` (P0-04) |
 
----
+## PHẦN 4 — TẦNG C: ỨNG DỤNG macOS
 
-## PHẦN 4 — TẦNG C: KIỂM THỬ ỨNG DỤNG macOS (thao tác tay)
-
-Khởi động: mở `apps/macos/build/AIVideo.app` (hoặc bản đã cài `/Applications/AIVideo.app`).
-
-### 4.1. Khởi động & worker
+### 4.1. Khởi động
 
 | ID | Thao tác | Kỳ vọng |
 |---|---|---|
-| C-01 🖐 | Mở app | Sidebar 4 bước chính + nhóm "Nâng cao & Chẩn đoán" thu gọn; status bar "Worker sẵn sàng" |
-| C-02 🖐 | ⇧⌘R (Worker ▸ Khởi động lại) bấm **2 lần liên tiếp cực nhanh** | Chỉ 1 worker mới; `pgrep -fl aivideo_workers` ra đúng 1 PID (P1-48) |
-| C-03 🖐 | Tạm đổi tên `workers/.venv` → mở app | Banner nêu **rõ** thiếu Python + nút "Kết nối lại worker"; không vòng quay vô hạn |
-| C-04 🖐 | Menu Worker ▸ "Kiểm tra lại model", "Làm mới DaVinci Resolve" | Cập nhật trạng thái; không treo UI |
+| C-01 🖐 | Mở app từ Finder | kết nối worker; không phụ thuộc PATH terminal |
+| C-02 🖐 | Bấm "Kết nối lại" 2 lần thật nhanh | **chỉ** một worker được spawn (P1-48) |
+| C-03 🖐 | Lần đầu mở app | trạng thái là "CSDL đã mở · chưa có thay đổi nào được lưu", **không** "Đã lưu" (P2-08) |
+| C-04 🖐 | Chưa ghi gì, xem prompt model | ô prompt **rỗng** (không còn prompt demo) (P2-09) |
 
-### 4.2. BƯỚC 1 — Tư liệu nguồn
+### 4.2. BƯỚC 1 — Tư liệu
 
 | ID | Thao tác | Kỳ vọng |
 |---|---|---|
-| C-10 🖐 | ⌘O chọn thư mục có 2 video + 1 ảnh | Pill "2 video / 1 ảnh"; danh sách có segmented filter + ô tìm kiếm |
-| C-11 🖐 | ⇧⌘O chọn 1 file lẻ | Chỉ file đó vào danh sách; inspector hiện thông số |
-| C-12 🖐 | Chọn video A rồi **đổi ngay** sang video B, quan sát 1 giây đầu | Thông số phải là "Đang probe…", **không** hiện duration của A (P1-52) |
-| C-13 🖐 | "Thông tin cho người viết kịch bản": để trống → "Lưu dữ kiện" | Nút disabled |
-| C-14 🖐 | Nhập cặp đôi + loại lễ + "cảnh bắt buộc" → chờ 0,9 s | Trạng thái "Đã lưu · rev…"; thoát app, mở lại → form khôi phục |
-| C-15 🖐 | Chọn **ảnh** trong danh sách | Inspector hiện preview ảnh + kích thước; nút "Phân tích video này" disabled |
-| C-16 🖐 | Bấm "Phân tích video này" khi chưa chọn video | Bị chặn hoặc báo lỗi rõ |
-| C-17 🖐 | "Phân tích toàn bộ (N video)" với 2 video | Chạy tuần tự, hiện "video thứ k/N + tên" |
-| C-18 🖐 | Double-click "Phân tích toàn bộ" | Không có 2 batch song song |
-| C-19 🖐 | Trong batch 5 video, bấm "Dừng" ở video 3 | Phải dừng **trong ≤ 2 s**; hiện chạy hết video 3 ⇒ **FAIL (P1-47)** |
-| C-20 🖐 | Sau khi phân tích xong | Tab "Kiểm chứng G2": coverage %, số observation, claim, review |
-| C-21 🖐 | Kéo cửa sổ nhỏ lại 800×600 | Không tràn/cắt nút; inspector cuộn được |
-| C-22 🖐 | Chuyển Light/Dark Mode | Màu theo semantic color; teal `#0F766E` / `#5EEAD4` |
+| C-10 🖐 | Chọn folder có video + ảnh | đếm đúng, inspector hiện thông số **của file đang chọn** (P1-52) |
+| C-11 🖐 | Kéo nhanh qua nhiều file | inspector không hiện số của file trước |
+| C-12 🖐 | Phân tích 1 video | coverage + review items ghi vào DB; đọc lại thấy |
 
 ### 4.3. BƯỚC 2 — Kịch bản & Thoại
 
 | ID | Thao tác | Kỳ vọng |
 |---|---|---|
-| C-30 🖐 | Chưa có claim nào → "Tạo kịch bản từ Claim đã kiểm chứng" | **Disabled** (hiện có thể bật — P2) |
-| C-31 🖐 | Xác nhận 1 fact ở màn "Dữ liệu & Backup" → quay lại Bước 2 | Claim hiện trong picker |
-| C-32 🖐 | Chọn claim → "Tạo kịch bản…" | Candidate JSON hiện; nếu `script_engine` fallback phải có cảnh báo |
-| C-33 🖐 | Bấm "Tìm Cut hợp lệ (SEARCH-v1)" **trước khi** nghe WAV | Hiện tại gửi `voice_review_status="verified"` ⇒ **FAIL (P0-07)**; đúng ra phải bị chặn |
-| C-34 🖐 | "Tạo WAV 48 kHz" | WAV thật; SHA-256 tự điền; nghe được trong Finder |
-| C-35 🖐 | "Ghi nhận Speech Review vào SQLite" | `g3_voice_reviews` có dòng mới (xem §6.3) |
-| C-36 🖐 | "Stage Cut Plan để S08 Publish" **trước khi lưu revision** | **Phải disabled**; hiện gửi `rev-01` (P1-46) |
-| C-37 🖐 | "Kiểm tra Manifest đề nghị duyệt" | Manifest + `ready_for_core_reverification_not_approved`; hiển thị `scope revision` thật, **không** `scope-g2-main` (P0-09) |
-| C-38 🖐 | Sửa 1 câu → "Sửa câu & tạo revision" → "Lưu revision bất biến vào SQLite" → "Duyệt kịch bản (S19 Guard)" | Phải duyệt được khi narration hợp lệ |
-| C-39 🖐 | **Đường quan trọng**: dùng LLM (`script_engine=llm`) rồi duyệt | Hiện bị chặn "Narration differs from validated claim" ⇒ **FAIL (P0-08)**; đây là đường mặc định |
-| C-40 🖐 | Chỉnh narration ở bước duyệt để khớp claim | Phải duyệt được (kiểm fail-closed đúng chỗ) |
-| C-41 🖐 | Duyệt xong, sang Bước 3 | Cue phải là câu thoại thật, **không** "Nội dung đã duyệt" (P1-53) |
+| C-20 🖐 | Lưu brief | trạng thái chuyển `saving → saved` và **chỉ** khi đã có revision |
+| C-21 🖐 | Sửa brief khi đang gõ tiếng Việt (IME) | không mất ký tự; sync hoãn tới khi commit |
+| C-22 🖐 | Sinh kịch bản rồi Stage cut khi **chưa** lưu revision | nút Stage bị vô hiệu (P1-46) |
 
 ### 4.4. BƯỚC 3 — Preview
 
 | ID | Thao tác | Kỳ vọng |
 |---|---|---|
-| C-50 🖐 | "Thêm Cue" (sửa text, thời điểm) | Danh sách cue cập nhật |
-| C-51 🖐 | "Stage + S08 Publish Beat này" với mỗi beat | Asset JSON xuất hiện; `artifact_publications` có `g4_*` COMMITTED |
-| C-52 🖐 | "S08 Publish Preview MP4" trước khi render | Disabled |
-| C-53 🖐 | "Dựng & render tự động" (native 1080p) | MP4 1080×1920 @24, có `.srt`, receipt JSON cạnh file |
-| C-54 🖐 | **Đồng thời**: đang chạy "Phân tích toàn bộ" ở Bước 1, sang Bước 3 bấm render native | **Phải bị chặn bởi governor**; hiện không xin lease ⇒ **FAIL (P1-11)** |
-| C-55 🖐 | Phát preview trong app | Đúng nội dung, phụ đề burn đúng thời điểm (sai ⇒ P1-49) |
-| C-56 🖐 | "S21: Phê duyệt Preview" với notes < 12 ký tự | Disabled |
-| C-57 🖐 | Phê duyệt hợp lệ | `g4_preview_approvals` có dòng; Bước 4 mở khoá |
+| C-30 🖐 | Render preview native | tiến trình có; nếu đang có lease heavy khác ⇒ báo "giải phóng lease" |
+| C-31 🖐 | Mở editor phụ đề khi chưa có cue | **trống**, không có câu "Nội dung đã duyệt" (P1-53) |
+| C-32 🖐 | Bấm Dừng khi đang phân tích batch 5 video | dừng trong ≤ 2 s, kể cả video đang chạy (P1-47) |
 
 ### 4.5. BƯỚC 4 — Final 4K
 
 | ID | Thao tác | Kỳ vọng |
 |---|---|---|
-| C-60 🖐 | Chưa duyệt G3/G4 gì → bấm Stage/Download 4K | **Phải chặn** (P2) |
-| C-61 🖐 | "Dựng & render 4K" | MP4 2160×3840 @24, receipt `native-render-receipt-v1`; đo bằng `ffprobe` ở §6.4 |
-| C-62 🖐 | Sau khi xong, đọc card thành công | Nhãn phải khớp nhánh: nhánh native ghi **receipt**, không ghi ".drp đã niêm phong" (P1-50) |
-| C-63 🖐 | "Mở trong DaVinci Resolve" ở nhánh native | Phải đổi tên nút thành "Mở receipt"; hiện mở file JSON (P1-50) |
-| C-64 🖐 | "S22: Phê duyệt Final 4K" | Ghi `g5_final_approvals`; sửa file MP4 sau đó thì duyệt lại phải fail |
-| C-65 🖐 | "Làm video mới (Về Bước 1)" | Phải reset toàn bộ trạng thái đã duyệt (P1-51) — hiện giữ nguyên |
-| C-66 🖐 | Chạy quy trình lần 2 với video thứ hai trong cùng ngày | Không được kế thừa "đã duyệt" của video 1 |
+| C-40 🖐 | Duyệt final khi chưa xem | bị chặn (cần `watchedVideoAndListenedToAudio`) |
+| C-41 🖐 | Dùng nhánh native (không có `.drp`) | UI **không** nói ".drp đã niêm phong" (P1-50) |
+| C-42 🖐 | Bấm "Làm video mới" sau khi đã duyệt | toàn bộ approval/cue/publication bị xoá (P1-51) |
+| C-43 🖐 | Trường `mappingPublicationId` không có G2 mapping | để trống, **không** tự điền id G3/G4 (P1-54) |
 
-### 4.6. Màn hình chẩn đoán
-
-| ID | Màn | Thao tác | Kỳ vọng |
-|---|---|---|---|
-| C-70 🖐 | Kiểm chứng G2 | mở | Coverage, claim, review item đồng bộ với DB |
-| C-71 🖐 | Dữ liệu & Backup | "Tạo bản sao lưu" | Bundle + manifest; restore thử vào thư mục mới rồi mở artifact (kiểm P1-06) |
-| C-72 🖐 | Model local | "Kiểm tra" | Model ID + verification; không báo "verified" khi weights bị sửa (P1-12) |
-| C-73 🖐 | DaVinci Resolve | mở khi Resolve đóng | Trạng thái "không kết nối", không treo, không báo Mã lỗi nội bộ |
-| C-74 🖐 | Năng lực hệ thống | mở | Đọc từ `initialize`, không hard-code |
-| C-75 🖐 | G5 ▸ "S25: Tiêm lỗi" | bấm | Hiện kết quả; nhãn phải là self-test, không phải bằng chứng release (P0-04) |
-
-### 4.7. Accessibility
+### 4.6. Accessibility
 
 | ID | Thao tác | Kỳ vọng |
 |---|---|---|
-| C-80 🖐 | Bật VoiceOver, Tab qua toolbar + các hàng asset | Mọi nút icon-only đọc được tên (P2) |
-| C-81 🖐 | Tăng text size hệ thống | Chữ log G3/G4 phải giãn theo (hiện fix 9–11 pt) |
-| C-82 🖐 | Chỉ dùng bàn phím | ⌘O, ⇧⌘O, ⇧⌘R, ⌘↩ hoạt động; focus ring hiện rõ |
+| C-80 🖐 | VoiceOver qua toolbar + hàng asset | mọi nút icon-only đọc được tên (P2-11) |
+| C-81 🖐 | Tăng text size | không còn chữ < 11 pt để tràn/không đọc được |
+| C-82 🖐 | Chỉ bàn phím | ⌘O, ⇧⌘O, ⇧⌘R, ⌘↩ hoạt động; focus ring rõ |
 
----
+## PHẦN 5 — TẦNG D: BẢO VỆ CHỐNG TÁI PHÁT
 
-## PHẦN 5 — TẦNG D: KIỂM THỬ HỒI QUY & BẢO MẬT (viết test mới, chạy được)
+Mỗi case đã có test thật trong repo. Cột "Test" là nơi nó sống — nếu ai xoá, đó là hồi quy.
 
-Mỗi case dưới đây là một test **phải viết** vì hiện chưa có. Chúng được thiết kế để *đỏ trên cây hiện tại* và *xanh sau khi sửa*.
+| ID | Bảo vệ điều gì | Test |
+|---|---|---|
+| D-01 | Checkpoint không bịa được; resume cần provenance | `tests/test_g2_checkpoint_integrity.py` |
+| D-02 | Audit coverage không tautology | `tests/test_g2_window_audit.py` |
+| D-03 | Job chỉ SUCCEEDED khi đủ publication | `tests/test_p1_job_completion.swift` |
+| D-04 | Governor reclaim lease khi worker chết | `tests/test_s07_scheduler_fencing.swift` |
+| D-05 | Receipt ràng buộc plan/G3/G4/publication | `tests/test_g5_native_provenance.swift`, `tests/test_g5_receipt_binding.swift` |
+| D-06 | Release manifest ký Ed25519 | `tests/test_p1_remaining.py::TestReleaseManifestIsSigned` |
+| D-07 | Schema artifact khớp code | `tests/test_p1_harness_honesty.py::TestArtifactSchemaMatchesCode` |
+| D-08 | Mọi suite Swift phát JSONL | `build/reports/swift_*_records.jsonl` (≥ 13 file) |
+| D-09 | Banner đếm thật | `aivideoReportBanner` trong mọi suite Swift |
+| D-10 | BLOCKED ⇒ exit 2 | `tests/test_resolve_spike.swift` |
+| D-11 | LLM narration duyệt được khi có provenance | `tests/test_g3_llm_approval.swift` |
+| D-12 | UI không tự khai "verified" | `tests/test_p1_remaining.py::test_mapping_publication_is_a_g2_mapping`, `test_p1_evidence_trust.py` |
+| D-13 | Scope revision phải thật | `tests/test_g3_story_scope.swift` |
+| D-14 | `package_review` chặn khi thiếu record | `tests/test_package_review_gate.py` |
+| D-15 | Fault suite trung thực | `tests/test_g5_fault_suite_honesty.py` |
+| D-16 | Escape filtergraph | `tests/test_p1_renderer_safety.py` |
+| D-17 | Không có "verified" tự khai cho model | `tests/test_p1_evidence_trust.py::TestModelIdentityIsPinned` |
+| D-18 | P2: bundle 1 worker, glob source, không handler im lặng, a11y, schema 1 nguồn | `tests/test_p2_debt.py` |
+| D-19 | Không hash/ffprobe trong write transaction (S22, G4/S21, `commitPublication`) | `tests/test_p1_hashing_outside_transaction.swift` (5/5), `test_g4_approval.swift::S21.P1_02B` |
+| D-20 | Transition phải đến từ plan đã duyệt | `tests/test_p31_transition_source.py` (4/4) |
 
-| ID | Mục tiêu | Cách viết | Kỳ vọng hiện tại |
-|---|---|---|---|
-| D-01 | Checkpoint không bịa được | `tests/test_g2_checkpoint_integrity.py`: gọi `handle_g2_analyze_source` với `checkpoint_dir` ⇒ assert raise/`INVALID_PARAMS`; gọi lại không có inspector ⇒ `blocked_model_unavailable` | **FAIL** (P0-01) |
-| D-02 | Audit không tautology | `tests/test_g2_window_audit.py`: inspector trả 1/16 frame ⇒ `window_coverage == 1/16`, `truncation_detected == False`, và đổi thành trả 0 frame ⇒ raise | **FAIL** (P0-02) |
-| D-03 | Job SUCCEEDED chỉ khi đủ artifact | Mở rộng `test_s08_publication_reconciler.swift`: 2 publication, commit 1 ⇒ `job.status == running` | **FAIL** (P1-01) |
-| D-04 | Lease reclaim | Mở rộng `test_s07_scheduler_fencing.swift`: acquire(pid) → release(confirmedDead:false) → acquire lần 2 phải `granted` (sau TTL) | **FAIL** (P1-03) |
-| D-05 | Receipt ràng buộc plan | `test_g5_native_provenance.swift`: receipt với `plan_sha256` khác plan ⇒ `verifyFinalProvenance` throw | **FAIL** (P0-03) |
-| D-06 | Release manifest có chữ ký | Thay 1 byte manifest ⇒ verify fail | **FAIL** (P1-18) |
-| D-07 | Schema artifact khớp code | `tests/test_artifact_schema_matches_db.py`: mọi `artifact_type` ghi bởi code+test phải nằm trong enum schema | **FAIL** (P1-42) |
-| D-08 | Mọi suite Swift phát JSONL | Thêm `TEST_RECORDS_OUT` cho 5 suite còn thiếu và assert số record > 0 | **FAIL** (P1-39) |
-| D-09 | Banner đếm thật | Sửa 1 assertion thành no-op ⇒ banner phải báo `5/6` và exit ≠ 0 | **FAIL** (P1-38) |
-| D-10 | BLOCKED ⇒ exit ≠ 0 | `test_resolve_spike` khi Resolve đóng | **FAIL** (P1-40) |
-| D-11 | LLM narration duyệt được | `test_g3_llm_rewrite_to_approval.swift` (hoặc Python E2E) | **FAIL** (P0-08) |
-| D-12 | UI không tự khai verified | Test Swift parse `buildAndSendCutSearch` payload ⇒ không chứa `"verified"` hằng số | **FAIL** (P0-07) |
-| D-13 | Scope revision thật | `test_g3_story_request`: `scopeRevisionId` rỗng/không tồn tại ⇒ throw | **FAIL** (P0-09) |
-| D-14 | `package_review` chặn | Xoá 1 record ⇒ DONE biến NOT_RUN, exit ≠ 0 | **FAIL** (P0-05) |
-| D-15 | Fault suite trung thực | `g5.fault.run_suite` với DB thật hỏng ⇒ không PASS | **FAIL** (P0-04) |
-| D-16 | Escape filtergraph | Caption `%{pts}` burn nguyên văn; `beat_id` có `;` bị từ chối | **FAIL nếu chưa fix** (P1-33) |
+## PHẦN 6 — KIỂM TRA BẰNG CHỨNG SAU MỖI LẦN CHẠY
 
----
-
-## PHẦN 6 — KIỂM TRA BẰNG CHỨNG (sau mỗi lần chạy)
-
-### 6.1. Bằng chứng test
+### 6.1. Test
 
 ```bash
-cd /Users/phuthanh/APP_CaNhan/AIVideo
 python3 - <<'PY'
 import json
-s=json.load(open('build/reports/python_test_summary.json'))
+s = json.load(open('build/reports/python_test_summary.json'))
 print(s['tests_run'], s['failures'], s['errors'], s['skipped'], s['successful'])
 PY
-ls build/reports/*.jsonl | wc -l            # kỳ vọng ≥ 13 (thêm 5 nếu D-08 xong)
-grep -L '"status": "PASS"' build/reports/*.jsonl   # phải rỗng sau khi D-08 xong
+ls build/reports/*.jsonl | wc -l                    # kỳ vọng ≥ 13
+grep -L '"status": "PASS"' build/reports/*.jsonl    # phải rỗng (trừ record NOT_RUN có chủ đích)
 ```
 
-### 6.2. Bằng chứng model
+### 6.2. Model
 
 ```bash
-workers/.venv/bin/python3 tools/check_readiness.py; echo "exit=$?"
-shasum -a 256 "$HOME/Library/Application Support/AIVideo/Models/visual_analysis_primary/model.safetensors"
-# so với pin trong tools/setup_s11_model.py
+workers/.venv/bin/python3 tools/check_readiness.py | head -20
+workers/.venv/bin/python3 - <<'PY'
+from aivideo_workers.model_installation import inspect_model_installation
+status = inspect_model_installation(deep=True)
+print(status["state"], status.get("pinned_weights_sha256"))
+PY
 ```
 
-### 6.3. Bằng chứng DB (chỉ đọc!)
+`state` phải là `verified` **và** `pinned_weights_sha256` khớp
+`tools/setup_s11_model.py::S11_PINNED_WEIGHTS_SHA256`.
 
-> Theo bất biến của dự án: **không bao giờ ghi DB từ sqlite3 hay Python**. Chỉ dùng `-readonly`.
+### 6.3. DB (chỉ đọc)
 
 ```bash
-DB="$HOME/Library/Application Support/AIVideo/Projects/DefaultG1Project/project_store.db"   # nguồn: AppState.swift:885
-sqlite3 -readonly "$DB" "PRAGMA user_version; SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"   # đã đo trong phiên đánh giá: user_version=0, 23 bảng (P1-10)
-sqlite3 -readonly "$DB" "SELECT state, COUNT(*) FROM artifact_publications GROUP BY state;"
-sqlite3 -readonly "$DB" "SELECT status, COUNT(*) FROM jobs GROUP BY status;"
-sqlite3 -readonly "$DB" "SELECT * FROM g3_voice_reviews ORDER BY rowid DESC LIMIT 3;"
-sqlite3 -readonly "$DB" "SELECT * FROM g3_approvals; SELECT * FROM g4_preview_approvals; SELECT * FROM g5_final_approvals;"
-sqlite3 -readonly "$DB" "SELECT canonical_path FROM artifact_publications WHERE state='COMMITTED' LIMIT 5;"   # kiểm path còn tồn tại
+DB="$HOME/Library/Application Support/AIVideo"
+find "$DB" -name "project_store.db" | head -1
+sqlite3 -readonly "<db>" "PRAGMA user_version; PRAGMA journal_mode; SELECT COUNT(*) FROM artifact_publications WHERE state='COMMITTED';"
+sqlite3 -readonly "<db>" "SELECT status, COUNT(*) FROM jobs GROUP BY status;"
 ```
 
-### 6.4. Bằng chứng render
+`user_version` phải là `2` (canonical schema), `journal_mode` = `wal`. Không có job nào
+`RUNNING` sau khi app thoát sạch.
+
+### 6.4. Render
 
 ```bash
-OUT=/path/to/final.mp4   # MP4 do app render, xem output trên màn Final 4K
-ffprobe -v error -count_frames -select_streams v:0 \
-  -show_entries stream=nb_read_frames,width,height,avg_frame_rate,pix_fmt,color_primaries,color_transfer \
-  -of json "$OUT" | python3 -c "import json,sys;d=json.load(sys.stdin)['streams'][0];print(d)"
-ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUT"
-ffmpeg -hide_banner -nostdin -i "$OUT" -vn -af volumedetect -f null - 2>&1 | grep -E "mean_volume|max_volume"
-shasum -a 256 "$OUT"; cat "${OUT%.mp4}.receipt.json" | python3 -m json.tool | head -30
+ffprobe -v error -count_frames -show_streams -show_format -of json <file.mp4> | \
+  python3 -c "import json,sys; d=json.load(sys.stdin); v=[s for s in d['streams'] if s['codec_type']=='video'][0]; print(v['width'], v['height'], v['avg_frame_rate'], v.get('nb_read_frames'))"
 ```
-Kỳ vọng: `width=2160, height=3840, avg_frame_rate=24/1`, `nb_read_frames` = Σ frames − Σ overlap (khớp receipt), `|duration − frames/24| ≤ 1/24 + 0.03`, `max_volume < -0.01 dB`, `output.sha256` trong receipt = `shasum` thật.
 
-### 6.5. Bằng chứng file system
+Final: `2160 3840 24/1`; preview: `1080 1920 24/1`; số frame khớp `plan.total_frames`.
+
+### 6.5. Tệp & bundle
 
 ```bash
-ls -la "$HOME/Library/Application Support/AIVideo/Renders"       # MP4 + .srt + receipt
-find ~/Library/Application\ Support/AIVideo/Renders -name "*.receipt.json" | head
-pgrep -fl aivideo_workers        # 1 PID khi app mở
-pgrep -fl ffmpeg                 # 0 khi app không render
+find apps/macos/build/AIVideo.app -name "main.py" -path "*aivideo_workers*" | wc -l   # 1
+du -sh apps/macos/build/AIVideo.app/Contents/Resources/Workers                          # ~736K
+codesign --verify --deep --strict apps/macos/build/AIVideo.app && echo "signature ok (ad-hoc)"
 ```
-
----
 
 ## PHẦN 7 — MẪU GHI KẾT QUẢ
 
-| ID | Mô tả | Trạng thái | Bằng chứng (lệnh + output/log/screenshot) | Ghi chú |
-|---|---|---|---|---|
-| A-PY-01 | Python suite | PASS | `tests_run=279 …` (`python_test_summary.json`) | 4 NOT_RUN = 4 test model thật |
-| C-19 | Dừng batch | FAIL | video 3 chạy hết 5 phút sau khi bấm Dừng | P1-47 |
-| B-13 | `checkpoint_dir` qua RPC | FAIL | RPC chấp nhận, ghi `/tmp/g2probe/g2_ckpt_*.json` | P0-01 |
+```
+| ID | Trạng thái | Thời điểm | Bằng chứng | Ghi chú |
+|----|-----------|-----------|------------|---------|
+| A-PY-01 | PASS | 2026-11-11T09:57+07 | build/reports/python_test_summary.json: 424/0/0/4 | heavy: 0 skip |
+| B-17 | PASS | … | record jsonl + offset | truncation đúng |
+| C-32 | NOT_RUN | … | — | chưa thao tác tay |
+```
 
-**Trạng thái hợp lệ:** `PASS` · `FAIL` · `BLOCKED` (thiếu môi trường) · `NOT_RUN` (không chạy, phải ghi lý do).
-**Không dùng** `PASS` cho case chưa từng thấy nó FAIL.
+## PHẦN 8 — THỨ TỰ ƯU TIÊN
 
----
+1. `A-PF-01` (preflight) — biết ngay máy có đủ điều kiện không.
+2. `A-PY-01`, `A-SW-01/02`, `A-ALL-01` — nền tảng.
+3. `B-11…B-20` — đường phân tích (nơi từng có lỗi nặng nhất).
+4. `B-30…B-38` → `B-50…B-60` — kịch bản/thoại rồi render.
+5. `C-*` — chỉ sau khi B xanh; C cần người ngồi trước máy.
+6. `D-*` — không chạy tay: chúng là test trong repo, chạy cùng ma trận.
 
-## PHẦN 8 — THỨ TỰ ƯU TIÊN (chạy cái gì trước)
+## PHẦN 9 — ĐIỀU KHÔNG ĐƯỢC LÀM KHI KIỂM THỬ
 
-| Đợt | Case | Thời gian | Mục đích |
-|---|---|---|---|
-| 1 | A-PY-01, A-PY-02, A-SW-01..17, A-ALL-02, A-PF-01 | ~5 phút | Chốt hiện trạng tĩnh |
-| 2 | B-13, B-14, D-01, D-02 | ~30 phút | Chứng minh "bịa" còn/không |
-| 3 | C-30..C-41 | ~1–2 giờ | Toàn bộ Bước 2 (chỗ gãy nặng nhất: P0-08) |
-| 4 | C-10..C-20 | ~1 giờ | Bước 1 (batch, brief, dừng) |
-| 5 | C-50..C-66 + §6.4 | ~2 giờ | Render & duyệt 3/4 |
-| 6 | A-PF-03, A-PF-04, B-59, B-60, B-61 | ~1 giờ | Chuỗi release |
-| 7 | C-80..C-82, B-51, B-52 | ~1 giờ | Accessibility & an toàn render |
+- Không sửa DB bằng `sqlite3` ghi (chỉ `-readonly`): Swift core là writer duy nhất.
+- Không export `AIVIDEO_CONTRACTS_DIR` / `AIVIDEO_MODELS_ROOT` để "cho qua" — đó là lỗi bị chặn.
+- Không coi `fixtures/smoke` là bằng chứng chất lượng: nó là title card tổng hợp.
+- Không dùng `git stash` trên file untracked (đã từng làm mất bản sửa).
+- Không `rm -rf` đường dẫn "legacy" trong bundle: APFS không phân biệt hoa/thường.
+- **Không chạy `./tools/build_macos_app.sh` song song với `./tools/run_tests.sh`.** Ma trận tự
+  build app ở khối [4/5]; script build `rm -rf` bundle trước khi dựng lại, nên một lần build
+  chen ngang sẽ làm codesign báo `apps/macos/build/AIVideo.app: No such file or directory`.
+  Đã gặp thật một lần; chạy lại khi không có tiến trình khác là xanh.

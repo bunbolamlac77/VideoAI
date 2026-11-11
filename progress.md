@@ -616,3 +616,77 @@ không phải hình dạng code hiện tại.
 - `./tools/run_tests.sh`: **EXIT=0**, 23 khối.
 - `./tools/build_macos_app.sh`: BUILD SUCCESSFUL; bundle 736 KB (một bản worker).
 - `swiftc -typecheck -warnings-as-errors` trên `packages/AIVideoCore/Sources`: sạch.
+
+---
+
+## Phiên 2026-11-11 (tài liệu) — đồng bộ lại toàn bộ MD với cây hiện tại
+
+Mục tiêu: không còn file Markdown nào nói sai về dự án sau khi vá P0/P1/P2.
+
+### Viết lại (nội dung mới, không phải bản cũ sửa vài chữ)
+- `README.md` + `docs/README.md` (byte-identical): trạng thái thật, cách chạy, kiến trúc bất biến,
+  42 RPC method, danh sách tham số **bị từ chối**, env app cấp, bằng chứng, gate status, việc còn mở.
+- `docs/PLAYBOOK_KIEM_THU.md`: viết lại theo code đã sửa — các case từng "FAIL vì lỗi" nay là test
+  hồi quy; thêm tầng D (18 nhóm) trỏ đúng file test; thêm §9 "điều không được làm khi kiểm thử".
+- `AGENTS.md`, `GEMINI.md`: bất biến + quy tắc kỹ thuật mới (một nguồn schema, không băm trong
+  write transaction, `note_suppressed`, glob source, SDK, không tự khai trạng thái, a11y ≥11pt).
+- `PROGRESS_TRACKER.md`: bảng gate theo trạng thái thật (G2/G5 IN_REVIEW) + 27 bước + điều kiện đóng.
+- `task_plan.md`: goal/bảng gate/việc còn mở mới; giữ nguyên nhật ký công việc phía dưới.
+
+### Sửa tại chỗ (đúng một chỗ sai, không viết lại lịch sử)
+- `REVIEW_SUMMARY.md`: banner lịch sử; G2 DONE→IN_REVIEW; G5 HMAC→Ed25519; VieNeu→Kokoro;
+  Whisper ghi rõ "chưa nối"; audio state `no_speech`→`audio_present_untranscribed`.
+- `AUDIT_AND_FIXES_REPORT.md`: banner lịch sử + sửa tên model.
+- `docs/QA-KEY-PROVISIONING.md`: `fixtures/corpus`→`fixtures/smoke` + mục "trạng thái hiện tại"
+  (nói rõ `inspect_model_installation` chỉ kiểm bộ artifact vision, nên `story_synthesis`/
+  `tts_kokoro_vi` trả `incomplete` là bình thường).
+- `docs/ECC_DEBUG_TASKLIST.md`: banner + sửa điểm sai (`AIVIDEO_CONTRACTS_DIR` nay bị từ chối).
+- `findings.md`: thêm mục "Trạng thái hiện tại" thay thế các con số cũ (189 PASS, VieNeu, corpus path…).
+- `README_AUTOMATION.md`: đánh dấu **ARCHIVED — DO NOT ENABLE** vì add-on đó gửi mã nguồn tới
+  OpenAI API, vi phạm bất biến 100% local.
+- `docs/01`–`docs/11`: thêm header "trạng thái triển khai" trỏ về README/audit; sửa 3 chỗ về
+  trạng thái audio. Bản gốc ở repo root được sync byte-identical (test canh).
+
+### Gắn banner "ảnh chụp lịch sử" (37 file)
+`reports/progress/S*.md`, `docs/audit_20261110/*.md`, `docs/AUDIT_20261110_*`,
+`docs/BRIDGE_SMOKE_TEST_20261109.md`, `docs/superpowers/plans/*`, `.last_chatgpt_response.md`,
+`.night_instruction.md` — giữ nội dung, thêm đầu trang nói rõ không phải trạng thái hiện tại và
+chỉ ra nguồn đúng.
+
+### Đổi test để không "làm khó" lịch sử
+`tests/test_p2_debt.py::test_review_summary_points_at_the_report` trước đây cấm tuyệt đối chuỗi
+"189 PASS"; nay chỉ cấm khi nó xuất hiện **ngoài** banner lịch sử — vì banner cần nhắc lại con số
+cũ để nói nó đã cũ. Doc-sync test vẫn xanh 29/29.
+
+### Bằng chứng
+- `workers/.venv/bin/python3 tools/run_python_tests.py`: 424 run · 0 fail · 0 error · 4 NOT_RUN.
+- `workers/.venv/bin/python3 tests/test_p2_debt.py`: 29/29 OK (bao gồm doc byte-identical + không
+  còn claim "189 PASS" hiện hành).
+- `./tools/build_macos_app.sh` + `./tools/run_tests.sh`: chạy lại sau khi sửa tài liệu.
+
+### Ghi chú vận hành phát hiện trong phiên này
+Lần chạy ma trận đầu tiên sau khi sửa tài liệu fail ở khối [4/5] với
+`apps/macos/build/AIVideo.app: No such file or directory`, vì tôi chạy
+`./tools/build_macos_app.sh` **song song** với `./tools/run_tests.sh`; script build `rm -rf`
+bundle trước khi dựng lại nên codesign thấy đường dẫn biến mất. Chạy lại khi không có tiến
+trình khác: **exit 0, 23 khối**. Đã thêm cảnh báo vào `docs/PLAYBOOK_KIEM_THU.md` §9.
+
+### Áp dụng P1-02 (nhánh G4/`commitPublication`) và P1-31 — xác minh lại
+Trong cây làm việc đã có sẵn bản áp dụng của hai mục này (theo `docs/PROPOSED_REMAINING_FIXES.md`).
+Tôi kiểm chứng thay vì mặc định là đúng:
+
+- `G4S21Guard.readApprovedInputs` + `verifyS21Evidence` + `measureFile` đọc/ băm trên connection
+  `READONLY`; `approveG4Preview` gọi chúng **trước** `g4Transaction`, và trong transaction chỉ
+  `G4SQL.row` + INSERT. Test cấu trúc `S21.P1_02B` chặn `fileSHA(`/`verifyBindings(`/`verifyPreview(`
+  quay lại trong closure.
+- `commitPublication`: băm trước `withTransaction`, trong transaction so `preExpectedHash` +
+  `preMeasuredHash` và kiểm size từ metadata. Test `commitPublication does not hash inside withTransaction`.
+- `native_render.build_beats_from_plan`: `TRANSITION_NOT_IN_PLAN` / `TRANSITION_MISMATCH` /
+  `INVALID_PLAN_TRANSITIONS`; plan không khai transition ⇒ hard-cut.
+
+Bằng chứng chạy lại sau khi đồng bộ tài liệu:
+- `tests/test_p31_transition_source.py`: 4/4 OK
+- `tests/test_p1_hashing_outside_transaction.swift`: 5/5 PASS
+- `test_g4_approval.swift`: có `PASS S21.P1_02B`
+- `tools/run_python_tests.py`: **428 run · 0 fail · 0 error · 4 NOT_RUN** (428 record khớp summary)
+- `./tools/run_tests.sh`: **exit 0 · 23 khối** (một lần fail trước đó là do tôi chạy build song song)

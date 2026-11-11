@@ -1,5 +1,10 @@
 # 08 — Hợp đồng chất lượng phân tích và kiểm chứng có thể kiểm toán
 
+> **Trạng thái triển khai (2026-11-11):** đặc tả dưới đây đã được hiện thực hoá và kiểm thử;
+> xem [`README.md`](../README.md) để biết trạng thái hiện tại và
+> [`AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`](AUDIT_20261111_REVIEW_AND_TEST_PLAN.md) cho các
+> lỗi đã đóng. Chỗ nào đặc tả khác mã đang chạy, mã + audit là nguồn đúng.
+
 **Phiên bản:** 3.1 · **Ngày:** 06/11/2026.  
 **Trạng thái:** đặc tả sẵn sàng để triển khai; chưa phải chứng nhận độ chính xác, độ ổn định hoặc khả năng chạy trên M1 Pro 16 GB.
 

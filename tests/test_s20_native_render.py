@@ -311,6 +311,7 @@ class TestPlanRendering(unittest.TestCase):
             work = Path(tmp).resolve()
             text_a, text_b = "Tôi qua đèo Prenn.", "Hai bên là rừng thông."
             plan = self._plan(work, text_a=text_a, text_b=text_b)
+            plan["transitions"] = {"b2": {"type": "crossfade", "frames": 8}}
             result = render_from_plan(
                 plan,
                 {
