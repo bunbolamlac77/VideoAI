@@ -281,18 +281,55 @@ def cmd_install(force: bool = False) -> int:
         return 1
 
 
+def cmd_seal() -> int:
+    """Seal an existing, hash-verified install by writing its manifest.
+
+    Some installs come from a plain `snapshot_download` (correct weights, no
+    manifest). Re-downloading 3 GB just to obtain the manifest is wasteful, so
+    this action hashes what is on disk, compares the weights against the pinned
+    upstream SHA-256, and only then writes `.aivideo-install-manifest.json`.
+    If any byte differs from the pin it refuses and writes nothing.
+    """
+    target = get_target_dir()
+    try:
+        for name in REQUIRED_FILES:
+            path = target / name
+            if not path.is_file():
+                raise ModelValidationError(f"MISSING_ARTIFACT: {name}")
+        hashes = _verify_required_files(target, enforce_pinned_sha=True)
+        manifest = {
+            "schema": "aivideo-s11-install-v2",
+            "model_id": S11_MODEL_ID,
+            "revision": S11_REVISION,
+            "pinned_weights_sha256": S11_PINNED_WEIGHTS_SHA256,
+            "files": hashes,
+        }
+        _atomic_write_manifest(target, manifest)
+        verify_model_directory(target, require_manifest=True)
+        print(f"Sealed existing verified install: {target}")
+        print(f"  weights_sha256={S11_PINNED_WEIGHTS_SHA256}")
+        return 0
+    except Exception as exc:
+        print(f"SEAL_BLOCKED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Pinned offline S11 model installer")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--plan", action="store_true")
     group.add_argument("--install", action="store_true")
     group.add_argument("--verify", action="store_true")
+    group.add_argument("--seal", action="store_true",
+                       help="Write the manifest for an existing install whose weights match the pin")
     parser.add_argument("--force", action="store_true", help="Replace existing model only after fully verifying staging")
     args = parser.parse_args()
     if args.plan:
         return cmd_plan()
     if args.install:
         return cmd_install(force=args.force)
+    if args.seal:
+        return cmd_seal()
     return cmd_verify()
 
 

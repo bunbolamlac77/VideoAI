@@ -34,9 +34,8 @@ struct G5ConsoleView: View {
     @State private var beatId: String = "beat-01"
     @State private var mappingPublicationId: String = ""
     @State private var fontPath: String = ""
-    @State private var cues: [G5CaptionCue] = [
-        G5CaptionCue(text: "Nội dung đã duyệt", startFrame: 0, endFrame: 24)
-    ]
+    // (P1-53) no placeholder; cues come from the approved G3 beats
+    @State private var cues: [G5CaptionCue] = []
     @State private var pacingStyle: String = "balanced"
     @State private var reviewed4K = false
     @State private var reviewNotes = ""
@@ -45,7 +44,7 @@ struct G5ConsoleView: View {
     // Raw JSON bindings maintained for full backward compatibility
     @State private var stage4KJSON = """
     {"beat_id":"beat-01","mapping_publication_id":"","font_path":"",
-     "cues":[{"text":"Nội dung đã duyệt","start_frame":0,"end_frame":24}]}
+     "cues":[]}
     """
     @State private var asset4KJSON = "[]"
     @State private var resultText = "Chưa chạy G5"
@@ -70,22 +69,13 @@ struct G5ConsoleView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // Notice Banner
-            HStack(spacing: 10) {
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.title2)
-                    .foregroundStyle(Color.brandTeal)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("G5 — Final 4K Render 2160×3840 24fps & Release Audit")
-                        .font(.headline)
-                    Text("S22 yêu cầu phê duyệt S19 G3 và S21 G4 đang hoạt động. Bản xuất 4K MP4 và .drp commit qua S08.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.brandTeal.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            // Scope rule, one line (the page header already carries the title).
+            Label(
+                "S22 cần phê duyệt S19 (G3) và S21 (G4) đang hiệu lực; bản 4K và .drp commit qua S08.",
+                systemImage: "checkmark.shield"
+            )
+            .font(.system(size: 11, design: .rounded))
+            .foregroundStyle(.secondary)
 
             // Form 1: 4K Beat Staging & S08 Publish
             Card(title: "1. Soạn và Stage 4K Captioned Beat (2160×3840 24fps)", symbol: "tv.and.mediabox") {
@@ -229,10 +219,18 @@ struct G5ConsoleView: View {
                             HStack(spacing: 6) {
                                 if isBusy { ProgressView().controlSize(.small) }
                                 Image(systemName: "wand.and.stars")
-                                Text("Dựng & Render 4K Tự Động")
+                                Text("Dựng & render 4K")
                             }
                         }
                         .buttonStyle(.borderedProminent)
+                        .disabled(isBusy || !state.isWorkerConnected || publishedAssets.isEmpty)
+
+                        Button {
+                            Task { await runNativeFinal() }
+                        } label: {
+                            Label("Render native 4K", systemImage: "bolt.horizontal.circle")
+                        }
+                        .buttonStyle(.bordered)
                         .disabled(isBusy || !state.isWorkerConnected || publishedAssets.isEmpty)
 
                         Button {
@@ -335,7 +333,13 @@ struct G5ConsoleView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Chúc mừng! Video POV Final 4K đã sẵn sàng!")
                                     .font(.title3.weight(.bold))
-                                Text("Bản xuất 2160×3840 @ 24fps chuẩn Rec.709 và timeline .drp đã được niêm phong hoàn tất.")
+                                // (P1-50) Only a Resolve handoff has a .drp; the ffmpeg-native
+                                // branch publishes a render receipt instead.
+                                Text(
+                                    drpPath.hasSuffix(".drp")
+                                        ? "Bản xuất 2160×3840 @ 24fps chuẩn Rec.709 và timeline .drp đã được niêm phong."
+                                        : "Bản xuất 2160×3840 @ 24fps chuẩn Rec.709 đã hoàn tất kèm receipt render native (không có timeline .drp)."
+                                )
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -375,7 +379,9 @@ struct G5ConsoleView: View {
                             Spacer()
 
                             Button("Làm video mới (Về Bước 1)") {
-                                state.navigateToSection(.media)
+                                // (P1-51) Resetting navigation alone let the next video inherit
+                                // the previous approvals, cues and publication ids.
+                                state.resetWorkflowForNewVideo()
                             }
                             .buttonStyle(.borderless)
                         }
@@ -398,13 +404,17 @@ struct G5ConsoleView: View {
                     Button {
                         Task { await runSimpleRPC("g5.fault.run_suite") }
                     } label: {
-                        Label("S25: Tiêm lỗi (Fault Injection)", systemImage: "exclamationmark.triangle")
+                        Label("S25: Chạy self-test tiêm lỗi", systemImage: "exclamationmark.triangle")
                     }
                     .buttonStyle(.bordered)
                     .disabled(isBusy || !state.isWorkerConnected)
+                    .help(
+                        "Self-test chạy trong thư mục tạm — KHÔNG phải bằng chứng S25 và không "
+                        + "bao giờ đánh dấu S25 đã đạt."
+                    )
 
                     Button {
-                        Task { await runSimpleRPC("g5.release.manifest") }
+                        Task { await sendReleaseManifest() }
                     } label: {
                         Label("S26: Xuất Release Manifest", systemImage: "doc.text")
                     }
@@ -455,10 +465,10 @@ struct G5ConsoleView: View {
 
     private func autoPopulateFromStateAndStore() {
         if mappingPublicationId.isEmpty {
-            if !state.latestG4PublicationId.isEmpty {
-                mappingPublicationId = state.latestG4PublicationId
-            } else if !state.latestG3PublicationId.isEmpty {
-                mappingPublicationId = state.latestG3PublicationId
+            // (P1-54) Only a `g2_source_mapping` publication may fill this field. The old
+            // fallbacks put a G3 or G4 id there, which the guard can only reject later.
+            if !state.latestG2MappingPublicationId.isEmpty {
+                mappingPublicationId = state.latestG2MappingPublicationId
             }
             Task {
                 if let store = state.projectStore, let proj = state.g1Project {
@@ -472,7 +482,8 @@ struct G5ConsoleView: View {
                 }
             }
         }
-        if !state.cachedCaptionCues.isEmpty && (cues.count <= 1 && (cues.first?.text == "Nội dung đã duyệt" || cues.isEmpty)) {
+        // (P1-53) Fill only from the approved script, and only while the editor is empty.
+        if !state.cachedCaptionCues.isEmpty && cues.isEmpty {
             cues = state.cachedCaptionCues.map { G5CaptionCue(text: $0.text, startFrame: $0.startFrame, endFrame: $0.endFrame) }
         }
         if let firstBeat = state.cachedStoryBeats.first {
@@ -480,12 +491,63 @@ struct G5ConsoleView: View {
         }
     }
 
+    /// Phase 1b: render the approved 4K plan with ffmpeg instead of Resolve.
+    /// Captions stay as approved (either re-burned from cues or kept from the
+    /// pre-burned 1080p segments); the receipt replaces the `.drp` as the
+    /// provenance artifact the S22 guard verifies.
+    private func runNativeFinal() async {
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            var params = try requestParams()
+            var voiceTexts: [String: G3JSONValue] = [:]
+            for beat in state.cachedStoryBeats {
+                voiceTexts[beat.beatId] = .string(beat.voiceText)
+            }
+            if var fields = params.fields {
+                fields["voice_texts"] = .object(voiceTexts)
+                fields["write_srt"] = .bool(true)
+                params = .object(fields)
+            }
+            let renderParams = params
+            // (P1-11) The native ffmpeg render is heavy work: take the S07 global lease for
+            // its duration so it cannot run alongside a Resolve render or model inference.
+            let response: G3JSONValue = try await ResourceGovernor.shared.withHeavyLease(
+                projectId: (try? environment().2) ?? UUID(),
+                kind: .resolveRender,
+                workerPid: state.worker.workerPid == 0 ? nil : state.worker.workerPid
+            ) {
+                try await state.worker.sendRequest(
+                    method: "g5.render.native_4k", params: renderParams, timeoutSeconds: 1800
+                )
+            }
+            resultText = response.json
+            guard response.fields?["status"]?.string == "NATIVE_FINAL_VERIFIED" else {
+                finalReceiptJSON = ""
+                finalPath = ""
+                finalSHA = ""
+                drpPath = ""
+                drpSHA = ""
+                return
+            }
+            // `approveG5Final` validates the receipt object itself, not the RPC envelope.
+            finalReceiptJSON = response.fields?["receipt"]?.json ?? ""
+            finalPath = response.fields?["final_path"]?.string ?? ""
+            finalSHA = response.fields?["final_sha256"]?.string ?? ""
+            drpPath = response.fields?["drp_path"]?.string ?? ""
+            drpSHA = response.fields?["drp_sha256"]?.string ?? ""
+            finalPubID = nil
+            drpPubID = nil
+            reviewed4K = false
+        } catch {
+            resultText = "Native 4K render blocked: \(error.localizedDescription)"
+        }
+    }
+
+    /// Phase 1c: the 1-click pipeline now renders with ffmpeg. The numbered
+    /// Resolve buttons below stay available for the legacy managed timeline.
     private func runFullFinalPipeline() async {
-        await rpc("g5.timeline.build_4k")
-        guard !resultText.contains("Lỗi") && !resultText.contains("blocked") else { return }
-        await rpc("g5.render.start_4k")
-        guard !resultText.contains("Lỗi") && !resultText.contains("blocked") else { return }
-        await rpc("g5.render.inspect_4k")
+        await runNativeFinal()
     }
 
     private func syncFormToStageJSON() {
@@ -602,7 +664,9 @@ struct G5ConsoleView: View {
             let videoPub = try await publisher.publishG4File(
                 store: store, projectId: projectID,
                 source: URL(fileURLWithPath: video),
-                artifactType: "g5_captioned_cfr_4k", expectedSHA256: videoSHA
+                artifactType: "g5_captioned_cfr_4k", expectedSHA256: videoSHA,
+                // (P1-01) 4K captioned video + conform receipt.
+                expectedPublicationCount: 2
             )
             let receiptPub = try await publisher.publishG4File(
                 store: store, projectId: projectID,
@@ -616,6 +680,11 @@ struct G5ConsoleView: View {
                 "publication_id": .string(videoPub.publicationId.uuidString),
                 "receipt_publication_id": .string(receiptPub.publicationId.uuidString),
             ]))
+            // (P1-54) remember the validated `g2_source_mapping` publication
+            if let mappingField = (try? G3JSONValue.parse(stage4KJSON))?.fields?["mapping_publication_id"]?.string,
+               mappingField.count == 36 {
+                state.latestG2MappingPublicationId = mappingField
+            }
             asset4KJSON = G3JSONValue.array(items).json
             resultText = "S08 đã commit G5 4K beat artifacts: \(beatID)"
         } catch {
@@ -634,16 +703,21 @@ struct G5ConsoleView: View {
             let mp4Pub = try await publisher.publishG4File(
                 store: store, projectId: projectID,
                 source: URL(fileURLWithPath: finalPath),
-                artifactType: "g5_final_mp4", expectedSHA256: finalSHA
+                artifactType: "g5_final_mp4", expectedSHA256: finalSHA,
+                // (P1-01) final MP4 + provenance (.drp or native receipt) = 2 artifacts.
+                expectedPublicationCount: 2
             )
+            // Provenance slot: either a Resolve .drp archive or the ffmpeg
+            // native render receipt. The S22 guard verifies whichever it finds.
+            let provenanceType = drpPath.hasSuffix(".drp") ? "g5_handoff_drp" : "g5_native_receipt"
             let drpPub = try await publisher.publishG4File(
                 store: store, projectId: projectID,
                 source: URL(fileURLWithPath: drpPath),
-                artifactType: "g5_handoff_drp", expectedSHA256: drpSHA
+                artifactType: provenanceType, expectedSHA256: drpSHA
             )
             finalPubID = mp4Pub.publicationId
             drpPubID = drpPub.publicationId
-            resultText = "S08 đã commit Final 4K MP4 (\(mp4Pub.publicationId)) và DRP (\(drpPub.publicationId))"
+            resultText = "S08 đã commit Final 4K MP4 (\(mp4Pub.publicationId)) và provenance (\(drpPub.publicationId))"
         } catch {
             resultText = "Final 4K publication blocked: \(error.localizedDescription)"
         }
@@ -716,6 +790,27 @@ struct G5ConsoleView: View {
             resultText = response.json
         } catch {
             resultText = "Preferences RPC failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// S26 asks the worker for the release handover manifest. It names the gate the
+    /// evidence describes, so a manifest can never be read as "S25 passed" by accident:
+    /// this UI has no real S25 fault run to offer, so it explicitly reports `no_real_fault_run`.
+    private func sendReleaseManifest() async {
+        let fields: [String: G3JSONValue] = [
+            "s25_evidence_status": .string("no_real_fault_run_available"),
+        ]
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let response: G3JSONValue = try await state.worker.sendRequest(
+                method: "g5.release.manifest",
+                params: G3JSONValue.object(fields),
+                timeoutSeconds: 120
+            )
+            resultText = response.json
+        } catch {
+            resultText = "Lỗi: \(error.localizedDescription)"
         }
     }
 

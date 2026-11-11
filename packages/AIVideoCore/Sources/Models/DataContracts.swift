@@ -291,6 +291,10 @@ public struct ArtifactPublicationRecord: Codable, Sendable, Identifiable, Equata
     public private(set) var canonicalPath: String?
     public private(set) var sha256Hash: String?
     public private(set) var byteSize: Int?
+    /// (P1-01) How many artifacts this logical job will publish. A job may only be marked
+    /// SUCCEEDED once this many publications are COMMITTED; a job with a multi-artifact
+    /// expectation (e.g. MP4 + DRP + receipt) used to be declared successful after the first.
+    public let expectedPublicationCount: Int
     public let createdAt: Date
     public private(set) var updatedAt: Date
 
@@ -306,6 +310,7 @@ public struct ArtifactPublicationRecord: Codable, Sendable, Identifiable, Equata
         case canonicalPath = "canonical_path"
         case sha256Hash = "sha256_hash"
         case byteSize = "byte_size"
+        case expectedPublicationCount = "expected_publication_count"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -322,6 +327,7 @@ public struct ArtifactPublicationRecord: Codable, Sendable, Identifiable, Equata
         canonicalPath: String? = nil,
         sha256Hash: String? = nil,
         byteSize: Int? = nil,
+        expectedPublicationCount: Int = 1,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -336,6 +342,7 @@ public struct ArtifactPublicationRecord: Codable, Sendable, Identifiable, Equata
         self.canonicalPath = canonicalPath
         self.sha256Hash = sha256Hash
         self.byteSize = byteSize
+        self.expectedPublicationCount = max(1, expectedPublicationCount)
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -353,6 +360,10 @@ public struct ArtifactPublicationRecord: Codable, Sendable, Identifiable, Equata
         self.canonicalPath = try container.decodeIfPresent(String.self, forKey: .canonicalPath)
         self.sha256Hash = try container.decodeIfPresent(String.self, forKey: .sha256Hash)
         self.byteSize = try container.decodeIfPresent(Int.self, forKey: .byteSize)
+        // Legacy rows predate the field and describe single-artifact jobs.
+        self.expectedPublicationCount = max(
+            1, try container.decodeIfPresent(Int.self, forKey: .expectedPublicationCount) ?? 1
+        )
 
         let createdStr = try container.decode(String.self, forKey: .createdAt)
         guard let parsedCreated = DataContractDateFormatters.date(from: createdStr) else {
@@ -380,6 +391,7 @@ public struct ArtifactPublicationRecord: Codable, Sendable, Identifiable, Equata
         try container.encodeIfPresent(canonicalPath, forKey: .canonicalPath)
         try container.encodeIfPresent(sha256Hash, forKey: .sha256Hash)
         try container.encodeIfPresent(byteSize, forKey: .byteSize)
+        try container.encode(expectedPublicationCount, forKey: .expectedPublicationCount)
         try container.encode(DataContractDateFormatters.string(from: createdAt), forKey: .createdAt)
         try container.encode(DataContractDateFormatters.string(from: updatedAt), forKey: .updatedAt)
     }

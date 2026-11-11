@@ -31,7 +31,7 @@ from aivideo_workers.g5_release_audit import (
     validate_signed_field_manifest,
 )
 
-_CORPUS = _ROOT / "fixtures" / "corpus"
+_CORPUS = _ROOT / "fixtures" / "smoke"
 _LABELS = _CORPUS / "labels"
 _MANIFEST = _ROOT / "reports" / "evidence" / "signed_field_corpus_manifest.json"
 

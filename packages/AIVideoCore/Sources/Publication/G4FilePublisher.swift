@@ -11,7 +11,9 @@ extension ArtifactPublicationService {
         projectId: UUID,
         source: URL,
         artifactType: String,
-        expectedSHA256: String
+        expectedSHA256: String,
+        // (P1-01) Artifacts this job owes (e.g. captioned video + conform receipt = 2).
+        expectedPublicationCount: Int = 1
     ) async throws -> ArtifactPublicationRecord {
         guard ["g4_captioned_cfr", "g4_conform_receipt", "g4_preview_mp4"].contains(artifactType),
               expectedSHA256.count == 64, expectedSHA256.allSatisfy({ $0.isHexDigit }) else {
@@ -33,11 +35,21 @@ extension ArtifactPublicationService {
                 "G4 publication source is outside app-owned staging/render directory"
             )
         }
-        let job = try await store.enqueueJob(
-            projectId: projectId,
-            jobType: "publish_\(artifactType)",
-            inputFingerprint: expectedSHA256
-        )
+        // (P1-01) One logical publication job publishes all of its artifacts: the caller's
+        // expectation travels on the first row, and the job is only SUCCEEDED once every
+        // artifact of that job is COMMITTED.
+        let job: JobRecord
+        if let openJob = try await store.openPublicationJob(
+            projectId: projectId, inputFingerprint: expectedSHA256
+        ) {
+            job = openJob
+        } else {
+            job = try await store.enqueueJob(
+                projectId: projectId,
+                jobType: "publish_\(artifactType)",
+                inputFingerprint: expectedSHA256
+            )
+        }
         let attempt = try await store.allocateAttempt(
             jobId: job.jobId,
             workerSessionId: "g4-publisher-\(UUID().uuidString)"
@@ -51,7 +63,8 @@ extension ArtifactPublicationService {
             attemptId: attempt.attemptId,
             fencingToken: attempt.fencingToken,
             artifactType: artifactType,
-            tempPath: temp.path
+            tempPath: temp.path,
+            expectedPublicationCount: expectedPublicationCount
         )
         let input = try FileHandle(forReadingFrom: canonicalSource)
         guard FileManager.default.createFile(atPath: temp.path, contents: nil) else {

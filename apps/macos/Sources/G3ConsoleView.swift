@@ -1,5 +1,5 @@
 // G3ConsoleView.swift — Gate G3 (S16..S19) Dedicated Form Console.
-// Story Generation, Revision, VieNeu-TTS Voice Trial, SEARCH-v1 Cut Search & Canonical Approval.
+// Story Generation, Revision, Kokoro-Vietnamese TTS Voice Trial, SEARCH-v1 Cut Search & Canonical Approval.
 // Approval is always committed by ProjectStore actor, never the Python worker.
 
 import Foundation
@@ -101,6 +101,9 @@ struct G3BeatItem: Identifiable, Hashable {
     var beatId: String
     var voiceText: String
     var claimId: String?
+    /// (P1-49) Measured length of this beat's narration WAV. Cue timing is derived from it;
+    /// a nil value means the WAV was not synthesised yet and no cue may claim a duration.
+    var voiceSamples: Int?
 }
 
 @MainActor
@@ -108,8 +111,10 @@ struct G3ConsoleView: View {
     @ObservedObject var state: AppState
 
     // S16 Story Form State
-    @State private var scopeRevisionId: String = "scope-g2-main"
-    @State private var storyTopic: String = "Chuyến đi thực tế"
+    // (P0-09) No fabricated default: when empty, the builder derives the scope from the
+    // selected claim's own source_revision_id instead of a constant that exists nowhere.
+    @State private var scopeRevisionId: String = ""
+    @State private var storyTopic: String = ""
     @State private var storyTone: String = "pov_tu_nhien"
     @State private var targetSeconds: Int = 30
     @State private var selectedClaimId: UUID?
@@ -123,6 +128,10 @@ struct G3ConsoleView: View {
     @State private var voicePublicationId: String = ""
     @State private var reviewedVoiceSHA256: String = ""
     @State private var listenedToVoice: Bool = false
+    // (P0-07) Reported by `g3.voice.trial`; never asserted by this view. A fresh WAV is
+    // always "unverified" until a human listens and S08 publishes it.
+    @State private var engineVoiceReviewStatus: String = "unverified"
+    @State private var engineVoiceReviewReason: String = ""
 
     // S18 Cut Search Form State
     @State private var beamWidth: Int = 4
@@ -133,7 +142,7 @@ struct G3ConsoleView: View {
     // Raw JSON bindings maintained for full backward compatibility
     @State private var storyRequest: String = """
         {
-          "evidence_scope_revision_id": "scope-g2-main",
+          "evidence_scope_revision_id": "",
           "claims": [],
           "shots": [],
           "constraints": {
@@ -158,6 +167,25 @@ struct G3ConsoleView: View {
     @State private var explicitApproval: Bool = false
     @State private var isBusy: Bool = false
     @State private var showRawJSON: Bool = false
+    /// Brief from Step 1 is applied once, so later manual edits are never overwritten.
+    @State private var didApplyBrief: Bool = false
+
+    /// Prefills the story form from the Step 1 wedding facts: topic from the
+    /// couple + ceremony, tone from the shooting style, duration from the
+    /// delivery platform. Values the user already typed are never overwritten.
+    private func applyBriefDefaultsIfNeeded() {
+        guard !didApplyBrief else { return }
+        didApplyBrief = true
+        guard let brief = state.latestScriptBrief else { return }
+        let trimmedTopic = storyTopic.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedTopic.isEmpty || trimmedTopic == "Chuyến đi thực tế" {
+            storyTopic = brief.topicLine
+        }
+        if storyTone == "pov_tu_nhien" {
+            storyTone = brief.suggestedTone
+        }
+        targetSeconds = brief.suggestedSeconds
+    }
 
     var parsedBeats: [G3BeatItem] {
         guard let obj = try? G3JSONValue.parse(draftJSON),
@@ -172,22 +200,17 @@ struct G3ConsoleView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // Header notice
-            HStack(spacing: 10) {
-                Image(systemName: "text.book.closed.fill")
-                    .font(.title2)
-                    .foregroundStyle(Color.brandTeal)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("G3 — Kịch bản, VieNeu-TTS, Cut Search & Phê duyệt S19")
-                        .font(.headline)
-                    Text("Chỉ sử dụng claim và evidence đã xác thực từ G2. Mọi kịch bản bắt buộc qua cổng S19 Approval Guard.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.brandTeal.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            // Scope rule, one line (the page header already carries the title).
+            Label(
+                "Chỉ dùng claim/evidence đã xác thực từ G2; mọi kịch bản phải qua cổng S19.",
+                systemImage: "checkmark.shield"
+            )
+            .font(.system(size: 11, design: .rounded))
+            .foregroundStyle(.secondary)
+
+            // Brief người dùng đã ghi ở Bước 1 — ngữ cảnh gốc cho kịch bản.
+            ScriptBriefSummaryCard()
+                .task { applyBriefDefaultsIfNeeded() }
 
             // Form 1: S16 — Story Generation & Revision
             Card(title: "1. S16 — Tạo kịch bản có nguồn & Hiệu chỉnh", symbol: "pencil.line") {
@@ -195,14 +218,14 @@ struct G3ConsoleView: View {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Evidence Scope Revision ID").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                            TextField("scope-g2-main", text: $scopeRevisionId)
+                            TextField("(tự lấy từ fact đã chọn)", text: $scopeRevisionId)
                                 .textFieldStyle(.roundedBorder)
                         }
                         .frame(maxWidth: 180)
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Chủ đề / Góc nhìn").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                            TextField("Chuyến đi Đà Lạt, Trải nghiệm ẩm thực...", text: $storyTopic)
+                            TextField("Linh & Minh — Lễ vu quy", text: $storyTopic)
                                 .textFieldStyle(.roundedBorder)
                         }
 
@@ -224,10 +247,12 @@ struct G3ConsoleView: View {
                                 Text("30 giây").tag(30)
                                 Text("45 giây").tag(45)
                                 Text("60 giây").tag(60)
+                                Text("90 giây").tag(90)
                             }
-                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .pickerStyle(.menu)
                         }
-                        .frame(maxWidth: 160)
+                        .frame(maxWidth: 130)
                     }
 
                     // Fact claim binding — only claims that already exist in G1 can be narrated.
@@ -348,12 +373,12 @@ struct G3ConsoleView: View {
                 }
             }
 
-            // Form 2: S17 — VieNeu-TTS Voice Synthesis & Speech Review
-            Card(title: "2. S17 — VieNeu-TTS Offline & Speech Review", symbol: "waveform") {
+            // Form 2: S17 — Kokoro-Vietnamese TTS Synthesis & Speech Review
+            Card(title: "2. S17 — Kokoro-Vietnamese Offline & Speech Review", symbol: "waveform") {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Giọng đọc VieNeu-TTS").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            Text("Giọng đọc Kokoro-Vietnamese").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                             Picker("", selection: $voiceModelChoice) {
                                 Text("Nữ miền Bắc (Chuẩn)").tag("nu_mien_bac")
                                 Text("Nam miền Bắc").tag("nam_mien_bac")
@@ -373,7 +398,7 @@ struct G3ConsoleView: View {
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Tốc độ: 1.0× (profile khoá)").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                            Text("P-TTS-VIENEU-v1 chỉ chấp nhận 1.0×; cần cài VieNeu-TTS offline, nếu thiếu worker trả blocked_tts_runtime_unavailable.")
+                            Text("P-TTS-KOKORO-VI-V1 chỉ chấp nhận 1.0×; engine Kokoro-Vietnamese (Apache-2.0) chạy offline trên CPU, nếu thiếu weights worker trả blocked_tts_runtime_unavailable.")
                                 .font(.system(size: 9))
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -448,7 +473,8 @@ struct G3ConsoleView: View {
                             buildAndSendCutStage()
                         }
                         .buttonStyle(.bordered)
-                        .disabled(isBusy || !state.isWorkerConnected)
+                        // (P1-46) a cut plan can only be staged for a stored revision
+                        .disabled(isBusy || !state.isWorkerConnected || saved == nil)
                     }
                 }
             }
@@ -591,7 +617,8 @@ struct G3ConsoleView: View {
         do {
             storyRequest = try G3StoryRequestBuilder.makeJSON(
                 claim: claim,
-                scopeRevisionId: scopeRevisionId,
+                // Empty means "use the claim's real evidence scope" (P0-09).
+                scopeRevisionId: scopeRevisionId.isEmpty ? nil : scopeRevisionId,
                 tone: storyTone,
                 targetSeconds: targetSeconds
             )
@@ -649,17 +676,22 @@ struct G3ConsoleView: View {
                 if let sha = res.fields?["wav"]?.fields?["sha256"]?.string {
                     reviewedVoiceSHA256 = sha
                 }
+                engineVoiceReviewStatus = res.fields?["voice_review_status"]?.string ?? "unverified"
+                engineVoiceReviewReason = res.fields?["voice_review_reason"]?.string ?? ""
                 voiceBeatId = voiceTrialBeatId
             }
         }
     }
 
     private func buildAndSendCutSearch() {
+        // (P0-07) Send the engine's real review state. The view never claims "verified":
+        // that only happens after the user hears the WAV and S08 publishes it.
+        let voiceVerified = engineVoiceReviewStatus == "verified"
         let obj: [String: G3JSONValue] = [
             "candidate_options": .array([]),
             "voice_samples_per_beat": .array([.integer(48000)]),
-            "voice_review_status": .string("verified"),
-            "voice_wav_published": .bool(true),
+            "voice_review_status": .string(voiceVerified ? "verified" : "unverified"),
+            "voice_wav_published": .bool(voiceVerified),
             "beam_width": .integer(beamWidth),
             "node_budget": .integer(nodeBudget),
             "forward_check": .bool(forwardCheck)
@@ -673,7 +705,9 @@ struct G3ConsoleView: View {
 
     private func buildAndSendCutStage() {
         let obj: [String: G3JSONValue] = [
-            "script_revision_id": .string(saved?.scriptRevisionId ?? "rev-01"),
+            // (P1-46) Staging needs a real stored revision; `rev-01` was invented and the
+            // worker happily staged a cut plan for a script that does not exist.
+            "script_revision_id": .string(saved?.scriptRevisionId ?? ""),
             "pacing": .string(pacingStyle)
         ]
         cutStageRequest = G3JSONValue.object(obj).json
@@ -838,6 +872,13 @@ struct G3ConsoleView: View {
 
             listenedToVoice = false
             output = "Đã ghi manual speech review cho WAV " + pub.uuidString + ". Chưa duyệt script."
+            // (P0-07) A recorded review is still not "verified" for S18 until S08 has
+            // published exactly the WAV the reviewer heard with the same SHA-256.
+            if engineVoiceReviewStatus != "verified", reviewedVoiceSHA256.count == 64 {
+                engineVoiceReviewReason = engineVoiceReviewReason.isEmpty
+                    ? "Chờ S08 publish WAV đã nghe trước khi coi là verified"
+                    : engineVoiceReviewReason
+            }
         } catch {
             output = "Speech review blocked: " + error.localizedDescription
         }

@@ -230,7 +230,10 @@ class FakeManager:
         return self.project
     def SaveProject(self): return True
     def ExportProject(self, name, dest):
+        # (P1-23) real .drp structure: project database + timeline payload
         with zipfile.ZipFile(dest, "w") as fh:
+            fh.writestr("Project.db", os.urandom(2048))
+            fh.writestr("Timelines/Timeline 1.xml", os.urandom(2048))
             fh.writestr("project.xml", os.urandom(2048))
         return True
 

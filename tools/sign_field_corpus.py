@@ -4,13 +4,13 @@ tools/sign_field_corpus.py — build and Ed25519-sign the field corpus manifest.
 
 The manifest that used to live in reports/evidence was hand-written fiction: its
 SHA-256 values were patterned placeholders and its durations (1820 s) did not match
-the 1.5 s clips in fixtures/corpus. This tool derives every field from the files on
+the 1.5 s clips in fixtures/smoke. This tool derives every field from the files on
 disk and from the label files, then signs the result with the QA private key that
 lives outside the repository (default ~/.aivideo-qa/field_qa_ed25519_private.pem).
 
 Usage:
   workers/.venv/bin/python3 tools/sign_field_corpus.py \
-      --corpus fixtures/corpus --labels fixtures/corpus/labels \
+      --corpus fixtures/smoke --labels fixtures/smoke/labels \
       --out reports/evidence/signed_field_corpus_manifest.json
   workers/.venv/bin/python3 tools/sign_field_corpus.py --verify
 """
@@ -33,7 +33,7 @@ if str(ROOT / "workers" / "src") not in sys.path:
 
 from aivideo_workers.corpus_labels import (  # noqa: E402
     label_blockers,
-    load_clip_labels,
+    load_clip_labels_with_problems,
     summarize_label_eligibility,
     validate_clip_labels,
 )
@@ -68,12 +68,12 @@ def _probe(clip: Path) -> dict:
 
 
 def build_manifest(corpus_dir: Path, labels_dir: Path) -> dict:
-    labels = load_clip_labels(labels_dir)
-    problems = validate_clip_labels(labels, corpus_dir)
+    labels, load_problems = load_clip_labels_with_problems(labels_dir)
+    problems = load_problems + validate_clip_labels(labels, corpus_dir)
     if problems:
         raise SystemExit("Label/clip mismatch:\n  " + "\n  ".join(problems))
 
-    summary = summarize_label_eligibility(labels)
+    summary = summarize_label_eligibility(labels, load_problems)
     trips = []
     for clip in sorted(corpus_dir.glob("*.mp4")):
         trip_id = clip.stem
@@ -144,14 +144,14 @@ def verify_manifest(path: Path) -> bool:
     from aivideo_workers.g5_release_audit import validate_signed_field_manifest
 
     manifest = json.loads(path.read_text(encoding="utf-8"))
-    corpus = Path(manifest.get("corpus_scope", {}).get("_corpus_dir", ROOT / "fixtures" / "corpus"))
+    corpus = Path(manifest.get("corpus_scope", {}).get("_corpus_dir", ROOT / "fixtures" / "smoke"))
     return validate_signed_field_manifest(manifest, corpus_dir=corpus)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build and sign the field corpus manifest")
-    parser.add_argument("--corpus", default=str(ROOT / "fixtures" / "corpus"))
-    parser.add_argument("--labels", default=str(ROOT / "fixtures" / "corpus" / "labels"))
+    parser.add_argument("--corpus", default=str(ROOT / "fixtures" / "smoke"))
+    parser.add_argument("--labels", default=str(ROOT / "fixtures" / "smoke" / "labels"))
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--key", default=os.environ.get("AIVIDEO_QA_PRIVATE_KEY", str(DEFAULT_KEY)))
     parser.add_argument("--verify", action="store_true", help="verify an existing manifest and exit")

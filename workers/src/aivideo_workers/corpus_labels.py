@@ -25,20 +25,37 @@ ACCEPTANCE_SOURCE_KIND = "field_footage"
 
 
 def load_clip_labels(labels_dir: str | Path) -> Dict[str, Dict[str, Any]]:
+    labels, _ = load_clip_labels_with_problems(labels_dir)
+    return labels
+
+
+def load_clip_labels_with_problems(
+    labels_dir: str | Path,
+) -> tuple[Dict[str, Dict[str, Any]], List[str]]:
+    """Load labels and report every file that could not be used.
+
+    (P1-21) A corrupt or wrongly-schemad label file used to be skipped silently, so a
+    corpus could shrink (or lose exactly the inconvenient clips) while still looking
+    eligible. Problems are now returned to the caller, which must treat them as blockers.
+    """
     directory = Path(labels_dir)
-    if not directory.is_dir():
-        return {}
     labels: Dict[str, Dict[str, Any]] = {}
+    problems: List[str] = []
+    if not directory.is_dir():
+        return labels, problems
     for path in sorted(directory.glob("*.json")):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            problems.append(f"LABEL_UNREADABLE: {path.name}: {exc}")
             continue
-        if isinstance(payload, dict) and payload.get("schema") == LABEL_SCHEMA:
-            trip_id = str(payload.get("trip_id") or path.stem)
-            payload["_label_path"] = str(path)
-            labels[trip_id] = payload
-    return labels
+        if not isinstance(payload, dict) or payload.get("schema") != LABEL_SCHEMA:
+            problems.append(f"LABEL_SCHEMA_INVALID: {path.name}")
+            continue
+        trip_id = str(payload.get("trip_id") or path.stem)
+        payload["_label_path"] = str(path)
+        labels[trip_id] = payload
+    return labels, problems
 
 
 def validate_clip_labels(
@@ -63,15 +80,24 @@ def validate_clip_labels(
     return problems
 
 
-def summarize_label_eligibility(labels: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def summarize_label_eligibility(
+    labels: Dict[str, Dict[str, Any]],
+    problems: Iterable[str] = (),
+) -> Dict[str, Any]:
     labelers = sorted({str(l.get("labeler_type", "unknown")) for l in labels.values()})
     kinds = sorted({str(l.get("source_kind", "unknown")) for l in labels.values()})
-    eligible = bool(labels) and all(
-        l.get("labeler_type") == ACCEPTANCE_LABELER
-        and l.get("source_kind") == ACCEPTANCE_SOURCE_KIND
-        for l in labels.values()
+    problem_list = list(problems)
+    eligible = (
+        bool(labels)
+        and not problem_list
+        and all(
+            l.get("labeler_type") == ACCEPTANCE_LABELER
+            and l.get("source_kind") == ACCEPTANCE_SOURCE_KIND
+            for l in labels.values()
+        )
     )
     return {
+        "label_problems": problem_list,
         "clip_count": len(labels),
         "labeler_types": labelers,
         "source_kinds": kinds,

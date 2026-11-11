@@ -84,7 +84,7 @@ def check_toolchain() -> dict[str, Any]:
     }
 
 
-def check_app_bundle() -> dict[str, Any]:
+def check_app_bundle(allow_adhoc: bool = False) -> dict[str, Any]:
     binary = APP / "Contents" / "MacOS" / "AIVideo"
     app_exists = APP.is_dir()
     bin_exists = binary.is_file()
@@ -113,6 +113,15 @@ def check_app_bundle() -> dict[str, Any]:
             if line.startswith("Signature="):
                 is_adhoc = "adhoc" in line.lower()
 
+        # (P1-22) An ad-hoc signature is not a release signature. It used to pass whenever
+        # AIVIDEO_RELEASE_TEAM_ID was unset, so "no team configured" silently meant "ready".
+        # Ad-hoc is now a blocker unless the caller explicitly asks for a development build.
+        if is_adhoc and not allow_adhoc:
+            team_id_ok = False
+            codesign_detail = (
+                "Ad-hoc signed app: a release requires an Apple Developer signature "
+                "(set AIVIDEO_RELEASE_TEAM_ID and sign with --options runtime)"
+            )
         required_team = os.environ.get("AIVIDEO_RELEASE_TEAM_ID", "").strip()
         if required_team:
             if is_adhoc or team_id != required_team or team_id == "not set":
@@ -200,6 +209,55 @@ def check_resolve_installation() -> dict[str, Any]:
     }
 
 
+SMOKE_CORPORA = (
+    ROOT / "fixtures" / "smoke",
+    ROOT / "fixtures" / "corpus",
+)
+
+
+def check_smoke_corpus_is_not_field_evidence() -> dict[str, Any]:
+    """(P0-06) The clips committed under `fixtures/smoke/` are 36-frame title cards labelled
+    by an agent. They are useful for smoke tests and are *never* field evidence, so they must
+    report themselves as such. This check fails closed if a clip is relabelled as field data
+    without being replaced by real footage."""
+    findings: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    for base in SMOKE_CORPORA:
+        labels_dir = base / "labels"
+        if not labels_dir.is_dir():
+            continue
+        for label_file in sorted(labels_dir.glob("*.json")):
+            try:
+                data = json.loads(label_file.read_text(encoding="utf-8"))
+            except Exception as exc:  # noqa: BLE001 - surfaced as a blocker
+                blockers.append(f"SMOKE_LABEL_UNREADABLE:{label_file.name}:{exc}")
+                continue
+            labeler = data.get("labeler_type")
+            source_kind = data.get("source_kind")
+            claims = data.get("claims") or []
+            events = data.get("events") or []
+            findings.append(
+                {
+                    "label": label_file.name,
+                    "labeler_type": labeler,
+                    "source_kind": source_kind,
+                    "claims": len(claims),
+                    "events": len(events),
+                }
+            )
+            if labeler == "human" or source_kind == "field_footage":
+                blockers.append(
+                    f"SMOKE_CLIP_PRESENTED_AS_FIELD:{label_file.name}:"
+                    f"labeler={labeler},source={source_kind}"
+                )
+    return {
+        "smoke_corpus_present": bool(findings),
+        "smoke_clips": findings,
+        "smoke_label_blockers": blockers,
+        "smoke_is_field_evidence": False,
+    }
+
+
 def check_field_corpus_and_certification(
     manifest_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -209,7 +267,7 @@ def check_field_corpus_and_certification(
     from aivideo_workers.g5_release_audit import validate_signed_field_manifest
 
     path = manifest_path or (ROOT / "reports" / "evidence" / "signed_field_corpus_manifest.json")
-    corpus_dir = ROOT / "fixtures" / "corpus"
+    corpus_dir = ROOT / "fixtures" / "smoke"
     signature_valid = False
     scope: dict[str, Any] = {}
     blockers: list[str] = []
@@ -257,15 +315,23 @@ def check_field_corpus_and_certification(
     }
 
 
+class _Args:
+    allow_adhoc = False
+
+
+ARGS = _Args()
+
+
 def run_preflight() -> int:
     print("=== AIVideo Release Readiness Preflight (macOS arm64) ===")
 
     toolchain = check_toolchain()
-    app_info = check_app_bundle()
+    app_info = check_app_bundle(allow_adhoc=ARGS.allow_adhoc)
     contracts = check_contracts_and_registry()
     models = check_models_presence()
     resolve = check_resolve_installation()
     field_corpus = check_field_corpus_and_certification()
+    smoke = check_smoke_corpus_is_not_field_evidence()
 
     blockers: list[str] = []
 
@@ -281,8 +347,22 @@ def run_preflight() -> int:
     if not models["visual_model_installed"]:
         blockers.append("REAL_QWEN_VL_WEIGHTS_UNVERIFIED: pinned offline model not verified (missing/corrupt/unsupported install)")
 
+    # DaVinci Resolve is OPTIONAL since Phase 1c: the G4/G5 render path defaults to
+    # the bundled ffmpeg native renderer. Resolve is only needed for the legacy
+    # managed-timeline/manual-handoff branch, so a missing install is a notice,
+    # not a release blocker.
+    warnings: list[str] = []
     if not resolve["installed"]:
-        blockers.append("DAVINCI_RESOLVE_NOT_INSTALLED: Resolve Studio must be present for the production workflow")
+        warnings.append(
+            "DAVINCI_RESOLVE_OPTIONAL_NOT_INSTALLED: ffmpeg native renderer is the default; "
+            "install Resolve Studio only if you need the managed Resolve timeline / .drp handoff"
+        )
+
+    if smoke["smoke_label_blockers"]:
+        blockers.append(
+            "SMOKE_CORPUS_PRESENTED_AS_FIELD: committed smoke clips are labelled as field "
+            f"footage ({', '.join(smoke['smoke_label_blockers'])})"
+        )
 
     if not field_corpus["live_field_corpus_certified"]:
         detail = ", ".join(field_corpus.get("certification_blockers", [])) or "unknown"
@@ -297,12 +377,14 @@ def run_preflight() -> int:
         "platform": platform.platform(),
         "ready_for_production_release": len(blockers) == 0,
         "blockers": blockers,
+        "warnings": warnings,
         "toolchain": toolchain,
         "app_bundle": app_info,
         "contracts": contracts,
         "models": models,
         "davinci_resolve": resolve,
         "field_corpus": field_corpus,
+        "smoke_corpus": smoke,
     }
 
     REPORT.parent.mkdir(parents=True, exist_ok=True)
@@ -315,6 +397,12 @@ def run_preflight() -> int:
     print(f"Contracts & Gating: {'PASS' if contracts['passed'] else 'FAIL'}")
     print(f"Production Models: {models['status']}")
     print(f"Field Corpus Certification: {field_corpus['certification_status']}")
+    smoke_count = len(smoke["smoke_clips"])
+    print(
+        f"Committed Smoke Corpus: {smoke_count} clip(s), not field evidence"
+        if smoke_count
+        else "Committed Smoke Corpus: none"
+    )
 
     if blockers:
         print("\nActive Blockers (Intentional Gate Enforcement):")
@@ -328,4 +416,11 @@ def run_preflight() -> int:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="AIVideo release readiness preflight")
+    parser.add_argument(
+        "--allow-adhoc",
+        action="store_true",
+        help="development only: accept an ad-hoc signed app instead of requiring a Developer ID",
+    )
+    ARGS.allow_adhoc = parser.parse_args().allow_adhoc
     sys.exit(run_preflight())

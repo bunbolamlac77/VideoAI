@@ -38,14 +38,20 @@
       "canonical_sample_rate_hz": 48000,
       "is_sound_event_detector": false
     },
-    "P-TTS-VIENEU-v1": {
-      "runtime_profile_id": "P-TTS-VIENEU-v1",
+    "P-TTS-KOKORO-VI-V1": {
+      "runtime_profile_id": "P-TTS-KOKORO-VI-V1",
       "role": "tts_vietnamese",
-      "model_id": "pnnbao-ump/VieNeu-TTS-v3-Turbo",
-      "backend": "onnx_cpu_fp32",
-      "default_speed": 1.0,
+      "model_id": "contextboxai/Kokoro-Vietnamese",
+      "engine_repository": "https://github.com/iamdinhthuan/Kokoro-Vietnamese",
+      "license": "apache-2.0",
+      "backend": "torch_cpu_fp32",
+      "voicepack_dir": "tts_kokoro_vi/voicepacks",
+      "native_sample_rate_hz": 24000,
       "canonical_sample_rate_hz": 48000,
-      "forbid_cloud_v4_fallback": true
+      "default_speed": 1.0,
+      "parameter_count_millions": 82,
+      "forbid_cloud_v4_fallback": true,
+      "supersedes": "P-TTS-VIENEU-v1"
     },
     "P-EMBED-DINOV2-v1": {
       "runtime_profile_id": "P-EMBED-DINOV2-v1",

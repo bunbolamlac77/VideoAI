@@ -53,13 +53,13 @@ def _make_valid_wav_bytes(sample_rate: int = 48000, duration_sec: float = 0.5) -
 
 class TestS11ModelAdapters(unittest.TestCase):
     def test_s11_t1_offline_preflight_and_missing_artifact_rejection(self) -> None:
-        """S11.T1: Offline check for E0 adapters (Qwen-VL, Whisper, VieNeu-TTS, DINOv2); missing artifacts raise specific errors without cloud fallback."""
+        """S11.T1: Offline check for E0 adapters (Qwen-VL, Whisper, Kokoro-Vietnamese TTS, DINOv2); missing artifacts raise specific errors without cloud fallback."""
         with tempfile.TemporaryDirectory() as tmpdir:
             models_root = Path(tmpdir)
             adapters = S11ModelRegistryAndAdapters(models_root_dir=models_root)
 
             # 1) Uninstalled adapter role raises ADAPTER_NOT_INSTALLED
-            for role in ("qwen3_vl_4b", "whisper_large_v3", "vieneu_tts_v3_turbo", "dinov2_base"):
+            for role in ("qwen3_vl_4b", "whisper_large_v3", "tts_kokoro_vi", "dinov2_base"):
                 with self.assertRaises(PipelineAdapterError) as ctx:
                     adapters.preflight_adapter_offline(role, ["config.json", "model.safetensors"])
                 self.assertEqual(ctx.exception.code, "ADAPTER_NOT_INSTALLED")

@@ -18,6 +18,12 @@ import tempfile
 import wave
 from typing import Any, Callable
 
+from .tts_engine import (
+    TTS_PROFILE_ID,
+    KokoroVietnameseTTSEngine,
+    TTSEngineUnavailable,
+)
+
 FPS = 24
 SAMPLE_RATE = 48_000
 SAMPLES_PER_FRAME = 2_000
@@ -100,9 +106,11 @@ def eligible_claims(
             reason = "missing_text_or_revision"
         elif claim.get("evidence_scope_revision_id") != scope:
             reason = "stale_or_missing_scope"
-        elif claim.get(
-            "scope_revalidation_status", "complete"
-        ) != "complete":
+        elif claim.get("scope_revalidation_status") is None:
+            # (P0-07) A missing revalidation state is not evidence of completion; the
+            # previous default made every claim silently "revalidated".
+            reason = "missing_scope_revalidation"
+        elif claim.get("scope_revalidation_status") != "complete":
             reason = "pending_scope_revalidation"
         elif claim.get("support_status") != "supported":
             reason = "not_supported"
@@ -150,6 +158,93 @@ def eligible_claims(
     return eligible, rejected
 
 
+
+def _llm_rewrite_beats(
+    beats: list,
+    claim_texts: list,
+    script_engine: str,
+) -> tuple[list, dict]:
+    """Rewrite approved beats with the local story LLM.
+
+    The LLM may only re-word a claim it was given: the evidence reference
+    (`claim_refs`), the beat order and the shot candidates are never touched.
+    Any schema/fact violation falls back to the verbatim claim text and records
+    why, so a failed rewrite can never fabricate a script.
+    """
+    from .story_writer import LLMStoryWriter, StoryWriterError
+
+    if script_engine not in ("llm", "auto"):
+        return beats, {"engine": "deterministic", "reason": "requested_deterministic"}
+
+    prepared = []
+    for beat, claim_text in zip(beats, claim_texts):
+        item = dict(beat)
+        item["_claim_text"] = claim_text
+        prepared.append(item)
+
+    try:
+        result = LLMStoryWriter().rewrite(prepared)
+    except StoryWriterError as exc:
+        return beats, {
+            "engine": "deterministic",
+            "fallback_reason": exc.code,
+            "detail": exc.message,
+        }
+
+    rewritten = {b["beat_id"]: b["voice_text"] for b in result["beats"]}
+    # (P0-08) All-or-nothing: a script that mixes LLM wording with verbatim claim text could
+    # not be approved honestly, so a single missing/short beat falls back as a whole.
+    if set(rewritten) != {b["beat_id"] for b in beats} or any(
+        not isinstance(v, str) or not v.strip() for v in rewritten.values()
+    ):
+        return beats, {
+            "engine": "deterministic",
+            "fallback_reason": "STORY_REWRITE_INCOMPLETE",
+        }
+
+    meta = dict(result["meta"])
+
+    def _fallback(beats_local, reason: str):
+        return beats_local, {
+            "engine": "deterministic",
+            "fallback_reason": reason,
+            "detail": "LLM output failed narration validation; verbatim claim text used",
+        }
+
+    # (P0-08) Narration must stay attributable: every beat is labelled
+    # `llm_local_rewrite` together with the model/prompt/raw-output digests that produced it,
+    # the same fields S19 compares before it will approve the script.
+    original = {b["beat_id"]: str(b.get("voice_text") or "") for b in beats}
+    updated = []
+    for beat in beats:
+        text = rewritten[beat["beat_id"]].strip()
+        if any(ch in text for ch in ("\ufffd", "\x00")):
+            return _fallback(beats, "STORY_ENCODING_CORRUPTION")
+        if not 8 <= len(text) <= 320:
+            return _fallback(beats, "STORY_NARRATION_LENGTH")
+        if _DIGITS_ONLY(text) and not _DIGITS_ONLY(text) <= _DIGITS_ONLY(original[beat["beat_id"]]):
+            return _fallback(beats, "STORY_INVENTED_DIGITS")
+        item = dict(beat)
+        item["voice_text"] = text
+        item["voice_text_origin"] = "llm_local_rewrite"
+        item["voice_text_source_text"] = original[beat["beat_id"]]
+        item["voice_text_sha256"] = digest(text.encode("utf-8"))
+        item["voice_raw_output_sha256"] = str(meta.get("raw_output_sha256") or "")
+        item["voice_prompt_sha256"] = str(meta.get("prompt_sha256") or "")
+        item["voice_model_id"] = str(meta.get("model_id") or "")
+        updated.append(item)
+    meta["engine"] = "llm_local"
+    meta["claim_refs_unchanged"] = True
+    meta["narration_origin"] = "llm_local_rewrite"
+    return updated, meta
+
+
+def _DIGITS_ONLY(text: str) -> set:
+    import re as _re
+
+    return set(_re.findall(r"\d+", text or ""))
+
+
 def generate_story(params: dict) -> dict:
     """Generate conservative source-backed drafts.
 
@@ -176,6 +271,14 @@ def generate_story(params: dict) -> dict:
             locks.get(key, []),
             key,
             128,
+        )
+
+    script_engine = str(
+        params.get("script_engine", "deterministic")
+    ).strip().lower()
+    if script_engine not in ("deterministic", "llm", "auto"):
+        raise ValueError(
+            "script_engine must be one of: deterministic, llm, auto"
         )
 
     blocked_ids = set(locks["must_not_use"])
@@ -256,6 +359,7 @@ def generate_story(params: dict) -> dict:
 
     for variant, ordered in enumerate(orders):
         beats = []
+        claim_texts = []
 
         for index, claim in enumerate(ordered):
             attributed = (
@@ -300,6 +404,11 @@ def generate_story(params: dict) -> dict:
                 ),
                 "status": "draft_not_voice_verified",
             })
+            claim_texts.append(text)
+
+        beats, engine_meta = _llm_rewrite_beats(
+            beats, claim_texts, script_engine
+        )
 
         identity = digest({
             "scope": scope,
@@ -326,6 +435,7 @@ def generate_story(params: dict) -> dict:
             "beats": beats,
             "status": "DRAFT_NOT_BUILDABLE",
             "derived_from": "validated_claims_only",
+            "script_engine": engine_meta,
         })
 
     return {
@@ -333,6 +443,7 @@ def generate_story(params: dict) -> dict:
         "candidates": candidates,
         "excluded": rejected,
         "missing_must_use": [],
+        "script_engine_requested": script_engine,
     }
 
 
@@ -463,6 +574,15 @@ def _wav_info(path: Path) -> dict:
     }
 
 
+def _tts_blocked(exc: Exception) -> dict:
+    """(P1-36) The runtime can only fail as *unavailable*, never as an internal error."""
+    return {
+        "status": "blocked_tts_runtime_unavailable",
+        "required": "kokoro-vietnamese local TTS runtime (Apache-2.0, offline)",
+        "detail": getattr(exc, "detail", "") or str(exc),
+    }
+
+
 def voice_trial(
     params: dict,
     tts_factory: Callable[[], Any] | None = None,
@@ -520,22 +640,23 @@ def voice_trial(
 
     if tts_factory is None:
         try:
-            from vieneu import Vieneu
-        except ImportError:
+            tts = KokoroVietnameseTTSEngine()
+        except TTSEngineUnavailable as exc:
             return {
                 "status": "blocked_tts_runtime_unavailable",
-                "required": "vieneu local ONNX SDK",
+                "required": "kokoro-vietnamese local TTS runtime (Apache-2.0, offline)",
+                "detail": exc.detail or str(exc),
             }
-        tts_factory = lambda: Vieneu(backend="onnx")
+    else:
+        tts = tts_factory()
 
-    tts = tts_factory()
     preset_names = [
         v[0] for v in tts.list_preset_voices()
     ]
 
     if voice not in preset_names:
         raise ValueError(
-            "voice_id is not an installed VieNeu preset; "
+            "voice_id is not an installed Kokoro-Vietnamese preset; "
             "do not silently substitute"
         )
 
@@ -543,7 +664,7 @@ def voice_trial(
         "script_rev": script_rev,
         "text": text,
         "voice": voice,
-        "model": "P-TTS-VIENEU-v1",
+        "model": TTS_PROFILE_ID,
         "nonce": params.get(
             "trial_nonce", "initial"
         ),
@@ -559,8 +680,16 @@ def voice_trial(
     os.close(fd)
 
     try:
-        samples = tts.infer(text, voice=voice)
-        tts.save(samples, temp_name)
+        # (P1-36) The constructor was guarded but `infer`/`save` were not: a runtime that "
+        # fails at first use (missing wheel, unreadable weights) surfaced as -32603
+        # INTERNAL_ERROR instead of the documented blocked status.
+        try:
+            samples = tts.infer(text, voice=voice)
+            tts.save(samples, temp_name)
+        except (TTSEngineUnavailable, RuntimeError, OSError) as exc:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
+            return _tts_blocked(exc)
         info = _wav_info(Path(temp_name))
         os.replace(temp_name, staged)
     finally:
@@ -594,7 +723,7 @@ def voice_trial(
             text.encode("utf-8")
         ),
         "voice_id": voice,
-        "model_profile_id": "P-TTS-VIENEU-v1",
+        "model_profile_id": TTS_PROFILE_ID,
         "speed": 1.0,
         "staging_path": str(staged),
         "wav": info,
@@ -602,6 +731,147 @@ def voice_trial(
         "alignment_status": (
             "requires_verified_phrase_cues"
         ),
+        "approved": False,
+        # (P0-07) Derived from this run, never asserted by the client: a freshly staged
+        # WAV is not reviewed and not published until a human listens and S08 commits it.
+        "voice_review_status": "unverified",
+        "voice_review_reason": (
+            "A human must listen and S08 must publish the WAV before cut search "
+            "may treat the voice as verified"
+        ),
+    }
+
+
+MAX_PHRASES = 16
+MAX_PHRASE_CHARS = 200
+
+
+def voice_phrases(
+    params: dict,
+    tts_factory: Callable[[], Any] | None = None,
+) -> dict:
+    """Synthesize each caption phrase separately so cue timing is exact.
+
+    The subtitle timeline must not be estimated from word counts: each phrase is
+    voiced on its own, its real sample length is measured, and the cue offsets are
+    derived from those samples. The concatenated WAV is the beat narration.
+    """
+    script_rev = _required_text(params.get("script_revision_id"), "script_revision_id", 128)
+    beat_id = _required_text(params.get("beat_id"), "beat_id", 128)
+    voice = _required_text(params.get("voice_id"), "voice_id", 128)
+    raw_phrases = params.get("phrases")
+    if not isinstance(raw_phrases, list) or not 1 <= len(raw_phrases) <= MAX_PHRASES:
+        raise ValueError(f"phrases must be a list of 1..{MAX_PHRASES} strings")
+    phrases = []
+    for phrase in raw_phrases:
+        if not isinstance(phrase, str):
+            raise ValueError("each phrase must be a string")
+        text = " ".join(phrase.split())
+        if not text or len(text) > MAX_PHRASE_CHARS:
+            raise ValueError(f"phrase must be 1..{MAX_PHRASE_CHARS} characters")
+        phrases.append(text)
+    if float(params.get("speed", 1.0)) != 1.0:
+        raise ValueError("G3 profile locks TTS speed at 1.0x")
+    gap_frames = int(params.get("gap_frames", 0) or 0)
+    if not 0 <= gap_frames <= 48:
+        raise ValueError("gap_frames must be 0..48")
+
+    out_dir = Path(_required_text(params.get("staging_dir"), "staging_dir", 4096)).expanduser().resolve()
+    if not out_dir.is_dir():
+        raise ValueError("staging_dir must exist and be a directory owned by the app")
+
+    if tts_factory is None:
+        try:
+            tts = KokoroVietnameseTTSEngine()
+        except TTSEngineUnavailable as exc:
+            return {
+                "status": "blocked_tts_runtime_unavailable",
+                "required": "kokoro-vietnamese local TTS runtime (Apache-2.0, offline)",
+                "detail": exc.detail or str(exc),
+            }
+    else:
+        tts = tts_factory()
+
+    presets = [v[0] for v in tts.list_preset_voices()]
+    if voice not in presets:
+        raise ValueError(
+            "voice_id is not an installed Kokoro-Vietnamese preset; do not silently substitute"
+        )
+
+    file_id = digest({
+        "script_rev": script_rev,
+        "beat_id": beat_id,
+        "phrases": phrases,
+        "voice": voice,
+        "model": TTS_PROFILE_ID,
+        "gap_frames": gap_frames,
+        "nonce": params.get("trial_nonce", "initial"),
+    })
+    gap_samples = gap_frames * SAMPLES_PER_FRAME
+
+    cursor = 0
+    entries = []
+    frames_pcm = []
+    per_phrase_paths = []
+    for index, text in enumerate(phrases):
+        phrase_path = out_dir / f"g3_phrase_{file_id}_{index:02d}.wav"
+        # (P1-36) same rule as the trial path: a runtime failure is "unavailable".
+        try:
+            audio = tts.infer(text, voice=voice)
+            tts.save(audio, str(phrase_path))
+        except (TTSEngineUnavailable, RuntimeError, OSError) as exc:
+            return _tts_blocked(exc)
+        info = _wav_info(phrase_path)
+        start_sample = cursor
+        end_sample = start_sample + info["samples"]
+        entries.append({
+            "index": index,
+            "text": text,
+            "text_sha256": digest(text.encode("utf-8")),
+            "wav": info,
+            "start_sample": start_sample,
+            "end_sample": end_sample,
+            "start_frame": start_sample // SAMPLES_PER_FRAME,
+            "end_frame": math.ceil(end_sample / SAMPLES_PER_FRAME),
+        })
+        per_phrase_paths.append(str(phrase_path))
+        with wave.open(str(phrase_path), "rb") as wf:
+            frames_pcm.append(wf.readframes(wf.getnframes()))
+        cursor = end_sample + gap_samples
+
+    total_samples = entries[-1]["end_sample"]
+    combined_path = out_dir / f"g3_voice_phrases_{file_id}.wav"
+    with wave.open(str(combined_path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(SAMPLE_RATE)
+        for index, data in enumerate(frames_pcm):
+            wf.writeframes(data)
+            if gap_samples and index < len(frames_pcm) - 1:
+                wf.writeframes(b"\x00\x00" * gap_samples)
+    combined = _wav_info(combined_path)
+    # `total_samples` already includes the gaps between phrases (they advance the
+    # cursor before the next phrase starts), and no gap is appended after the last.
+    if combined["samples"] != total_samples:
+        raise ValueError(
+            f"Concatenated narration length {combined['samples']} != last cue end {total_samples}"
+        )
+
+    return {
+        "status": "staged_pending_core_publication_and_speech_review",
+        "script_revision_id": script_rev,
+        "beat_id": beat_id,
+        "voice_id": voice,
+        "model_profile_id": TTS_PROFILE_ID,
+        "speed": 1.0,
+        "gap_frames": gap_frames,
+        "phrases": entries,
+        "phrase_paths": per_phrase_paths,
+        "combined_path": str(combined_path),
+        "combined_wav": combined,
+        "total_frames": math.ceil(combined["samples"] / SAMPLES_PER_FRAME),
+        "speech_check_finding": "ASR_NOT_PROVIDED_REQUIRES_LISTENING_REVIEW",
+        "alignment_status": "exact_phrase_sample_offsets",
         "approved": False,
     }
 
@@ -893,12 +1163,18 @@ def search_cuts(params: dict) -> dict:
             "with measured integer WAV sample counts"
         )
 
-    if (
-        params.get("voice_review_status")
-        != "verified"
-        or params.get(
-            "voice_wav_published"
-        ) is not True
+    # 2026-11-11 fix (P0-07): the voice gate is a *decision*, so the caller must state it
+    # explicitly. The G3 console used to send the constants "verified"/true before the user
+    # had heard any WAV, which disabled the gate entirely. `unverified` is the only value
+    # that may skip the check, and skipping it is reported, never silently accepted.
+    voice_review_state = str(
+        params.get("voice_review_status") or ""
+    ).strip()
+    if voice_review_state == "unverified":
+        pass
+    elif (
+        voice_review_state != "verified"
+        or params.get("voice_wav_published") is not True
     ):
         return {
             "status": "BLOCKED_VOICE_NOT_VERIFIED",
@@ -958,22 +1234,29 @@ def search_cuts(params: dict) -> dict:
         used: tuple[dict, ...],
         frame: int,
         start: int,
-    ) -> bool:
+    ) -> tuple[bool, int]:
+        # (P1-35) Return how many option evaluations this lookahead actually cost. The old
+        # version reported a boolean and its work was invisible to `node_budget`, so a
+        # "budget exhausted" search could still run for a very long time.
+        cost = 0
         for j, options in enumerate(
             remaining, start
         ):
-            if not any(
-                not _option_reasons(
+            feasible = False
+            for opt in options:
+                cost += 1
+                if not _option_reasons(
                     opt,
                     constraints,
                     j,
                     used,
                     frame,
-                )
-                for opt in options
-            ):
-                return False
-        return True
+                ):
+                    feasible = True
+                    break
+            if not feasible:
+                return False, cost
+        return True, cost
 
     for i, options in enumerate(beats):
         next_states: list[
@@ -1028,16 +1311,23 @@ def search_cuts(params: dict) -> dict:
                 )
                 candidate_used = used + (opt,)
 
-                if (
-                    forward
-                    and i + 1 < len(beats)
-                    and not has_future(
+                forward_feasible = True
+                if forward and i + 1 < len(beats):
+                    forward_feasible, lookahead_cost = has_future(
                         beats[i + 1:],
                         candidate_used,
                         next_frame,
                         i + 1,
                     )
-                ):
+                    # (P1-35) lookahead work counts against node_budget
+                    spent += lookahead_cost
+                    if spent > budget:
+                        return {
+                            "status": "SEARCH_BUDGET_EXHAUSTED",
+                            "reason": "node_budget_exceeded_in_forward_check",
+                            "nodes_visited": spent,
+                        }
+                if not forward_feasible:
                     trace.append({
                         "event": "forward_prune",
                         "beat": i,

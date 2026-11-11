@@ -135,7 +135,9 @@ class AudioBranchAnalysisResult:
     """
 
     source_revision_id: str
-    audio_state: str  # 'no_audio' | 'no_speech' | 'speech_detected'
+    # (P1-27) 'audio_present_untranscribed' is a first-class state: claiming "no speech"
+    # without running ASR asserts something the system never observed.
+    audio_state: str  # 'no_audio' | 'audio_present_untranscribed' | 'no_speech' | 'speech_detected'
     speech_segments: List[Dict[str, Any]]
     visual_branch_enabled: bool = True
     # 2026-11-10 fix (D16): ASR is not wired into the runtime yet, so the ledger must
@@ -143,7 +145,7 @@ class AudioBranchAnalysisResult:
     asr_status: str = "not_configured"
 
     def __post_init__(self) -> None:
-        if self.audio_state not in ("no_audio", "no_speech", "speech_detected"):
+        if self.audio_state not in ("no_audio", "audio_present_untranscribed", "no_speech", "speech_detected"):
             raise FullFramePipelineError("INVALID_AUDIO_STATE", f"Invalid audio_state: {self.audio_state}")
         if self.asr_status not in ("no_audio", "completed", "not_configured"):
             raise FullFramePipelineError("INVALID_ASR_STATUS", f"Invalid asr_status: {self.asr_status}")
@@ -165,7 +167,8 @@ class OmissionAuditFinding:
     source_revision_id: str
     category: str  # 'silent_scenic' | 'short_action_boundary' | 'small_text_ocr' | 'hand_interaction' | 'decode_corrupted_region'
     inspected_frame_ids: List[int]
-    status: str  # 'recovered_evidence' | 'confirmed_not_seen_in_scope' | 'remained_uncertain'
+    # (P1-30) 'reviewed_sample_only' is the honest default: only the sampled frames were seen.
+    status: str  # 'reviewed_sample_only' | 'recovered_evidence' | 'confirmed_not_seen_in_scope' | 'not_run' | 'remained_uncertain'
     description: str
     linked_observation_id: Optional[str] = None
 
@@ -208,6 +211,11 @@ class AssetCoverageLedger:
     # recorded with a score and reason and never counted as analyzed.
     skipped_window_indices: List[int] = field(default_factory=list)
     prefilter_skipped_count: int = 0
+    # 2026-11-11 fix (P0-02): how much of each analysed 16-frame window the model actually
+    # saw. Distinct from vlm_frame_coverage (submitted/declared source) and from
+    # decode_coverage_ratio (decoded/declared); the audit can no longer grade its own sample.
+    window_frame_coverage: float = 0.0
+    analysed_window_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -356,6 +364,10 @@ def compact_coverage_ledger_payload(
     }
     compact["unique_post_processor_frame_count"] = len(unique_ids)
     compact["valid_decoded_frame_count"] = len(valid_ids)
+    # (P0-02) Report window coverage explicitly at the top level so consumers never have
+    # to infer "how much of each window the model saw" from a submission ratio.
+    compact["window_frame_coverage"] = compact.get("window_frame_coverage", 0.0)
+    compact["analysed_window_count"] = compact.get("analysed_window_count", 0)
 
     if truncated:
         compact["unique_post_processor_frame_ids"] = []
@@ -485,6 +497,7 @@ class FullFrameAnalysisPipeline:
         stop_after_window_index: Optional[int] = None,
         simulated_ram_rss_bytes: Optional[int] = None,
         simulated_free_ssd_bytes: Optional[int] = None,
+        checkpoint_provenance: Optional[Dict[str, Any]] = None,
     ) -> Tuple[AssetCoverageLedger, List[RawObservationRecord], AudioBranchAnalysisResult, List[OmissionAuditFinding]]:
         """
         Executes or resumes full-frame window analysis:
@@ -540,6 +553,17 @@ class FullFrameAnalysisPipeline:
         raw_observations: List[RawObservationRecord] = []
 
         if checkpoint_path.is_file():
+            # 2026-11-11 fix (P0-01): a checkpoint is a cache of *the model's own past
+            # observations*, never a source of truth. Resuming without an inspector would
+            # replay observations that this process never produced, which is exactly the
+            # "fabricated provenance" the project forbids.
+            if window_inspector_fn is None:
+                raise FullFramePipelineError(
+                    "CHECKPOINT_RESUME_WITHOUT_INSPECTOR",
+                    "Refusing to resume from checkpoint: no visual inspector is available in "
+                    "this run, so replayed observations could not be attributed to a model.",
+                    {"checkpoint_path": str(checkpoint_path)},
+                )
             ckpt = json.loads(checkpoint_path.read_text(encoding="utf-8"))
             saved_fp = ckpt.get("input_fingerprint")
             if saved_fp != expected_fp:
@@ -547,6 +571,15 @@ class FullFrameAnalysisPipeline:
                     "CHECKPOINT_PROFILE_MISMATCH",
                     f"Cannot resume checkpoint: fingerprint mismatch (saved={saved_fp}, expected={expected_fp}).",
                     {"saved_fingerprint": saved_fp, "expected_fingerprint": expected_fp},
+                )
+            provenance = ckpt.get("provenance")
+            if provenance != (checkpoint_provenance or {}):
+                raise FullFramePipelineError(
+                    "CHECKPOINT_PROVENANCE_MISMATCH",
+                    "Cannot resume checkpoint: it was not produced by this model/profile "
+                    "(a checkpoint written without an inspector, or by another runtime, "
+                    "cannot donate observations to this run).",
+                    {"saved_provenance": provenance, "expected_provenance": checkpoint_provenance or {}},
                 )
             for w_entry in ckpt.get("committed_windows", []):
                 w_idx = int(w_entry["window_index"])
@@ -587,6 +620,8 @@ class FullFrameAnalysisPipeline:
                         committed_windows=committed_windows,
                         skipped_windows=skipped_windows,
                         raw_observations=raw_observations,
+                        provenance=checkpoint_provenance or {},
+                        source_sha256=source_sha256,
                     )
                     self._append_log(
                         f"Skipped window {win.window_index} by prefilter "
@@ -665,6 +700,27 @@ class FullFrameAnalysisPipeline:
                     "were never declared as planned samples.",
                     {"window_index": win.window_index},
                 )
+            # 2026-11-11 fix (P0-02): a planned sample must actually live in this window,
+            # and a planned sample that never reached the model is a dropped frame. Auditing
+            # only `planned` made coverage a tautology (planned == submitted by construction)
+            # and made POST_PROCESSOR_TRUNCATION unreachable.
+            window_ids = {int(x) for x in win.intended_frame_ids}
+            outsiders = sorted(set(planned_ids) - window_ids)
+            if outsiders:
+                raise FullFramePipelineError(
+                    "VISUAL_SAMPLE_OUTSIDE_WINDOW",
+                    f"Window {win.window_index} declared samples {outsiders} that are not part of "
+                    f"this window [{min(window_ids)}..{max(window_ids)}].",
+                    {"window_index": win.window_index, "outside": outsiders},
+                )
+            silently_dropped = sorted(set(planned_ids) - set(accepted_ids))
+            if silently_dropped:
+                raise FullFramePipelineError(
+                    "POST_PROCESSOR_TRUNCATION",
+                    f"Window {win.window_index} dropped declared samples {silently_dropped} before "
+                    "the model produced an observation.",
+                    {"window_index": win.window_index, "dropped": silently_dropped},
+                )
 
             observation_text = str(insp.get("observation_text") or "").strip()
             scene_type = insp.get("action_or_scene_type")
@@ -679,20 +735,27 @@ class FullFrameAnalysisPipeline:
                     f"Window {win.window_index} inspector returned invalid action_or_scene_type {scene_type!r}.",
                 )
 
+            # (P0-02) The audit denominator is the whole window, not the submitted sample:
+            # `coverage_ratio` is therefore "how much of the window the model actually saw",
+            # which is reported separately from the submission-coverage ratios in the ledger.
             audit: PostProcessorFrameAudit = audit_vision_processor_coverage(
                 runtime_profile_id=self.config.runtime_profile_id,
-                intended_frame_ids=planned_ids,
+                intended_frame_ids=list(win.intended_frame_ids),
                 processor_accepted_frame_ids=accepted_ids,
                 temporal_patch_size=self.config.temporal_patch_size,
                 input_width=1920,
                 input_height=1080,
                 pixel_budget=512 * 28 * 28,
             )
+            # (P0-02) Two different questions, two different failures:
+            #   * a declared sample the model never produced -> the model truncated input
+            #     we did submit (silently_dropped, checked above);
+            #   * frames the declared sample never included -> declared sampling, which is
+            #     bounded and reported as coverage, not an error.
             if audit.truncation_detected:
-                raise FullFramePipelineError(
-                    "POST_PROCESSOR_TRUNCATION",
-                    f"Window {win.window_index} dropped declared frames {audit.dropped_or_truncated_frame_ids} after processor.",
-                    {"window_index": win.window_index, "dropped": audit.dropped_or_truncated_frame_ids},
+                self._append_log(
+                    f"Window {win.window_index}: model saw {len(audit.actual_processed_frame_ids)}/"
+                    f"{len(win.intended_frame_ids)} window frames (declared sample)."
                 )
 
             obs = RawObservationRecord(
@@ -720,6 +783,8 @@ class FullFrameAnalysisPipeline:
                 "window_index": win.window_index,
                 "planned_frame_ids": list(planned_ids),
                 "actual_processed_frame_ids": list(audit.actual_processed_frame_ids),
+                "window_frame_count": len(win.intended_frame_ids),
+                "window_coverage_ratio": audit.coverage_ratio,
                 "post_processor_audit": audit.to_dict(),
             }
 
@@ -731,6 +796,8 @@ class FullFrameAnalysisPipeline:
                 committed_windows=committed_windows,
                 skipped_windows=skipped_windows,
                 raw_observations=raw_observations,
+                provenance=checkpoint_provenance or {},
+                source_sha256=source_sha256,
             )
             self._append_log(f"Committed window {win.window_index} ({len(audit.actual_processed_frame_ids)} frames).")
 
@@ -748,9 +815,10 @@ class FullFrameAnalysisPipeline:
                 asr_status="no_audio",
             )
         elif not raw_audio_transcript_segments:
+            # (P1-27) Audio exists but ASR never ran: report exactly that.
             audio_res = AudioBranchAnalysisResult(
                 source_revision_id=source_revision_id,
-                audio_state="no_speech",
+                audio_state="audio_present_untranscribed",
                 speech_segments=[],
                 visual_branch_enabled=True,
                 asr_status="not_configured",
@@ -809,6 +877,16 @@ class FullFrameAnalysisPipeline:
             all_windows_done=all_windows_done,
         )
 
+        # 2026-11-11 fix (P0-02): window coverage = frames the model saw / frames in the
+        # analysed windows. It is computed from the committed window records, never from
+        # the inspector's own claim of what it planned.
+        analysed_records = [committed_windows[k] for k in sorted(committed_windows.keys())]
+        seen_in_windows = sum(
+            len(rec.get("actual_processed_frame_ids", [])) for rec in analysed_records
+        )
+        window_frames = sum(int(rec.get("window_frame_count", 0)) for rec in analysed_records)
+        window_cov = min(1.0, float(seen_in_windows) / float(window_frames)) if window_frames else 0.0
+
         ledger = AssetCoverageLedger(
             source_revision_id=source_revision_id,
             runtime_profile_id=self.config.runtime_profile_id,
@@ -824,6 +902,8 @@ class FullFrameAnalysisPipeline:
             vlm_frame_coverage=round(vlm_cov, 6),
             skipped_window_indices=skipped_sorted,
             prefilter_skipped_count=len(skipped_sorted),
+            window_frame_coverage=round(window_cov, 6),
+            analysed_window_count=len(analysed_records),
             completed_window_indices=sorted(committed_windows.keys()),
             total_windows=len(windows),
             visual_scan_status=detailed_status,
@@ -899,37 +979,52 @@ class FullFrameAnalysisPipeline:
         if not all_windows_done:
             return findings
 
-        # 1. Silent scenic check (AI-01: silent or no_audio clips still retain scenic/action candidates)
-        if audio_res.audio_state in ("no_audio", "no_speech") and raw_observations:
-            all_fids = sorted({fid for obs in raw_observations for fid in obs.frame_ids})
+        # (P1-30) A finding may only describe frames a model actually saw. The old audit
+        # listed every window frame as "inspected" and called it "recovered_evidence" even
+        # though only the sampled frames reached the vision model.
+        inspected: List[int] = sorted({fid for obs in raw_observations for fid in obs.frame_ids})
+
+        # 1. Silent/scenic check (AI-01: silent clips still retain scenic/action candidates)
+        if audio_res.audio_state in ("no_audio", "no_speech", "audio_present_untranscribed") and raw_observations:
             findings.append(
                 OmissionAuditFinding(
                     finding_id=f"omit-{source_revision_id[:8]}-silent",
                     source_revision_id=source_revision_id,
                     category="silent_scenic",
-                    inspected_frame_ids=all_fids,
-                    status="recovered_evidence",
-                    description=f"Clip '{audio_res.audio_state}' vẫn được phân tích đầy đủ {len(all_fids)} frame hình và giữ làm ứng viên dựng.",
+                    inspected_frame_ids=inspected,
+                    status="reviewed_sample_only",
+                    description=(
+                        f"Clip '{audio_res.audio_state}': {len(inspected)} frame đã được model xem "
+                        "được giữ làm ứng viên dựng; các frame còn lại chưa được model xem."
+                    ),
                     linked_observation_id=raw_observations[0].observation_id,
                 )
             )
 
         # 2. Window overlap boundary audit (short actions across window boundaries)
+        inspected_set = set(inspected)
         for i in range(len(windows) - 1):
             w_curr = windows[i]
             w_next = windows[i + 1]
             overlap_fids = sorted(set(w_curr.intended_frame_ids).intersection(w_next.intended_frame_ids))
-            if overlap_fids:
-                findings.append(
-                    OmissionAuditFinding(
-                        finding_id=f"omit-{source_revision_id[:8]}-bound-{i:03d}",
-                        source_revision_id=source_revision_id,
-                        category="short_action_boundary",
-                        inspected_frame_ids=overlap_fids,
-                        status="recovered_evidence",
-                        description=f"Đã kiểm vùng chồng lấn biên cửa sổ {i}->{i+1} (frames {overlap_fids[0]}..{overlap_fids[-1]}).",
-                    )
+            if not overlap_fids:
+                continue
+            covered = sorted(inspected_set.intersection(overlap_fids))
+            findings.append(
+                OmissionAuditFinding(
+                    finding_id=f"omit-{source_revision_id[:8]}-bound-{i:03d}",
+                    source_revision_id=source_revision_id,
+                    category="short_action_boundary",
+                    inspected_frame_ids=covered,
+                    status="reviewed_sample_only" if covered else "not_run",
+                    description=(
+                        f"Vùng chồng lấn biên cửa sổ {i}->{i+1} có {len(overlap_fids)} frame; "
+                        f"{len(covered)} frame đã được model xem."
+                        if covered
+                        else f"Vùng chồng lấn biên cửa sổ {i}->{i+1}: không frame nào được model xem."
+                    ),
                 )
+            )
 
         # 3. Corrupted decode region audit (never silently dropped from denominator)
         if corrupted_frame_ids:
@@ -955,12 +1050,20 @@ class FullFrameAnalysisPipeline:
         committed_windows: Dict[int, Dict[str, Any]],
         raw_observations: Sequence[RawObservationRecord],
         skipped_windows: Optional[Dict[int, Dict[str, Any]]] = None,
+        provenance: Optional[Dict[str, Any]] = None,
+        source_sha256: str = "",
     ) -> None:
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = checkpoint_path.with_suffix(".tmp")
         payload = {
             "source_revision_id": source_revision_id,
+            # (P1-25) recorded so `g2.get_raw_observations` can bind a page request to the
+            # exact source bytes it was produced from.
+            "source_sha256": source_sha256,
             "input_fingerprint": input_fingerprint,
+            # 2026-11-11 fix (P0-01): record which model/profile produced these
+            # observations so a resume can refuse foreign or inspector-less checkpoints.
+            "provenance": provenance or {},
             "committed_windows": [committed_windows[k] for k in sorted(committed_windows.keys())],
             "skipped_windows": [skipped_windows[k] for k in sorted(skipped_windows.keys())] if skipped_windows else [],
             "raw_observations": [obs.to_dict() for obs in raw_observations],

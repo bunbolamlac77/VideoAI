@@ -224,9 +224,11 @@ def build(params: dict, *, resolve=None) -> dict:
             drp = drp_dir / (name + ".drp")
             temp = drp_dir / (name + ".partial.drp")
             must(not drp.exists() and not temp.exists(), "DRP already exists; reconcile first")
-            must(pm.ExportProject(name, str(temp)) is True and temp.is_file() and
-                 temp.stat().st_size > 1024 and zipfile.is_zipfile(temp),
-                 "Resolve DRP export not verifiable")
+            # (P1-23) a .drp must be a real Resolve project archive, not merely a ZIP
+            from .g5_final import validate_resolve_drp_structure
+
+            must(pm.ExportProject(name, str(temp)) is True, "Resolve DRP export failed")
+            validate_resolve_drp_structure(temp)
             os.replace(temp, drp)
             receipt = {"schema": "g4-s20-receipt-v1", "plan_sha256": plan["plan_sha256"],
                        "g3_approval_id": plan["g3_approval_id"],

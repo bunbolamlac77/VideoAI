@@ -39,16 +39,22 @@
     "artifact_type": {
       "type": "string",
       "enum": [
-        "source_snapshot",
+        "analysis_json",
         "proxy_video",
-        "audio_extract",
-        "transcript",
-        "visual_features",
-        "tts_audio",
-        "resolve_drp",
         "preview_render",
-        "final_render",
-        "backup_archive"
+        "g2_source_mapping",
+        "voice_wav",
+        "tts_audio",
+        "g3_cut_plan",
+        "g4_captioned_cfr",
+        "g4_conform_receipt",
+        "g4_preview_mp4",
+        "g5_captioned_cfr_4k",
+        "g5_conform_receipt",
+        "g5_final_mp4",
+        "g5_handoff_drp",
+        "g5_native_receipt",
+        "g5_manual_handoff_drp"
       ]
     },
     "state": {
@@ -61,17 +67,29 @@
       ]
     },
     "temp_path": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "canonical_path": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "sha256_hash": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "pattern": "^[a-f0-9]{64}$"
     },
     "byte_size": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 0
     },
     "created_at": {
@@ -83,5 +101,6 @@
       "format": "date-time"
     }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$comment": "Artifact types actually written by ProjectStore, the gate stores and the S08 publishers. Kept in sync by tests/test_artifact_schema_matches_code.py (audit P1-42)."
 }

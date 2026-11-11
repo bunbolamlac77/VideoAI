@@ -360,7 +360,11 @@ class Fake4KManager:
         return self.project
     def SaveProject(self) -> bool: return True
     def ExportProject(self, name: str, dest: str) -> bool:
+        # (P1-23) A real .drp carries a project database plus timeline payload; the guard
+        # now rejects an archive that is merely a ZIP.
         with zipfile.ZipFile(dest, "w") as fh:
+            fh.writestr("Project.db", os.urandom(2048))
+            fh.writestr("Timelines/Timeline 1.xml", os.urandom(2048))
             fh.writestr("project.xml", os.urandom(2048))
         return True
 
@@ -573,7 +577,11 @@ class TestS22ToS26G5(unittest.TestCase):
     def test_s25_fault_suite_e0_e1_accounting_and_s26_release_manifest(self):
         """S25.T1..T3 & S26: Fault injection across commit boundaries, E0/E1 accounting, and release manifest."""
         fault_res = g5_release_audit.run_commit_boundary_fault_suite()
-        self.assertEqual(fault_res["status"], "PASS")
+        # (P0-04) The temp-directory suite is a self-test, never release evidence.
+        self.assertEqual(fault_res["status"], "SELF_TEST_ONLY")
+        self.assertTrue(fault_res["self_test_passed"])
+        self.assertFalse(fault_res["release_evidence"])
+        self.assertFalse(fault_res["s25_certified"])
         self.assertEqual(len(fault_res["boundaries_tested"]), 4)
 
         eval_res = g5_release_audit.evaluate_e0_e1_accounting({

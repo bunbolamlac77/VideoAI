@@ -1,7 +1,7 @@
 # AIVideo — Antigravity Engineering Guidelines & Rules
 
 Dự án: **AIVideo v3.1** — Trợ lý phân tích và dựng video POV tiếng Việt trên macOS.
-Kiến trúc: **SwiftUI (Native macOS)** + **Swift Core (`ProjectStore`, SQLite WAL)** + **Python Workers (stdio JSON-RPC)** + **DaVinci Resolve Studio**.
+Kiến trúc: **SwiftUI (Native macOS)** + **Swift Core (`ProjectStore`, SQLite WAL)** + **Python Workers (stdio JSON-RPC)** + **renderer ffmpeg native** (mặc định; DaVinci Resolve Studio là tuỳ chọn cho timeline quản lý / bàn giao `.drp`).
 Mục tiêu phần cứng: **Apple Silicon M1 Pro, 16 GB Unified RAM**.
 
 ---
@@ -17,9 +17,10 @@ Mục tiêu phần cứng: **Apple Silicon M1 Pro, 16 GB Unified RAM**.
    - `Unknown` là trạng thái hợp lệ; nếu thiếu tư liệu, báo rõ `Unknown` thay vì bịa đặt (hallucinate).
 4. **Ngân Sách RAM 16 GB & Heavy Lease Governor**:
    - Tuân thủ nghiêm ngặt Resource Governor: Không bao giờ chạy đồng thời các tác vụ nặng (VLM inference + TTS batch + DaVinci 4K render). Luôn yêu cầu Lease trước khi cấp phát tài nguyên.
-5. **Tiêu Chuẩn Video & DaVinci Resolve**:
+5. **Tiêu Chuẩn Video & Renderer**:
    - Định dạng mặc định: Video dọc (9:16). Preview 1080×1920; Final 2160×3840 (4K), chuẩn **24/1 fps**, audio tiếng Việt 1×.
-   - DaVinci Resolve scripting chạy headless/offline qua IPC hoặc DaVinci Resolve MCP.
+   - Render mặc định bằng ffmpeg native (`native_render.py`): caption burn-in + `.srt`, crossfade/dip-to-black, ảnh chèn `illustrative_only`, receipt `native-render-receipt-v1`.
+   - DaVinci Resolve scripting chỉ dùng cho nhánh legacy managed timeline / `.drp` handoff; thiếu Resolve là **warning**, không phải blocker.
 
 ---
 

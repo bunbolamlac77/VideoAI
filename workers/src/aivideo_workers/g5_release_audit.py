@@ -42,8 +42,41 @@ PINNED_FIELD_QA_KEY_SHA256 = "9c7edbdd5cb6519c7eda4dfc8154ccf8cbbd96b06a5993c4c9
 _QA_PUBLIC_KEY_PATH = PROJECT_ROOT / "contracts" / "field_qa_ed25519_public_key.pem"
 
 
+REAL_FAULT_SUITE_EVIDENCE_SCHEMA = "g5-s25-real-fault-report-v1"
+
+
+def validate_real_fault_suite_evidence(evidence: Any) -> bool:
+    """(P0-04) A *real* S25 fault run is accepted as evidence only when it names the
+    production store/database it corrupted, the artifacts it drove through publication, and
+    a run id. The suite cannot produce such evidence by itself (it never touches the
+    canonical DB), so a tampered or fabricated file is rejected here."""
+    if not isinstance(evidence, dict):
+        return False
+    if evidence.get("schema") != REAL_FAULT_SUITE_EVIDENCE_SCHEMA:
+        return False
+    if evidence.get("status") != "PASS":
+        return False
+    run_id = evidence.get("run_id")
+    if not isinstance(run_id, str) or len(run_id.strip()) < 8:
+        return False
+    if not isinstance(evidence.get("database_path"), str) or not evidence["database_path"].strip():
+        return False
+    boundaries = evidence.get("boundaries_tested")
+    if not isinstance(boundaries, list) or len(boundaries) < 4:
+        return False
+    return all(isinstance(b, dict) and b.get("passed") is True for b in boundaries)
+
+
 def run_commit_boundary_fault_suite(params: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Execute deterministic fault injection across 5 commit boundaries (S25.1..S25.2, S25.T1..S25.T3)."""
+    """Run the S25 commit-boundary *self-test* (S25.1..S25.2, S25.T1..S25.T3).
+
+    (P0-04) This is a **self-test of the injected code paths**, not release evidence: every
+    boundary is exercised against a throw-away SQLite file inside a temp directory and
+    never touches the canonical store, Resolve, or the real disk. It therefore reports
+    `SELF_TEST_ONLY` and can never certify S25; promotion requires an externally produced
+    real fault run validated by `validate_real_fault_suite_evidence`.
+    """
+    params = params or {}
     boundaries_tested: list[dict[str, Any]] = []
 
     with tempfile.TemporaryDirectory(prefix="aivideo_s25_fault_") as tmp:
@@ -98,8 +131,12 @@ def run_commit_boundary_fault_suite(params: dict[str, Any] | None = None) -> dic
         # Boundary 2: Disk full preflight before 4K render -> blocks cleanly without partial file
         from .g5_final import _preflight_disk_space
         blocked_disk_full = False
+        # (P1-17) The simulation is only honoured under the test-harness flag, which the
+        # suite sets for itself; production never sees it.
         old_env = os.environ.get("AIVIDEO_G5_SIMULATE_FREE_BYTES")
+        old_harness = os.environ.get("AIVIDEO_TEST_HARNESS")
         try:
+            os.environ["AIVIDEO_TEST_HARNESS"] = "1"
             os.environ["AIVIDEO_G5_SIMULATE_FREE_BYTES"] = "1024"
             _preflight_disk_space(root, min_bytes=512 * 1024 * 1024)
         except G4Blocked:
@@ -109,6 +146,10 @@ def run_commit_boundary_fault_suite(params: dict[str, Any] | None = None) -> dic
                 os.environ.pop("AIVIDEO_G5_SIMULATE_FREE_BYTES", None)
             else:
                 os.environ["AIVIDEO_G5_SIMULATE_FREE_BYTES"] = old_env
+            if old_harness is None:
+                os.environ.pop("AIVIDEO_TEST_HARNESS", None)
+            else:
+                os.environ["AIVIDEO_TEST_HARNESS"] = old_harness
         boundaries_tested.append({
             "boundary_id": "B2_DISK_FULL_BEFORE_FINAL_RENDER",
             "blocked_cleanly": blocked_disk_full,
@@ -149,9 +190,22 @@ def run_commit_boundary_fault_suite(params: dict[str, Any] | None = None) -> dic
 
     all_passed = all(b["passed"] for b in boundaries_tested)
     must(all_passed, "One or more S25 commit-boundary fault tests failed")
+
+    # (P0-04) Promotion path: only an externally produced real fault run can certify S25.
+    real_evidence = params.get("real_fault_evidence")
+    real_valid = validate_real_fault_suite_evidence(real_evidence)
     return {
         "schema": "g5-s25-fault-injection-report-v1",
-        "status": "PASS",
+        "status": "SELF_TEST_ONLY",
+        "self_test_passed": all_passed,
+        "release_evidence": False,
+        "s25_certified": real_valid,
+        "certification_source": "real_fault_evidence" if real_valid else "self_test_only",
+        "note": (
+            "Temp-directory self-test. It proves the injected code paths behave, not that "
+            "the production store survives a crash. S25 release evidence needs a real fault "
+            "run recorded against the canonical database (see validate_real_fault_suite_evidence)."
+        ),
         "boundaries_tested": boundaries_tested,
     }
 
@@ -221,7 +275,7 @@ def validate_signed_field_manifest(
     except Exception:
         return False
 
-    cdir = Path(corpus_dir) if corpus_dir is not None else (PROJECT_ROOT / "fixtures" / "corpus")
+    cdir = Path(corpus_dir) if corpus_dir is not None else (PROJECT_ROOT / "fixtures" / "smoke")
     if not cdir.is_dir():
         return False
     for t in trips:
@@ -315,6 +369,18 @@ def evaluate_e0_e1_accounting(params: dict[str, Any]) -> dict[str, Any]:
     if counts["failed"] != 0:
         certification_blockers.append("FAILED_RUNS_PRESENT")
 
+    # (P1-19) `runs` is caller JSON. A signed corpus manifest may carry the digest of the run
+    # results it was issued for (`corpus_scope.runs_sha256`); without that binding the
+    # numbers are self-reported and can only ever be descriptive.
+    runs_digest = hashlib.sha256(canon({"runs": runs})).hexdigest()
+    expected_runs_digest = str(scope.get("runs_sha256", "")) if isinstance(scope, dict) else ""
+    runs_bound = bool(expected_runs_digest) and runs_digest == expected_runs_digest
+    if not runs_bound:
+        certification_blockers.append(
+            "RUNS_NOT_BOUND_TO_SIGNED_MANIFEST" if not expected_runs_digest
+            else "RUNS_DIGEST_MISMATCH"
+        )
+
     live_field_corpus_certified = bool(not certification_blockers)
 
     if live_field_corpus_certified:
@@ -334,6 +400,8 @@ def evaluate_e0_e1_accounting(params: dict[str, Any]) -> dict[str, Any]:
         "live_field_corpus_certified": live_field_corpus_certified,
         "certification_status": certification_status,
         "certification_blockers": certification_blockers,
+        "runs_sha256": runs_digest,
+        "runs_bound_to_manifest": runs_bound,
         "total_runs": total_runs,
         "outcome_counts": counts,
         "rates": {
@@ -348,6 +416,81 @@ def evaluate_e0_e1_accounting(params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _release_signed_payload(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Everything a release signature covers (all fields except derivable ones)."""
+    return {
+        key: value for key, value in manifest.items()
+        if key not in ("signature", "manifest_sha256")
+    }
+
+
+RELEASE_MANIFEST_KEY_ID = "aivideo-release-manifest-v1"
+
+
+def sign_release_manifest(manifest: dict[str, Any], private_key_path: str | Path) -> dict[str, Any]:
+    """(P1-18) Sign a release manifest with the release authority's Ed25519 key.
+
+    The manifest used to carry only `manifest_sha256`, which is a checksum of its own
+    content: anyone who edits a field can recompute it. The signature covers the canonical
+    manifest without the `signature` block, so a third party can verify it against the
+    published release public key.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    import base64
+
+    key = serialization.load_pem_private_key(Path(private_key_path).read_bytes(), password=None)
+    if not isinstance(key, Ed25519PrivateKey):
+        raise ValueError("RELEASE_KEY_INVALID: release signing key must be Ed25519")
+    # `manifest_sha256` is derived from the manifest itself, so it must not be part of the
+    # signed payload: it changes whenever the manifest changes but is also recomputed by
+    # verifiers, which would make the two sides disagree.
+    # The manifest must already declare itself signed when it is signed, otherwise flipping
+    # `signing.signed` afterwards would invalidate the signature.
+    manifest = dict(manifest)
+    signing_block = dict(manifest.get("signing") or {})
+    signing_block["signed"] = True
+    manifest["signing"] = signing_block
+    payload = _release_signed_payload(manifest)
+    signature = key.sign(canon(payload))
+    public_bytes = key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    signed = dict(manifest)
+    signed["signature"] = {
+        "algorithm": "ed25519",
+        "key_id": RELEASE_MANIFEST_KEY_ID,
+        "public_key_sha256": hashlib.sha256(public_bytes).hexdigest(),
+        "signature": base64.b64encode(signature).decode("ascii"),
+    }
+    return signed
+
+
+def verify_release_manifest(manifest: dict[str, Any], public_key_path: str | Path) -> bool:
+    """Verify `sign_release_manifest` output against a published public key."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    import base64
+
+    sig_block = manifest.get("signature") if isinstance(manifest, dict) else None
+    if not isinstance(sig_block, dict) or sig_block.get("algorithm") != "ed25519":
+        return False
+    pub_bytes = Path(public_key_path).read_bytes()
+    if hashlib.sha256(pub_bytes).hexdigest() != str(sig_block.get("public_key_sha256", "")):
+        return False
+    try:
+        key = serialization.load_pem_public_key(pub_bytes)
+        if not isinstance(key, Ed25519PublicKey):
+            return False
+        key.verify(
+            base64.b64decode(sig_block["signature"]),
+            canon(_release_signed_payload(manifest)),
+        )
+        return True
+    except Exception:
+        return False
+
+
 def generate_release_handover_manifest(params: dict[str, Any] | None = None) -> dict[str, Any]:
     """S26: Build verifiable release handover manifest with capability disclosure & support scope."""
     params = params or {}
@@ -355,6 +498,18 @@ def generate_release_handover_manifest(params: dict[str, Any] | None = None) -> 
         raise ValueError("REGISTRY_OVERRIDE_FORBIDDEN: Capability registry override is forbidden in production release audit")
     if "app_binary_path" in params:
         raise ValueError("APP_BINARY_OVERRIDE_FORBIDDEN: App binary path override is forbidden in production release audit")
+
+    real_evidence = params.get("real_fault_evidence")
+    s25_real = validate_real_fault_suite_evidence(real_evidence)
+    s25_block = {
+        "certified": s25_real,
+        "evidence_status": (
+            "real_fault_run_validated"
+            if s25_real
+            else str(params.get("s25_evidence_status") or "no_real_fault_run_provided")
+        ),
+        "self_test_is_not_evidence": True,
+    }
 
     app_binary = PROJECT_ROOT / "apps" / "macos" / "build" / "AIVideo.app" / "Contents" / "MacOS" / "AIVideo"
     registry = load_capability_registry()
@@ -422,6 +577,9 @@ def generate_release_handover_manifest(params: dict[str, Any] | None = None) -> 
             },
         },
         "capabilities_disclosure": capabilities_disclosure,
+        # (P0-04) The manifest states which S25 evidence it rests on. Only a validated real
+        # fault run can certify S25; the temp-directory self-test never can.
+        "s25_fault_evidence": s25_block,
         "support_scope_statement": {
             "supported_in_v3_1": [
                 "Single-user local macOS arm64 desktop workflow on Apple Silicon M1 Pro 16 GB",
@@ -431,11 +589,25 @@ def generate_release_handover_manifest(params: dict[str, Any] | None = None) -> 
                 "Managed DaVinci Resolve 1080x1920 preview (S20/S21) and 2160x3840 24fps final render, technical QC, .drp export, and isolated manual_handoff branch (S22)",
             ],
             "known_limitations_and_gated_capabilities": [
-                "Production AI models (Qwen3-VL-4B, Qwen3-8B, Whisper-large-v3, VieNeu-TTS-v3-Turbo, DINOv2-base) require local installation and live E0/E1 field corpus benchmark execution before promoting candidate capabilities to enabled",
+                "Production AI models (Qwen3-VL-4B, Qwen3-8B, Whisper-large-v3, Kokoro-Vietnamese TTS, DINOv2-base) require local installation and live E0/E1 field corpus benchmark execution before promoting candidate capabilities to enabled",
                 "Capabilities in candidate/disabled state (exact_photo_shutter_match, sound_event_detection_sed, subject_aware_crop_tracker, vietnamese_phrase_alignment) automatically fall back to safe deterministic policies and are never claimed as active production features",
                 "DaVinci Resolve live timeline build & render requires DaVinci Resolve Studio / scripting enabled on the host Mac",
             ],
         },
     }
+    # (P1-18) A bare checksum is not authentication. The manifest reports its own signing
+    # state so a consumer never mistakes a self-computed hash for a signature.
+    manifest["signing"] = {
+        "signed": False,
+        "note": (
+            "manifest_sha256 is an integrity checksum, not a signature; a release manifest "
+            "must be signed with sign_release_manifest() before handover"
+        ),
+    }
     manifest["manifest_sha256"] = digest(canon(manifest))
+    release_key = params.get("release_private_key_path")
+    if release_key:
+        # `sign_release_manifest` sets `signing.signed = true` *before* signing, so the flag
+        # is covered by the signature instead of invalidating it.
+        manifest = sign_release_manifest(manifest, release_key)
     return manifest

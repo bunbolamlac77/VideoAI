@@ -42,8 +42,9 @@ class AuditGateTests(unittest.TestCase):
             def fake_decode(cmd, **kwargs):
                 # run_tracked is the only shell-out path now; the fake returns a CompletedProcess shape.
                 vf = cmd[cmd.index("-vf") + 1]
+                out_pattern = next(part for part in cmd if part.endswith("%04d.jpg"))
                 for i in range(1, vf.count("eq(n") + 1):
-                    Path(cmd[-1].replace("%04d", f"{i:04d}")).write_bytes(b"fake-jpeg")
+                    Path(out_pattern.replace("%04d", f"{i:04d}")).write_bytes(b"fake-jpeg")
                 return types.SimpleNamespace(returncode=0, stderr=b"")
 
             pipeline_adapters._VLM_MODEL_CACHE.clear()

@@ -285,6 +285,12 @@ struct TestS12ToS15G2Closure {
 
             let client = WorkerClient()
             let pyPath = aivideo_test_python_path()
+            // (P1-12) `models_root_dir` is no longer an RPC parameter: the pinned model root
+            // comes from the app-support profile, so the empty profile is set here.
+            let emptyModelsRoot = tmpDir.appendingPathComponent("no_models_here")
+            try FileManager.default.createDirectory(at: emptyModelsRoot, withIntermediateDirectories: true)
+            setenv("AIVIDEO_APP_SUPPORT", emptyModelsRoot.path, 1)
+            defer { unsetenv("AIVIDEO_APP_SUPPORT") }
             _ = try await client.start(pythonPath: pyPath, scriptPath: "workers/src/aivideo_workers/main.py", timeoutSeconds: 8.0)
 
             let srcRevUUID = UUID()
@@ -347,7 +353,7 @@ struct TestS12ToS15G2Closure {
             let loadedReviews = try await store.listReviewItems(workdayId: wdUUID)
             await store.close()
 
-            // Since visual model is not installed, status MUST be blocked_model_unavailable with 0% coverage & 0 fake observations,
+            // With the empty models root above, status MUST be blocked_model_unavailable with 0% coverage & 0 fake observations,
             // while brief decomposition creates real claims & targeted review items persisted in SQLite!
             let ok = rpcRes.coverageLedger.detailedPassStatus == "blocked_model_unavailable"
                 && rpcRes.coverageLedger.frameInputCoverage == 0.0

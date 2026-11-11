@@ -142,8 +142,18 @@ final class AppState: ObservableObject {
     // Gate G1: ProjectStore, Brief/Fact Editor & ACK Save Status (S06.5)
     @Published var g1Project: ProjectRecord?
     @Published var g1Workday: WorkdayRecord?
-    @Published var g1DraftFactText: String = "Đoạn quay cảnh sương mù đèo Prenn lúc 6h sáng"
+    @Published var g1DraftFactText: String = ""
     @Published var g1SaveStatus: String = "Chưa lưu" // Đang lưu / Đã lưu / Lưu lỗi
+
+    // MARK: - Brief cho người viết kịch bản (Bước 1)
+    // Nguồn ngữ cảnh duy nhất do người dùng viết: MỘT ô text. Thứ bắt buộc là
+    // khoảnh khắc đẹp nhất cần có ("Cảnh bắt buộc: …"); các dòng khác là tuỳ
+    // chọn và được ScriptBriefRecord.parseBox tách ra. Persist bởi ProjectStore
+    // (single writer) trong AppState+ScriptBrief.swift và gửi cho G2 dưới dạng
+    // `brief_text`; G3 đọc lại để prefill chủ đề / giọng điệu.
+    @Published var briefRawText: String = ""
+    @Published var briefSaveStatus: String = "Chưa lưu"
+    @Published var latestScriptBrief: ScriptBriefRecord?
     @Published var g1Claims: [ClaimRecord] = []
     @Published var g1ReconciliationSummary: String = ""
     @Published var g1LastBackupInfo: String = ""
@@ -181,13 +191,15 @@ final class AppState: ObservableObject {
         self.latestG3PublicationId = publicationId
         self.isStep2StoryApproved = true
 
-        // Generate default sequential 24fps caption cues from beats
+        // (P1-49) Cue timing is only trustworthy when it comes from the measured WAV.
+        // The old word-count x 0.45 s heuristic produced captions that drifted from the voice
+        // and were then shown as approved. Without per-phrase sample offsets the editor
+        // starts empty and the caption is taken from the beat's own audio length.
         var generatedCues: [G4CaptionCue] = []
         var currentFrame = 0
         for b in beats {
-            let wordCount = max(1, b.voiceText.split(separator: " ").count)
-            let durationSeconds = max(2.0, Double(wordCount) * 0.45)
-            let frameSpan = Int(durationSeconds * 24.0)
+            guard let samples = b.voiceSamples, samples > 0 else { continue }
+            let frameSpan = max(1, Int((Double(samples) / 48_000.0 * 24.0).rounded(.down)))
             generatedCues.append(G4CaptionCue(
                 text: b.voiceText,
                 startFrame: currentFrame,
@@ -196,10 +208,21 @@ final class AppState: ObservableObject {
             currentFrame += frameSpan
         }
         self.cachedCaptionCues = generatedCues
+        self.captionTimingSource = generatedCues.isEmpty
+            ? "unknown_waiting_for_measured_wav"
+            : "measured_wav_samples"
     }
 
+    /// (P1-47) The analysis currently running, so "Dừng" can cancel it.
+    var currentBatchTask: Task<CoverageLedgerRecord, Error>?
+    /// (P1-54) The most recent `g2_source_mapping` publication for this project.
+    @Published var latestG2MappingPublicationId: String = ""
+    /// (P1-49) Where the current caption timing came from; the UI must show it.
+    @Published var captionTimingSource: String = "none"
     var projectStore: ProjectStore? // actor remains single canonical writer; exposed to G3 UI only
     var publicationService: ArtifactPublicationService? // shared S08 actor for G4
+    /// Debounce handle for auto-saving the scriptwriter brief while typing.
+    var briefAutosaveTask: Task<Void, Never>?
     private let backupService = BackupRestoreService(supportedMaxSchemaVersion: 2)
 
     @Published var errorMessage: String?
@@ -361,7 +384,10 @@ final class AppState: ObservableObject {
     }
 
     func restartWorker() async {
+        // (P1-48) The guard used to be checked before `await terminate()` and only set inside
+        // `initializeWorker`, so two quick invocations could both pass and spawn two workers.
         guard !isStartingWorker else { return }
+        isStartingWorker = true
         await worker.terminate()
         isWorkerConnected = false
         modelStatus = nil
@@ -898,6 +924,7 @@ final class AppState: ObservableObject {
             self.g1ReconciliationSummary = "Reconciled: revoked=\(report.revokedOldAttemptsCount), quarantined=\(report.quarantinedTempsCount), corrupted=\(report.corruptedCommittedBlobsCount)"
             self.g1Claims = try await store.getLatestClaims(workdayId: fixedWorkdayId)
             self.g2ReviewItems = try await store.listReviewItems(workdayId: fixedWorkdayId)
+            await loadScriptBrief()
             let covRecords = try await store.listCoverageRecords(projectId: fixedProjId)
             if let latestCov = covRecords.first {
                 let pct = String(format: "%.1f", latestCov.frameInputCoverage * 100.0)
@@ -990,7 +1017,7 @@ final class AppState: ObservableObject {
             filePath: fingerprint.canonicalPath,
             sourceRevisionId: srcRevUUID.uuidString,
             workdayId: wd.workdayId.uuidString,
-            briefText: g1DraftFactText,
+            briefText: composedBriefText(),
             prefilterEnabled: prefilterEnabled
         )
 
@@ -1092,6 +1119,9 @@ final class AppState: ObservableObject {
             self.errorMessage = "Vui lòng chọn file video nguồn trước khi chạy phân tích G2."
             return
         }
+        // The brief is user-authored context: persist it before it is cited by
+        // any claim/question, so the evidence trail points at a stored revision.
+        await persistBriefIfNeeded()
         self.isRunningG2Analysis = true
         self.errorMessage = nil
         defer { self.isRunningG2Analysis = false }
@@ -1120,6 +1150,7 @@ final class AppState: ObservableObject {
             return
         }
 
+        await persistBriefIfNeeded()
         self.isRunningG2Analysis = true
         self.isBatchAnalysisRunning = true
         self.batchCancelRequested = false
@@ -1147,10 +1178,21 @@ final class AppState: ObservableObject {
             self.selectedFilePath = item.id
 
             do {
-                let cov = try await analyzeSingleSource(filePath: item.id, store: store, proj: proj, wd: wd)
+                // (P1-47) The in-flight analysis is a cancellable task: "Dừng" must stop the
+                // current video, not wait for it to finish (which could take minutes).
+                let task = Task { try await analyzeSingleSource(filePath: item.id, store: store, proj: proj, wd: wd) }
+                self.currentBatchTask = task
+                let cov = try await task.value
+                self.currentBatchTask = nil
                 lastCov = cov
                 self.batchCompletedCount += 1
+            } catch is CancellationError {
+                self.currentBatchTask = nil
+                self.statusMessage = "Đã dừng phân tích (đang phân tích dở video \(item.name))."
+                await refreshG2State(wdId: wd.workdayId, lastCov: lastCov)
+                return
             } catch {
+                self.currentBatchTask = nil
                 self.batchFailedCount += 1
                 self.statusMessage = "Video \(item.name) lỗi: \(error.localizedDescription)"
             }
@@ -1163,8 +1205,36 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// (P1-51) "Làm video mới" must clear every approval, cue and publication reference so the
+    /// next video cannot inherit the previous one's "đã duyệt" state.
+    func resetWorkflowForNewVideo() {
+        currentBatchTask?.cancel()
+        currentBatchTask = nil
+        batchCancelRequested = true
+        cachedStoryBeats = []
+        cachedCaptionCues = []
+        captionTimingSource = "none"
+        latestG3PublicationId = ""
+        latestG4PublicationId = ""
+        latestG5PublicationId = ""
+        latestG2MappingPublicationId = ""
+        latestScriptBrief = nil
+        g1Claims = []
+        g2ReviewItems = []
+        g2ScopeSummary = ""
+        probeResult = nil
+        mediaItems = []
+        selectedFilePath = ""
+        isStep2StoryApproved = false
+        isStep3PreviewReady = false
+        statusMessage = "Đã làm mới quy trình: hãy chọn thư mục tư liệu cho video mới."
+        navigateToSection(.media)
+    }
+
     func cancelBatchAnalysis() {
         self.batchCancelRequested = true
+        // (P1-47) cancel the RPC in flight as well as the loop condition
+        self.currentBatchTask?.cancel()
     }
 
     private func refreshG2State(wdId: UUID, lastCov: CoverageLedgerRecord?) async {

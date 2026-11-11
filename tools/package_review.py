@@ -352,9 +352,8 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
         try:
             with open(s02_t1_evidence, "r", encoding="utf-8") as ef:
                 ev = json.load(ef)
-            recorded = ev.get("status")
-            t1_status = "PASS" if recorded == "PASS" else ("NOT_RUN" if recorded == "NOT_RUN" else "FAIL")
-            t1_obs = ev.get("details", "Verified from recorded evidence")
+            # (P1-41) a PASS requires a run identity, not just the word "PASS"
+            t1_status, t1_obs = verify_s02_evidence(ev)
             t1_exit = 0 if t1_status == "PASS" else (2 if t1_status == "NOT_RUN" else 1)
         except Exception:
             t1_status = "FAIL"
@@ -428,6 +427,49 @@ def execute_regression_tests() -> List[Dict[str, Any]]:
 
     return records
 
+def verify_s02_evidence(evidence: Any) -> Tuple[str, str]:
+    """(P1-41) Decide S02.T1 from recorded evidence, refusing bare self-assertions.
+
+    A file that only says `status: PASS` certifies nothing: it can be written by anything
+    that can write to `reports/evidence`. A PASS needs a run identity, a timestamp, the host
+    it ran on and the operator, i.e. the fields the S02 harness actually emits.
+    """
+    if not isinstance(evidence, dict):
+        return "FAIL", "Evidence file corrupted"
+    recorded = str(evidence.get("status", "")).upper()
+    if recorded == "NOT_RUN":
+        return "NOT_RUN", str(evidence.get("details") or evidence.get("not_run_reason") or "Not run")
+    if recorded != "PASS":
+        return "FAIL", str(evidence.get("details") or f"Recorded status {recorded or 'missing'}")
+    missing = [
+        key for key in ("run_id", "timestamp", "executed_on_host", "operator")
+        if not str(evidence.get(key, "")).strip()
+    ]
+    if missing:
+        return "FAIL", f"Self-asserted PASS without run identity fields: {', '.join(missing)}"
+    return "PASS", str(evidence.get("details") or "Verified from recorded evidence")
+
+
+def review_verdict(test_records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """(P0-05) Single verdict used by the summary header *and* the process exit code.
+
+    A review package may only succeed when every observed case passed and every
+    required suite produced at least one record. Silence is NOT a pass.
+    """
+    counts = {"PASS": 0, "FAIL": 0, "BLOCKED": 0, "NOT_RUN": 0, "OTHER": 0}
+    for r in test_records:
+        st = r.get("status")
+        counts[st if st in counts else "OTHER"] += 1
+    ok = (
+        counts["PASS"] > 0
+        and counts["FAIL"] == 0
+        and counts["BLOCKED"] == 0
+        and counts["NOT_RUN"] == 0
+        and counts["OTHER"] == 0
+    )
+    return {"ok": ok, "counts": counts}
+
+
 def generate_review_summary(git_info: dict, source_hash: str, test_records: List[Dict[str, Any]], packaged_files: List[Tuple[str, int]]) -> str:
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
     file_list_md = "\n".join([f"| `{p}` | {sz} bytes |" for p, sz in packaged_files])
@@ -480,28 +522,78 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
     g4_failed = any(any(k in r.get("testcase_id", "") for k in ("S20", "S21", "G4", "test_s20", "test_g4")) and r.get("status") == "FAIL" for r in test_records)
     g5_failed = any(any(k in r.get("testcase_id", "") for k in ("S22", "S23", "S24", "S25", "S26", "G5", "test_s22", "test_g5")) and r.get("status") == "FAIL" for r in test_records)
 
-    s02_status = "FAIL" if s02_failed else ("DONE" if not_run_count == 0 else "IN_REVIEW")
-    s03_status = "BLOCKED" if blocked_count > 0 else ("FAIL" if s03_failed else "DONE")
-    s04_status = "FAIL" if s04_failed else "DONE"
-    s05_status = "FAIL" if s05_failed else "DONE"
-    s06_status = "FAIL" if s06_failed else "DONE"
-    s07_status = "FAIL" if s07_failed else "DONE"
-    s08_status = "FAIL" if s08_failed else "DONE"
-    s09_status = "FAIL" if s09_failed else "DONE"
-    s10_status = "FAIL" if s10_failed else "DONE"
-    s11_status = "FAIL" if s11_failed else "DONE (Adapter Contracts, 16GB Policy & Local Qwen3-VL 4B MLX Inference Verified)"
-    s12_status = "FAIL" if s12_failed else "DONE"
-    s13_status = "FAIL" if s13_failed else "DONE"
-    s14_status = "FAIL" if s14_failed else "DONE"
-    s15_status = "FAIL" if s15_failed else "DONE (Harness, Anti-Leakage & 5 Held-Out Rec.709 Video Corpus Benchmark PASS)"
-    g3_status = "FAIL" if g3_failed else "DONE (Hoàn thành S16 – S19: Story, VieNeu-TTS Gate, SEARCH-v1 & S19 Guard)"
-    g4_status = "FAIL" if g4_failed else "DONE (Hoàn thành S20 – S21: Resolve Managed Timeline, Raster Captions & S21 Demux/QC Guard)"
-    g5_status = "FAIL" if g5_failed else "IN_REVIEW (Hoàn thành 100% mã nguồn & kiểm thử S22 – S26, đã vá 3 lỗi P0; Preflight bảo vệ bằng chữ ký mật mã HMAC-SHA256 & băm SHA-256 từng video)"
+    # 2026-11-11 fix (P0-05): "DONE" used to mean "no record said FAIL", so deleting an
+    # evidence file silently promoted a gate to DONE (with a hard-coded praise label).
+    # A gate is now DONE only when it has at least one observed record and none of them
+    # failed or was blocked; missing evidence is NOT_RUN, never DONE.
+    gate_defs = {
+        "S02": (("S02", "UI-16", "OFF-01"), s02_failed),
+        "S03": (("S03", "RES-01"), s03_failed),
+        "S04": (("S04", "DATA-04"), s04_failed),
+        "S05": (("S05", "DATA-01"), s05_failed),
+        "S06": (("S06",), s06_failed),
+        "S07": (("S07",), s07_failed),
+        "S08": (("S08",), s08_failed),
+        "S09": (("S09",), s09_failed),
+        "S10": (("S10", "test_s10"), s10_failed),
+        "S11": (("S11", "test_s11"), s11_failed),
+        "S12": (("S12", "test_s12"), s12_failed),
+        "S13": (("S13", "test_s13"), s13_failed),
+        "S14": (("S14", "test_s14"), s14_failed),
+        "S15": (("S15", "test_s15"), s15_failed),
+        "G3": (("S16", "S17", "S18", "S19", "G3", "test_s16", "test_g3"), g3_failed),
+        "G4": (("S20", "S21", "G4", "test_s20", "test_g4"), g4_failed),
+        "G5": (("S22", "S23", "S24", "S25", "S26", "G5", "test_s22", "test_g5"), g5_failed),
+    }
 
-    if fail_count == 0 and blocked_count == 0 and not_run_count == 0 and pass_count > 0:
-        g0_status_badge = "🟢 **DONE (Đã đóng Gate G0: Đạt 100% tất cả các tiêu chí nghiệm thu G0)**"
+    def gate_state(markers: tuple, failed: bool, *, in_review: bool = False) -> str:
+        hit = [
+            r for r in test_records
+            if any(m in r.get("testcase_id", "") for m in markers)
+        ]
+        if failed:
+            return "FAIL"
+        if not hit:
+            return "NOT_RUN (không có bằng chứng testcase nào cho bước này)"
+        if any(r.get("status") in {"FAIL", "BLOCKED"} for r in hit):
+            return "FAIL/BLOCKED"
+        if any(r.get("status") == "NOT_RUN" for r in hit):
+            return "NOT_RUN (có testcase chưa chạy)"
+        if any(r.get("status") != "PASS" for r in hit):
+            return "IN_REVIEW"
+        if in_review:
+            return "IN_REVIEW"
+        return f"DONE ({sum(1 for r in hit if r.get('status') == 'PASS')} testcase PASS)"
+
+    s02_status = "FAIL" if s02_failed else ("NOT_RUN (chưa có bằng chứng thủ công)" if not_run_count else "DONE")
+    s03_status = "BLOCKED" if blocked_count > 0 else gate_state(gate_defs["S03"][0], s03_failed)
+    s04_status = gate_state(gate_defs["S04"][0], s04_failed)
+    s05_status = gate_state(gate_defs["S05"][0], s05_failed)
+    s06_status = gate_state(gate_defs["S06"][0], s06_failed)
+    s07_status = gate_state(gate_defs["S07"][0], s07_failed)
+    s08_status = gate_state(gate_defs["S08"][0], s08_failed)
+    s09_status = gate_state(gate_defs["S09"][0], s09_failed)
+    s10_status = gate_state(gate_defs["S10"][0], s10_failed)
+    s11_status = gate_state(gate_defs["S11"][0], s11_failed)
+    s12_status = gate_state(gate_defs["S12"][0], s12_failed)
+    s13_status = gate_state(gate_defs["S13"][0], s13_failed)
+    s14_status = gate_state(gate_defs["S14"][0], s14_failed)
+    s15_status = gate_state(gate_defs["S15"][0], s15_failed)
+    g3_status = gate_state(gate_defs["G3"][0], g3_failed)
+    g4_status = gate_state(gate_defs["G4"][0], g4_failed)
+    g5_status = gate_state(gate_defs["G5"][0], g5_failed, in_review=True)
+
+    # (P0-05) The badge is derived from the same verdict the exit code uses.
+    _verdict = review_verdict(test_records)
+    if _verdict["ok"]:
+        g0_status_badge = (
+            f"🟢 **DONE ({_verdict['counts']['PASS']} testcase PASS)**"
+        )
     else:
-        g0_status_badge = "🔵 **IN_REVIEW (Đang thẩm định / còn testcase cần môi trường chạy thật)**"
+        g0_status_badge = (
+            "🔴 **NOT CLOSED** — "
+            + ", ".join(f"{k}={v}" for k, v in _verdict["counts"].items() if v)
+        )
 
     if any(st == "FAIL" for st in (s04_status, s05_status, s06_status, s07_status, s08_status, s09_status)):
         g1_status_badge = "🔴 **FAIL (Có lỗi kiểm thử trong Gate G1)**"
@@ -545,13 +637,13 @@ def generate_review_summary(git_info: dict, source_hash: str, test_records: List
   - **S09:** Cơ chế Online SQLite Backup (`checkpoint_backup` & `portable_backup`), Restore sang thư mục mới, Schema Migration và đóng Gate G1. Trạng thái: `{s09_status}`.
 - **Gate G2 (Phân tích và bằng chứng):** {g2_status_badge}.
   - **S10:** Chỉ mục PTS theo presentation order, ánh xạ hữu tỉ VFR→CFR 24/1 (`M-24-SDR-v1`), bảo vệ frame bằng chứng ngắn (flash), audio canonical 48 kHz và chính sách màu SDR Rec.709 / HDR Mobius tone-map. Trạng thái: `{s10_status}`.
-  - **S11:** Model adapters (`Qwen3-VL-4B`, `Qwen3-8B`, `Whisper-large-v3`, `VieNeu-TTS-v3-Turbo`, `DINOv2-base`), kiểm toán độ phủ frame thực sau processor (`PostProcessorFrameAudit`), khóa chính sách RAM 16 GB (chặn model 32B) và capability registry (`contracts/s11_model_registry.lock.json`). Trạng thái: `{s11_status}`.
+  - **S11:** Model adapters (`Qwen3-VL-4B`, `Qwen3-8B`, `Whisper-large-v3`, `Kokoro-Vietnamese`, `DINOv2-base`), kiểm toán độ phủ frame thực sau processor (`PostProcessorFrameAudit`), khóa chính sách RAM 16 GB (chặn model 32B) và capability registry (`contracts/s11_model_registry.lock.json`). Trạng thái: `{s11_status}`.
   - **S12:** Pipeline phân tích full-frame theo cửa sổ trượt có overlap (`16 frames, overlap 4`), cô lập quan sát gốc (`raw_independent`) khỏi brief, hợp nhất cửa sổ, nhánh audio độc lập (`no_audio`/`no_speech` không chặn hình), omission audit và checkpointing theo cửa sổ. Trạng thái: `{s12_status}`.
   - **S13:** Parser brief tách facts/preferences/constraints, tách mệnh đề nhân quả & đa mệnh đề, thực thi bảng quyết định 12 dòng (Section 6), đồ thị sự kiện thứ tự bộ phận (partial-order event graph) phát hiện chu trình/lệch đồng hồ và revalidation đúng phạm vi khi thêm nguồn mới. Trạng thái: `{s13_status}`.
   - **S14:** Luồng review có bằng chứng theo đúng loại nguồn (video/ảnh/brief không ép timecode giả), 6 lệnh giải quyết (`confirm`, `edit`, `reject`, `answer_unknown`, `drop`, `exclude_asset`), lọc batch confirmation chống lọt kết quả nền và đo chỉ số công thái học review. Trạng thái: `{s14_status}`.
   - **S15:** Benchmark phân tích tại checkpoint `analysis_eligible` (5 chuyến held-out độc lập, 105 cơ hội quyết định claim, 50 sự kiện quan sát được, 60 ca đối kháng verifier), chống rò rỉ dữ liệu, khoảng tin cậy Wilson 95% + Group Bootstrap 10.000 vòng và đóng Gate G2. Trạng thái: `{s15_status}`.
 - **Gate G3 (Kịch bản, giọng đọc, tìm bản dựng và duyệt):** {g3_status_badge}.
-  - **S16 – S19:** Sinh kịch bản ràng buộc bằng chứng (chặn `user` claim lên `direct_claim`), VieNeu-TTS offline PCM16 48 kHz + cổng nghe xác nhận, bộ giải `SEARCH-v1` + `EXACT-v1`, và `G3ApprovalGuard` độc lập trong Swift `ProjectStore`.
+  - **S16 – S19:** Sinh kịch bản ràng buộc bằng chứng (chặn `user` claim lên `direct_claim`), Kokoro-Vietnamese offline PCM16 48 kHz + cổng nghe xác nhận, bộ giải `SEARCH-v1` + `EXACT-v1`, và `G3ApprovalGuard` độc lập trong Swift `ProjectStore`.
 - **Gate G4 (Dựng thử trong DaVinci Resolve và duyệt bản xem thử):** {g4_status_badge}.
   - **S20 – S21:** Journal intent trước hiệu ứng phụ Resolve, phụ đề tiếng Việt burn-in CFR 24fps, kiểm định kỹ thuật bằng `ffprobe`/`ffmpeg volumedetect` và `G4S21Guard` xác minh toàn chuỗi phụ thuộc S08 trước khi lưu `g4_preview_approvals`.
 - **Gate G5 (Bản cuối, nâng cấp chất lượng, kiểm thử phát hành và bàn giao):** {g5_status_badge}.
@@ -689,6 +781,8 @@ def create_review_package(output_zip: str = "AIVideo-review.zip") -> str:
     # 6. Generate REVIEW_SUMMARY.md embedding verified fingerprint and real test results
     print("Đang tạo file tổng quan REVIEW_SUMMARY.md từ kết quả thực tế...")
     review_summary_content = generate_review_summary(git_info, source_hash, test_records, packaged_files)
+    # (P0-05) Publish the machine-readable verdict for the CLI exit code and for consumers.
+    sys.modules[__name__].LAST_VERDICT = review_verdict(test_records)
 
     summary_path = os.path.join(root_dir, "REVIEW_SUMMARY.md")
     with open(summary_path, "w", encoding="utf-8") as f:
@@ -712,4 +806,12 @@ def create_review_package(output_zip: str = "AIVideo-review.zip") -> str:
 
 if __name__ == "__main__":
     out_name = sys.argv[1] if len(sys.argv) > 1 else "AIVideo-review.zip"
-    create_review_package(out_name)
+    _result = create_review_package(out_name)
+    # (P0-05) The review package must not be able to "succeed" while a gate is red,
+    # blocked or unrun: callers (auto_sync_git.sh, CI) key off this exit code.
+    _verdict = getattr(sys.modules[__name__], "LAST_VERDICT", None) or {}
+    if not _verdict.get("ok", False):
+        print(f"\n❌ REVIEW GATE FAILED: {_verdict.get('counts', {})}")
+        sys.exit(1)
+    print("\n✅ REVIEW GATE PASSED: every recorded case passed")
+    sys.exit(0)

@@ -768,12 +768,14 @@ def probe_and_index_real_video(
     )
 
     container_frame_count: Optional[int] = None
+    denominator_source: Optional[str] = None
     try:
         nb = stream.get("nb_frames")
         if nb not in (None, "N/A"):
             candidate = int(nb)
             if candidate > 0:
                 container_frame_count = candidate
+                denominator_source = "container_nb_frames"
     except (TypeError, ValueError):
         container_frame_count = None
     if container_frame_count is None:
@@ -785,6 +787,7 @@ def probe_and_index_real_video(
             fps = float(num_s) / float(den_s or 1)
             if duration_s > 0 and fps > 0:
                 container_frame_count = int(round(duration_s * fps))
+                denominator_source = "duration_times_fps"
         except (TypeError, ValueError, ZeroDivisionError):
             container_frame_count = None
 
@@ -799,6 +802,9 @@ def probe_and_index_real_video(
         "audio_streams_count": len(audio_streams),
         "frame_count": len(pts_index),
         "container_frame_count": container_frame_count,
+        # (P1-26) How the denominator was obtained, so consumers never confuse a measured
+        # count with a duration x fps estimate.
+        "denominator_source": denominator_source,
         "indexed_frame_count": len(pts_index),
         "pts_index": [e.to_dict() for e in pts_index],
         "color_decision": color_decision.to_dict(),
@@ -824,7 +830,11 @@ def declared_source_frame_count(
     if declared is None or int(declared) <= 0:
         if indexed <= 0:
             raise MediaMappingError("Cannot determine declared frame count: no container metadata and empty PTS index.")
-        return indexed
+        raise MediaMappingError(
+            "COVERAGE_DENOMINATOR_UNAVAILABLE: the container reports neither a frame count nor a "
+            "usable duration, so the index cannot be the denominator without making coverage "
+            f"circular ({indexed} indexed frames). Re-container the source or provide duration."
+        )
 
     declared = int(declared)
     if indexed > declared:

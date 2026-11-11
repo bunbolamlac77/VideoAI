@@ -83,8 +83,11 @@ cp -R workers/src/aivideo_workers/* "$RESOURCES_DIR/Workers/aivideo_workers/"
 mkdir -p "$RESOURCES_DIR/workers"
 cp -R workers/src "$RESOURCES_DIR/workers/"
 
-# 3. Bundle Model profile lock into Contents/Resources/contracts
+# 3. Bundle Model profile lock into Contents/Resources/contracts.
+# (P1-20) Runtime contracts resolve by position from the worker package, so the bundle needs
+# Resources/contracts (two levels above the package).
 mkdir -p "$RESOURCES_DIR/contracts"
+cp -R contracts "$RESOURCES_DIR/Workers/contracts" 2>/dev/null || true
 for contract_file in contracts/*.json contracts/*.sql; do
     if [ -f "$contract_file" ]; then
         cp "$contract_file" "$RESOURCES_DIR/contracts/"
@@ -129,7 +132,10 @@ swiftc -sdk "$SDK_PATH" \
   packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
   packages/AIVideoCore/Sources/WorkerIPC/WorkerClient.swift \
   apps/macos/Sources/AppState.swift \
+  apps/macos/Sources/AppState+ScriptBrief.swift \
   apps/macos/Sources/AIVideoApp.swift \
+  apps/macos/Sources/ScriptBriefView.swift \
+  apps/macos/Sources/AIVideoTheme.swift \
   apps/macos/Sources/G3ConsoleView.swift \
   apps/macos/Sources/G4ConsoleView.swift \
   apps/macos/Sources/G5ConsoleView.swift \

@@ -468,6 +468,48 @@ extension ProjectStore {
         }
     }
 
+    /// (P0-08) Accept an LLM-rewritten narration only with complete, checkable provenance.
+    private func beatIsProvenancedLLMRewrite(
+        _ beat: [String: Any],
+        narration: String,
+        claimText: String,
+        scriptRevisions: [String]
+    ) throws -> Bool {
+        guard let origin = beat["voice_text_origin"] as? String,
+              origin == "llm_local_rewrite"
+        else { return false }
+
+        // Only user-visible wording may be rewritten; observed facts must stay verbatim.
+        guard !claimText.isEmpty else { return false }
+
+        let hashes = ["voice_text_sha256", "voice_raw_output_sha256", "voice_prompt_sha256"]
+        for key in hashes {
+            guard let value = beat[key] as? String,
+                  value.count == 64,
+                  value.allSatisfy({ $0.isHexDigit })
+            else { return false }
+        }
+        guard let modelID = beat["voice_model_id"] as? String, !modelID.isEmpty,
+              let sourceText = beat["voice_text_source_text"] as? String,
+              !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return false }
+
+        // The narration the user approves must be exactly the text that was hashed.
+        let narrationHash = G3SQL.sha256(Data(narration.utf8))
+        guard beat["voice_text_sha256"] as? String == narrationHash else { return false }
+
+        // The rewrite may re-phrase but never add numbers the claim did not contain.
+        let claimDigits = Set(claimText.split(whereSeparator: { !$0.isNumber }).map(String.init))
+        let narrationDigits = Set(narration.split(whereSeparator: { !$0.isNumber }).map(String.init))
+        guard narrationDigits.isSubset(of: claimDigits) else { return false }
+        guard !narration.contains("\u{FFFD}") else { return false }
+        guard (8...320).contains(narration.count) else { return false }
+
+        // The source text must be the canonical claim text this beat cites.
+        guard sourceText == claimText else { return false }
+        return true
+    }
+
     private func checkG3ClaimRevisions(
         _ db: OpaquePointer,
         _ revisions: [String],
@@ -731,10 +773,22 @@ extension ProjectStore {
                     : ""
                 ) + row[0]
 
-                guard narration == expected else {
-                    throw G3StoreError.blocked(
-                        "Narration differs from validated claim; revise and revalidate claim first"
-                    )
+                // 2026-11-11 fix (P0-08): the local story LLM is required to re-word the
+                // claim, so verbatim equality made the default G3 path unapprovable.
+                // A rewritten narration is accepted only when it carries the complete
+                // provenance the worker writes for it, and when the rewriting cannot have
+                // introduced a fact: same digits, no U+FFFD, and a healthy length.
+                if narration != expected {
+                    guard try beatIsProvenancedLLMRewrite(
+                        beat,
+                        narration: narration,
+                        claimText: row[0],
+                        scriptRevisions: scriptRevisions
+                    ) else {
+                        throw G3StoreError.blocked(
+                            "Narration differs from validated claim; revise and revalidate claim first"
+                        )
+                    }
                 }
 
                 referencedRevisions.insert(

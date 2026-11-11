@@ -12,6 +12,7 @@ import Foundation
 public enum G3StoryRequestError: Error, LocalizedError, Sendable {
     case missingClaim
     case unconfirmedClaim(ReviewStatus)
+    case missingScope
     case encodingFailed(String)
 
     public var errorDescription: String? {
@@ -20,6 +21,8 @@ public enum G3StoryRequestError: Error, LocalizedError, Sendable {
             return "Chọn một fact đã có trong G1 trước khi sinh kịch bản."
         case .unconfirmedClaim(let status):
             return "Fact chưa được xác nhận (review_status=\(status.rawValue)); hãy xác nhận trước."
+        case .missingScope:
+            return "Fact không mang scope bằng chứng (source_revision_id) nên không thể truy vết nguồn."
         case .encodingFailed(let reason):
             return "Không mã hoá được story request: \(reason)"
         }
@@ -73,20 +76,42 @@ public struct G3StoryRequestPayload: Codable, Sendable, Equatable {
     public let claims: [G3StoryFactPayload]
     public let shots: [String]
     public let constraints: G3StoryConstraintsPayload
+    /// `llm` asks the worker to rewrite approved claim wording with the local
+    /// `P-STORY-SYNTH-v1` model; `deterministic` keeps the verbatim claim text.
+    /// The worker always falls back to deterministic text if the rewrite fails.
+    public let scriptEngine: String?
 
     public enum CodingKeys: String, CodingKey {
         case evidenceScopeRevisionId = "evidence_scope_revision_id"
         case claims
         case shots
         case constraints
+        case scriptEngine = "script_engine"
     }
 }
 
 public enum G3StoryRequestBuilder {
+    /// (P0-09) The evidence scope of a claim is its own provenance, never a caller constant.
+    /// The G3 console used to send the literal `"scope-g2-main"`, a revision id that exists
+    /// nowhere in SQLite, while the worker only checks that the string is non-empty.
+    public static func evidenceScope(for claim: ClaimRecord) -> String? {
+        claim.sourceRevisionId?.uuidString
+    }
+
+    /// (P0-09) Scope revalidation is only "complete" when the scope really is the claim's own
+    /// evidence scope. It is never hard-coded to "complete".
+    public static func scopeRevalidationStatus(for claim: ClaimRecord, scopeRevisionId: String) -> String? {
+        guard let own = evidenceScope(for: claim) else { return nil }
+        let trimmed = scopeRevisionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed == own ? "complete" : "pending_scope_revalidation"
+    }
+
     /// Build the wire payload for `g3.story.generate` from a real claim.
+    /// `scopeRevisionId == nil` means "use the claim's own evidence scope".
     public static func makePayload(
         claim: ClaimRecord?,
-        scopeRevisionId: String,
+        scopeRevisionId: String?,
         tone: String,
         targetSeconds: Int
     ) throws -> G3StoryRequestPayload {
@@ -94,9 +119,9 @@ public enum G3StoryRequestBuilder {
         guard claim.reviewStatus == .confirmed else {
             throw G3StoryRequestError.unconfirmedClaim(claim.reviewStatus)
         }
-        let trimmedScope = scopeRevisionId.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedScope.isEmpty else {
-            throw G3StoryRequestError.encodingFailed("scope revision id rỗng")
+        let trimmedScope = try resolveScope(claim: claim, scopeRevisionId: scopeRevisionId)
+        guard let revalidation = scopeRevalidationStatus(for: claim, scopeRevisionId: trimmedScope) else {
+            throw G3StoryRequestError.missingScope
         }
 
         let fact = G3StoryFactPayload(
@@ -108,7 +133,7 @@ public enum G3StoryRequestBuilder {
             reviewStatus: claim.reviewStatus.rawValue,
             supportStatus: claim.supportStatus.rawValue,
             allowedUse: claim.allowedUse.rawValue,
-            scopeRevalidationStatus: "complete",
+            scopeRevalidationStatus: revalidation,
             evidenceScopeRevisionId: trimmedScope
         )
 
@@ -122,14 +147,28 @@ public enum G3StoryRequestBuilder {
                 mustUse: [],
                 mustNotUse: [],
                 preferred: []
-            )
+            ),
+            scriptEngine: "llm"
         )
+    }
+
+    private static func resolveScope(claim: ClaimRecord, scopeRevisionId: String?) throws -> String {
+        if let requested = scopeRevisionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !requested.isEmpty {
+            return requested
+        }
+        guard let own = evidenceScope(for: claim) else {
+            // An explicit scope may still be supplied by a caller that has one, but an
+            // empty scope with no provenance is a hard error, not a made-up constant.
+            throw G3StoryRequestError.missingScope
+        }
+        return own
     }
 
     /// JSON string ready for the `g3.story.generate` RPC.
     public static func makeJSON(
         claim: ClaimRecord?,
-        scopeRevisionId: String,
+        scopeRevisionId: String?,
         tone: String,
         targetSeconds: Int
     ) throws -> String {

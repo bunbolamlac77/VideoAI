@@ -106,7 +106,10 @@ enum G5S22Guard {
         g4Approval: G4PreviewApproval,
         candidate: [String: Any],
         manifest: [String: Any],
-        dependencyIDs: [String]
+        dependencyIDs: [String],
+        // (P1-02) When supplied, artifacts are read and hashed through this closure instead
+        // of inside the caller's write transaction.
+        fileReader: ((_ publicationID: String, _ kind: String, _ expectedSHA: String?, _ maxSize: Int) throws -> (String, [String: Any]?))? = nil
     ) throws {
         guard let beats = candidate["beats"] as? [[String: Any]],
               let voices = manifest["voice_publications"] as? [[String: String]],
@@ -123,14 +126,16 @@ enum G5S22Guard {
         guard declared.contains(cutID), declared.contains(previewID) else {
             throw reject("G3 cut or S21 approved preview not pinned in G5 dependencies")
         }
-        _ = try load(
-            db, project: project, id: previewID,
-            kind: "g4_preview_mp4", expected: g4Approval.previewSHA256,
-            maxSize: 4 * 1024 * 1024 * 1024
-        )
-        let (_, possibleCut) = try load(
-            db, project: project, id: cutID, kind: "g3_cut_plan", expected: cutSHA
-        )
+        let read: (_ id: String, _ kind: String, _ expected: String?, _ maxSize: Int) throws -> (String, [String: Any]?)
+        if let fileReader {
+            read = fileReader
+        } else {
+            read = { id, kind, expected, maxSize in
+                try load(db, project: project, id: id, kind: kind, expected: expected, maxSize: maxSize)
+            }
+        }
+        _ = try read(previewID, "g4_preview_mp4", g4Approval.previewSHA256, 4 * 1024 * 1024 * 1024)
+        let (_, possibleCut) = try read(cutID, "g3_cut_plan", cutSHA, 8 * 1024 * 1024)
         guard let cut = possibleCut,
               cut["script_revision_id"] as? String == manifest["script_revision_id"] as? String,
               cut["scope_revision_id"] as? String == candidate["scope_revision_id"] as? String,
@@ -168,9 +173,8 @@ enum G5S22Guard {
                   SHA256.hash(data: Data(voiceText.utf8)).map({ String(format: "%02x", $0) }).joined() == textHash else {
                 throw reject("Missing mapping/WAV or narration altered")
             }
-            _ = try load(db, project: project, id: mappingID, kind: "g2_source_mapping", expected: mappingSHA)
-            _ = try load(db, project: project, id: voiceID, kind: "voice_wav", expected: voiceSHA,
-                         maxSize: 128 * 1024 * 1024)
+            _ = try read(mappingID, "g2_source_mapping", mappingSHA, 8 * 1024 * 1024)
+            _ = try read(voiceID, "voice_wav", voiceSHA, 128 * 1024 * 1024)
             expectedIDs.insert(mappingID)
             expectedIDs.insert(voiceID)
             expectedMappingByBeat[beatID] = mappingSHA
@@ -194,7 +198,7 @@ enum G5S22Guard {
             if metadata[0] == "g5_captioned_cfr_4k" {
                 videoIDsByHash[metadata[1], default: []].append(id)
             } else if metadata[0] == "g5_conform_receipt" {
-                let (_, possibleReceipt) = try load(db, project: project, id: id, kind: "g5_conform_receipt")
+                let (_, possibleReceipt) = try read(id, "g5_conform_receipt", nil, 8 * 1024 * 1024)
                 guard let receipt = possibleReceipt,
                       receipt["schema"] as? String == "g5-conform-receipt-v1" else {
                     throw reject("Invalid G5 conform receipt")
@@ -239,17 +243,104 @@ enum G5S22Guard {
             }
             let id = ids.removeFirst()
             videoIDsByHash[videoHash] = ids
-            _ = try load(
-                db, project: project, id: id,
-                kind: "g5_captioned_cfr_4k", expected: videoHash,
-                maxSize: 4 * 1024 * 1024 * 1024
-            )
+            _ = try read(id, "g5_captioned_cfr_4k", videoHash, 4 * 1024 * 1024 * 1024)
             expectedIDs.insert(id)
             expectedIDs.insert(receiptIDsByBeat[beatID]!)
         }
         guard expectedIDs == declared else {
             throw reject("Dependency IDs are not exactly the canonical G3/G4/G5 chain")
         }
+    }
+
+    /// (P1-02) Measure a file's SHA-256 and size on disk (used outside write transactions).
+    static func measureFile(_ expectedSHA: String, path: String) throws -> (sha: String, size: Int64) {
+        let url = URL(fileURLWithPath: path)
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            throw reject("Cannot open \(url.lastPathComponent) for hashing")
+        }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        var total: Int64 = 0
+        while true {
+            let data = (try? handle.read(upToCount: 1024 * 1024)) ?? nil
+            guard let chunk = data, !chunk.isEmpty else { break }
+            total += Int64(chunk.count)
+            hasher.update(data: chunk)
+        }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        guard digest == expectedSHA.lowercased() else {
+            throw reject("Published artifact bytes changed on disk (\u{1F512})".replacingOccurrences(of: "\u{1F512}", with: url.lastPathComponent))
+        }
+        return (digest, total)
+    }
+
+    /// (P1-02) Hash and parse one committed publication on a private READ-ONLY connection.
+    ///
+    /// Hashing a multi-gigabyte artifact used to happen inside the caller's `BEGIN IMMEDIATE`
+    /// transaction, holding the single writer (and every other writer in the app) hostage for
+    /// the duration of the IO. The gates may gather their evidence first and then open the
+    /// write transaction, passing these digests through `verifyFinalBindings(fileReader:)`.
+    static func readPublishedArtifact(
+        databasePath: String,
+        project: UUID,
+        id: String,
+        kind: String,
+        expectedSHA: String? = nil,
+        maxSize: Int = 8 * 1024 * 1024
+    ) throws -> (String, [String: Any]?) {
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(databasePath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let db = handle else {
+            throw reject("Cannot open the canonical database read-only to hash an artifact")
+        }
+        defer { sqlite3_close(db) }
+        return try load(db, project: project, id: id, kind: kind, expected: expectedSHA, maxSize: maxSize)
+    }
+
+    /// (P1-02) Read the approved script/manifest rows on a private read-only connection,
+    /// before any write transaction is opened.
+    private static func jsonObject(_ raw: String) throws -> [String: Any] {
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw reject("Published artifact is not a JSON object")
+        }
+        return object
+    }
+
+    static func readApprovedCandidate(
+        databasePath: String, projectId: UUID, g3ApprovalId: UUID, expectedManifestSHA: String
+    ) throws -> (manifest: [String: Any], script: [String: Any], scriptRevisionId: String)? {
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(databasePath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let db = handle else { return nil }
+        defer { sqlite3_close(db) }
+        guard let row = try row(db, """
+            SELECT a.manifest_sha256, a.script_revision_id, a.manifest_json, s.candidate_json
+            FROM g3_approvals a JOIN g3_scripts s
+              ON s.script_revision_id = a.script_revision_id
+            WHERE a.project_id = ? AND a.approval_id = ?
+            """, [projectId.uuidString, g3ApprovalId.uuidString]),
+              row[0] == expectedManifestSHA else { return nil }
+        return (try jsonObject(row[2]), try jsonObject(row[3]), row[1])
+    }
+
+    /// (P1-02) Locate a committed publication's canonical bytes read-only.
+    static func publicationLocation(
+        databasePath: String, projectId: UUID, id: String, expected: String, expectedTypes: [String]
+    ) -> (path: String, sha: String)? {
+        // Only the canonical database (written by ProjectStore) is read here, read-only.
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(databasePath, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let db = handle else { return nil }
+        defer { sqlite3_close(db) }
+        guard let row = try? row(db, """
+            SELECT state, artifact_type, sha256_hash, canonical_path
+            FROM artifact_publications WHERE publication_id = ? AND project_id = ?
+            """, [id, projectId.uuidString]),
+              row[0] == "COMMITTED", expectedTypes.contains(row[1]), row[2] == expected else {
+            return nil
+        }
+        return (row[3], row[2])
     }
 
     private static func tool(_ basename: String) throws -> URL {
@@ -352,5 +443,208 @@ enum G5S22Guard {
               let peak = Double(volume[valueRange]), peak < -0.01 else {
             throw reject("Final MP4 audio peaks at digital full-scale or is not measurable")
         }
+    }
+    // MARK: - (P0-03) ffmpeg-native receipt provenance
+
+    /// What the approved script + preview say a native receipt must contain.
+    struct NativeReceiptExpectation: Sendable {
+        var planSHA256: String?
+        var g3ApprovalId: String?
+        var g4ApprovalId: String?
+        var publicationIDs: Set<String>?
+
+        init(
+            planSHA256: String? = nil,
+            g3ApprovalId: String? = nil,
+            g4ApprovalId: String? = nil,
+            publicationIDs: Set<String>? = nil
+        ) {
+            self.planSHA256 = planSHA256
+            self.g3ApprovalId = g3ApprovalId
+            self.g4ApprovalId = g4ApprovalId
+            self.publicationIDs = publicationIDs
+        }
+    }
+
+    /// Stream a file through SHA-256 without loading it into memory.
+    static func fileSHA256(_ path: String) throws -> String {
+        let url = URL(fileURLWithPath: path)
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            throw reject("Cannot open \(url.lastPathComponent) for hashing")
+        }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            let chunk = (try? handle.read(upToCount: 8 * 1024 * 1024)) ?? nil
+            guard let data = chunk, !data.isEmpty else { break }
+            hasher.update(data: data)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Independently inspect the exact S08 2160x3840 24fps final MP4 on disk.
+    static func verifyFinalMP4(mp4Path: String, expectedFrames: Int) throws {
+        let probe = try run("ffprobe", [
+            "-v", "error", "-count_frames", "-show_streams", "-show_format", "-of", "json", mp4Path
+        ], timeout: 180)
+        guard let json = try? JSONSerialization.jsonObject(with: Data(probe.utf8)) as? [String: Any],
+              let streams = json["streams"] as? [[String: Any]],
+              let format = json["format"] as? [String: Any] else {
+            throw reject("ffprobe output is invalid")
+        }
+        let videos = streams.filter { $0["codec_type"] as? String == "video" }
+        let audios = streams.filter { $0["codec_type"] as? String == "audio" }
+        guard videos.count == 1, audios.count == 1 else {
+            throw reject("Final MP4 requires exactly one video and one audio stream")
+        }
+        let v = videos[0], a = audios[0]
+        guard v["width"] as? Int == 2160, v["height"] as? Int == 3840,
+              frameRate(v["avg_frame_rate"]) == 24, frameRate(v["r_frame_rate"]) == 24,
+              v["color_primaries"] as? String == "bt709",
+              v["color_transfer"] as? String == "bt709",
+              v["color_space"] as? String == "bt709",
+              v["pix_fmt"] as? String == "yuv420p" || v["pix_fmt"] as? String == "yuv420p10le",
+              Int(v["nb_read_frames"] as? String ?? "") == expectedFrames,
+              a["sample_rate"] as? String == "48000",
+              let secondsText = format["duration"] as? String,
+              let seconds = Double(secondsText),
+              seconds < 180.0,
+              abs(seconds - Double(expectedFrames) / 24.0) <= (1.0 / 24.0 + 0.03) else {
+            throw reject("Final MP4 frame count/24fps/2160x3840/bt709/48kHz or duration mismatch")
+        }
+        let volume = try run("ffmpeg", [
+            "-hide_banner", "-nostdin", "-nostats", "-i", mp4Path,
+            "-vn", "-af", "volumedetect", "-f", "null", "-"
+        ], timeout: 180)
+        let pattern = #"max_volume:\s*([+-]?(?:\d+(?:\.\d+)?|inf))\s*dB"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let range = NSRange(volume.startIndex..<volume.endIndex, in: volume)
+        guard let match = regex.matches(in: volume, range: range).last,
+              let valueRange = Range(match.range(at: 1), in: volume),
+              let peak = Double(volume[valueRange]), peak < -0.01 else {
+            throw reject("Final MP4 audio peaks at digital-full-scale or is not measurable")
+        }
+    }
+
+    /// Shape + provenance + approval-chain binding of an ffmpeg-native render receipt.
+    static func verifyNativeReceipt(
+        receipt: [String: Any],
+        mp4Path: String,
+        expectedFrames: Int,
+        expectation: NativeReceiptExpectation?
+    ) throws {
+        guard receipt["schema"] as? String == "native-render-receipt-v1" else {
+            throw reject("Unknown provenance schema; expected native-render-receipt-v1")
+        }
+        guard receipt["width"] as? Int == 2160, receipt["height"] as? Int == 3840,
+              receipt["fps"] as? Int == 24,
+              receipt["total_frames"] as? Int == expectedFrames else {
+            throw reject("Native receipt resolution/fps/frame count does not match the approved timeline")
+        }
+        guard let beats = receipt["beats"] as? [[String: Any]], !beats.isEmpty else {
+            throw reject("Native receipt carries no beat evidence")
+        }
+        var sum = 0
+        for beat in beats {
+            guard let frames = beat["frames"] as? Int, frames > 0 else {
+                throw reject("Native receipt beat without a frame length")
+            }
+            sum += frames
+            if beat["kind"] as? String == "photo_insert" {
+                // (P1-32) An inserted photo is published evidence: it must be committed
+                // through S08 and cited here, not merely marked "illustrative_only".
+                guard beat["usage"] as? String == "illustrative_only",
+                      let photoHash = beat["photo_sha256"] as? String, hex(photoHash),
+                      let photoPub = beat["photo_publication_id"] as? String,
+                      UUID(uuidString: photoPub) != nil else {
+                    throw reject("Photo insert must be illustrative_only, hashed and published")
+                }
+            } else {
+                for key in ["video_sha256", "voice_sha256", "caption_text_sha256"] {
+                    guard let value = beat[key] as? String, hex(value) else {
+                        throw reject("Native receipt beat field \(key) is not a valid hash")
+                    }
+                }
+            }
+        }
+        guard let overlap = receipt["transition_overlap_frames"] as? Int, overlap >= 0,
+              sum - overlap == expectedFrames else {
+            throw reject("Native receipt frame accounting (sum - overlaps) is inconsistent")
+        }
+        guard let output = receipt["output"] as? [String: Any],
+              let declared = output["sha256"] as? String, hex(declared) else {
+            throw reject("Native receipt is missing the output hash")
+        }
+        guard try fileSHA256(mp4Path) == declared.lowercased() else {
+            throw reject("Final MP4 bytes do not match the native render receipt")
+        }
+
+        // (P0-03) The receipt must name the approval chain it was rendered from.
+        guard let planSHA = receipt["plan_sha256"] as? String, hex(planSHA) else {
+            throw reject("Native receipt does not name the approved plan it was rendered from")
+        }
+        if let expected = expectation?.planSHA256, planSHA.lowercased() != expected.lowercased() {
+            throw reject("Native receipt was rendered from a different approved plan")
+        }
+        if let expected = expectation?.g3ApprovalId,
+           (try text(receipt, "g3_approval_id")).lowercased() != expected.lowercased() {
+            throw reject("Native receipt G3 approval differs from the approved script")
+        }
+        if let expected = expectation?.g4ApprovalId,
+           (try text(receipt, "g4_approval_id")).lowercased() != expected.lowercased() {
+            throw reject("Native receipt G4 approval differs from the approved preview")
+        }
+        if let allowed = expectation?.publicationIDs {
+            let normalised = Set(allowed.map { $0.lowercased() })
+            for beat in beats where (beat["kind"] as? String) != "photo_insert" {
+                let videoID = try text(beat, "video_publication_id").lowercased()
+                let voiceID = try text(beat, "voice_publication_id").lowercased()
+                let mappingID = try text(beat, "mapping_publication_id").lowercased()
+                guard normalised.contains(videoID), normalised.contains(voiceID),
+                      normalised.contains(mappingID) else {
+                    throw reject("Native receipt cites a publication outside the approved chain")
+                }
+            }
+            for beat in beats where (beat["kind"] as? String) == "photo_insert" {
+                let photoID = try text(beat, "photo_publication_id").lowercased()
+                guard normalised.contains(photoID) else {
+                    throw reject("Native receipt cites a photo publication outside the approved chain")
+                }
+            }
+        }
+    }
+
+    /// Accept a Resolve `.drp` archive or an ffmpeg-native receipt for the same MP4.
+    static func verifyFinalProvenance(
+        mp4Path: String,
+        provenancePath: String,
+        expectedFrames: Int,
+        expectation: NativeReceiptExpectation? = nil
+    ) throws {
+        guard (1...4319).contains(expectedFrames) else {
+            throw reject("Invalid approved timeline duration (> 4319 frames)")
+        }
+        let url = URL(fileURLWithPath: provenancePath)
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            throw reject("Published provenance artifact missing on disk")
+        }
+        let header = (try? handle.read(upToCount: 4)) ?? Data()
+        try? handle.close()
+        let size = (try? FileManager.default.attributesOfItem(atPath: provenancePath)[.size] as? Int) ?? 0
+        if header == Data([0x50, 0x4B, 0x03, 0x04]) {
+            guard size > 1024 else {
+                throw reject("Published .drp is not a valid ZIP archive > 1024 bytes")
+            }
+        } else {
+            guard let data = try? Data(contentsOf: url),
+                  let receipt = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                throw reject("Published provenance is neither a .drp ZIP nor a readable native receipt")
+            }
+            try verifyNativeReceipt(
+                receipt: receipt, mp4Path: mp4Path,
+                expectedFrames: expectedFrames, expectation: expectation
+            )
+        }
+        try verifyFinalMP4(mp4Path: mp4Path, expectedFrames: expectedFrames)
     }
 }

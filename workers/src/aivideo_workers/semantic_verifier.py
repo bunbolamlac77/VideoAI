@@ -233,13 +233,23 @@ def parse_raw_brief_to_drafts(
 
         # Classify constraint vs preference vs event_fact
         constraint_type: Optional[str] = None
-        if any(tok in lower for tok in ("không dùng cảnh", "cấm dùng", "đừng đưa cảnh", "bỏ cảnh", "must_not_use")):
+        # Wedding POV phrasing is explicit: "Bắt buộc có cảnh: …" / "Không quay: …".
+        if any(tok in lower for tok in (
+            "không dùng cảnh", "cấm dùng", "đừng đưa cảnh", "bỏ cảnh", "must_not_use",
+            "không quay", "đừng quay", "tránh quay", "tránh cảnh", "không đưa cảnh",
+        )):
             item_kind = "usage_constraint"
             constraint_type = "must_not_use"
-        elif any(tok in lower for tok in ("bắt buộc dùng", "nhất định giữ cảnh", "phải có cảnh", "must_use")):
+        elif any(tok in lower for tok in (
+            "bắt buộc dùng", "bắt buộc có", "nhất định giữ cảnh", "phải có cảnh",
+            "phải quay", "cần có cảnh", "must_use",
+        )):
             item_kind = "usage_constraint"
             constraint_type = "must_use"
-        elif any(tok in lower for tok in ("thích nhạc", "gu dựng", "phong cách hài", "nhịp nhanh", "nhạc vui")):
+        elif any(tok in lower for tok in (
+            "thích nhạc", "gu dựng", "phong cách", "nhịp nhanh", "nhạc vui", "giọng điệu",
+            "cinematic", "fine-art", "documentary", "tone",
+        )):
             item_kind = "style_preference"
             constraint_type = "preferred"
         else:

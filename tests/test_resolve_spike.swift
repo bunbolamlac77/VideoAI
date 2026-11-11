@@ -93,6 +93,8 @@ func assertTrue(_ condition: Bool, _ message: String, file: StaticString = #file
 @main
 struct TestResolveSpike {
     static func main() async {
+        // (P1-40) Tracks whether the gate could be exercised at all.
+        var resolveBlocked = false
         print("=======================================================")
         print("RUNNING DAVINCI RESOLVE REGRESSION TEST SUITE (S03 / G0)")
         print("=======================================================")
@@ -230,6 +232,7 @@ struct TestResolveSpike {
                     exitStatus: 2,
                     testType: "integration"
                 )
+                resolveBlocked = true
                 print("   ✅ PASS: Correctly caught scoped RPC error (\(code)): \(message)")
             } catch {
                 recordResolveTestResult(
@@ -249,7 +252,14 @@ struct TestResolveSpike {
 
         await client.terminate()
         print("\n=======================================================")
-        print("ALL DAVINCI RESOLVE REGRESSION TESTS COMPLETED!")
+        print("DAVINCI RESOLVE REGRESSION TESTS COMPLETED")
         print("=======================================================\n")
+        // (P1-40) A BLOCKED run means the gate was never exercised. Completing the suite must
+        // not look like success: exit 2 so the matrix and package review cannot read a
+        // skipped environment as a pass.
+        if resolveBlocked {
+            print("RESOLVE SPIKE: BLOCKED (Resolve Studio not running) — gate NOT verified")
+            exit(2)
+        }
     }
 }

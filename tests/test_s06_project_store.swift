@@ -188,6 +188,142 @@ struct TestS06ProjectStore {
             print("   ✅ PASS: S06.T3 Fact confirmation & Epistemic preservation verified.")
             passCount += 1
 
+            // Test 4b: Wedding brief is content-addressed and reloadable
+            print("\n[Test 4b] S06.BRIEF: One-box brief, must-have moments, content-addressed revisions...")
+            // An untouched box composes to "" — no field is invented.
+            assert(ScriptBriefRecord.parseBox("").composedText.isEmpty)
+            assert(ScriptBriefRecord.suggestedTone("cinematic") == "tram_tinh")
+            assert(ScriptBriefRecord.suggestedTone("vui_nhon") == "hai_huoc")
+            assert(ScriptBriefRecord.suggestedSeconds("tiktok") == 30)
+            assert(ScriptBriefRecord.suggestedSeconds("youtube") == 90)
+
+            // The one required line: the best moments of the day. Nothing else is needed.
+            let momentsOnly = ScriptBriefRecord.make(
+                briefRevisionId: UUID(),
+                projectId: project.projectId,
+                workdayId: validWorkday.workdayId,
+                rawText: "Cảnh bắt buộc: trao nhẫn, mẹ chải tóc, lì xì"
+            )
+            assert(momentsOnly.hasMustHave)
+            assert(momentsOnly.mustHave == "trao nhẫn, mẹ chải tóc, lì xì")
+            assert(!momentsOnly.isBlank)
+            assert(momentsOnly.composedText == "Bắt buộc có cảnh: trao nhẫn, mẹ chải tóc, lì xì.")
+            // Optional menus are not required and never become facts the user did not write.
+            assert(!momentsOnly.composedText.contains("Phong cách"))
+            assert(!momentsOnly.composedText.contains("Nền tảng"))
+            assert(!momentsOnly.composedText.contains("Lịch ngày"))
+
+            // The same box also accepts optional "Nhãn: …" lines.
+            let boxText = """
+            Cảnh bắt buộc: trao nhẫn, mẹ chải tóc
+            Cặp đôi: Ngọc Hân & Quốc Tài
+            Ngày giờ: 20/10 · 5h30 xuất phát qua bên côn đồ để chụp
+            Địa điểm: Tư gia Q7 · Nhà thờ Đức Bà · White Palace
+            Góc POV: Thợ ảnh đi cùng ekip từ 5h sáng
+            Cần tránh: khách chưa xin phép, cảnh say rượu
+            Phong cách: Vui nhộn
+            Nền tảng: TikTok · 60 giây
+            """
+            let parse = ScriptBriefRecord.parseBox(boxText)
+            assert(parse.hasMustHave)
+            assert(parse.fields["couple"]?.value == "Ngọc Hân & Quốc Tài")
+            assert(parse.fields["style"]?.value == "vui_nhon")
+            assert(parse.fields["platform"]?.value == "TikTok · 60 giây", "the box keeps the author's words")
+            assert(parse.fields["platform"]?.line == "Nền tảng TikTok, 60 giây.")
+            assert(parse.fields["mustAvoid"]?.value == "khách chưa xin phép, cảnh say rượu")
+            assert(parse.composedText.split(separator: "\n").count == 8)
+            assert(parse.composedText.contains("Bắt buộc có cảnh: trao nhẫn, mẹ chải tóc."))
+            assert(parse.composedText.contains("Không quay: khách chưa xin phép, cảnh say rượu."))
+            assert(parse.composedText.contains("Phong cách: Vui nhộn."))
+            assert(parse.composedText.contains("Nền tảng TikTok, 60 giây."))
+
+            let boxed = ScriptBriefRecord.make(
+                briefRevisionId: UUID(),
+                projectId: project.projectId,
+                workdayId: validWorkday.workdayId,
+                rawText: boxText
+            )
+            assert(boxed.targetSeconds == 60)
+            assert(boxed.eventType == "vu_quy")
+            assert(boxed.topicLine == "Ngọc Hân & Quốc Tài — Lễ vu quy")
+            assert(boxed.suggestedTone == "hai_huoc")
+
+            // Free text without labels survives verbatim.
+            let free = ScriptBriefRecord.parseBox("Nhà gái ở Quận 7, cần xin phép bà nội khi quay")
+            assert(free.hasMustHave == false)
+            assert(free.composedText == "Nhà gái ở Quận 7, cần xin phép bà nội khi quay.")
+
+            // Meaning comes from the label: a must-avoid line that starts with "không"
+            // stays must-avoid and never turns into a must-have.
+            let avoid = ScriptBriefRecord.parseBox("Cần tránh: không quay cảnh say rượu")
+            assert(avoid.fields["mustAvoid"]?.line == "Không quay: không quay cảnh say rượu.")
+            assert(avoid.hasMustHave == false)
+
+            // Legacy revisions (old 11-field form) still compose.
+            let legacyText = ScriptBriefRecord.composeText(
+                coupleNames: "Linh & Minh",
+                eventType: "vu_quy",
+                schedule: "24/11 · 7h30 đón dâu · 11h gia tiên",
+                venues: "Tư gia Q7 · White Palace",
+                povRole: "Thợ ảnh đi cùng ekip từ 5h sáng",
+                style: "cinematic",
+                mustHave: "trao nhẫn, mẹ chải tóc",
+                mustAvoid: "khách chưa xin phép",
+                platform: "tiktok",
+                targetSeconds: 30,
+                notes: ""
+            )
+            assert(legacyText.contains("Bắt buộc có cảnh: trao nhẫn, mẹ chải tóc."))
+            assert(legacyText.split(separator: "\n").count == 8)
+
+            let briefV1 = ScriptBriefRecord.make(
+                briefRevisionId: ScriptBriefRecord.revisionId(workdayId: validWorkday.workdayId, composedText: momentsOnly.composedText),
+                projectId: project.projectId,
+                workdayId: validWorkday.workdayId,
+                rawText: momentsOnly.rawText
+            )
+            try await store.saveScriptBrief(briefV1)
+            let loadedBrief = try await store.latestScriptBrief(workdayId: validWorkday.workdayId)
+            assert(loadedBrief?.briefRevisionId == briefV1.briefRevisionId)
+            assert(loadedBrief?.rawText == briefV1.rawText, "The one box must round-trip verbatim")
+            assert(loadedBrief?.mustHave == "trao nhẫn, mẹ chải tóc, lì xì")
+            assert(loadedBrief?.hasMustHave == true)
+            assert(loadedBrief?.isBlank == false)
+            assert(loadedBrief?.topicLine == "Lễ vu quy")
+
+            // Same content => same revision id (idempotent), so autosave cannot fork history.
+            let repeatId = ScriptBriefRecord.revisionId(workdayId: validWorkday.workdayId, composedText: momentsOnly.composedText)
+            assert(repeatId == briefV1.briefRevisionId)
+
+            // Edited content => new revision id, latest read returns the edit.
+            let briefV2 = ScriptBriefRecord.make(
+                briefRevisionId: UUID(),
+                projectId: project.projectId,
+                workdayId: validWorkday.workdayId,
+                rawText: boxText,
+                defaults: briefV1,
+                updatedAt: Date().addingTimeInterval(1)
+            )
+            assert(briefV2.briefRevisionId != briefV1.briefRevisionId)
+            assert(briefV2.coupleNames == "Ngọc Hân & Quốc Tài")
+            assert(briefV2.targetSeconds == 60)
+            try await store.saveScriptBrief(briefV2)
+            let latestBrief = try await store.latestScriptBrief(workdayId: validWorkday.workdayId)
+            assert(latestBrief?.briefRevisionId == briefV2.briefRevisionId)
+            assert(latestBrief?.targetSeconds == 60)
+            assert(latestBrief?.rawText == boxText)
+
+            recordS06TestResult(
+                testcaseId: "S06.BRIEF",
+                requirementId: "UI-BRIEF-01",
+                expected: "One-box brief persists through ProjectStore; the must-have moments alone are enough; identical content keeps one revision; edits create a new revision",
+                observed: "Must-have-only brief composed to one line; labelled box parsed into 8 optional fields; raw text round-tripped verbatim; repeat id matched, edited brief produced a new revision and became latest",
+                status: "PASS",
+                exitStatus: 0
+            )
+            print("   ✅ PASS: S06.BRIEF One-box brief persistence verified.")
+            passCount += 1
+
             // Test 5: S06.T2 WAL Checkpoint & Clean Close
             print("\n[Test 5] S06.T2: WAL passive checkpoint and clean termination...")
             try await store.checkpointWAL()
@@ -201,6 +337,9 @@ struct TestS06ProjectStore {
             let reopenedClaims = try await reopenedStore.getLatestClaims(workdayId: validWorkday.workdayId)
             assert(reopenedClaims.count == 1)
             assert(reopenedClaims[0].reviewStatus == .confirmed)
+            let reopenedBrief = try await reopenedStore.latestScriptBrief(workdayId: validWorkday.workdayId)
+            assert(reopenedBrief?.briefRevisionId == briefV2.briefRevisionId,
+                   "Brief revision must survive reopen")
             await reopenedStore.close()
 
             recordS06TestResult(
@@ -221,7 +360,19 @@ struct TestS06ProjectStore {
 
         try? FileManager.default.removeItem(at: tempDir)
         print("\n=======================================================")
-        print("ALL SWIFT G1 S06 PROJECTSTORE TESTS PASSED (\(passCount)/\(passCount))!")
+        exit(aivideoReportBanner("SWIFT G1 S06 PROJECTSTORE", passed: passCount, total: 6))
         print("=======================================================")
     }
+}
+
+/// (P1-38) A suite banner must be computed, never typed. `passed/total` where `total` is the
+/// declared number of cases: if a case silently stops running (or an assertion is removed)
+/// the banner no longer claims a full pass and the process exits non-zero.
+func aivideoReportBanner(_ suite: String, passed: Int, total: Int) -> Int32 {
+    if passed == total && total > 0 {
+        print("ALL \(suite) TESTS PASSED (\(passed)/\(total))!")
+        return 0
+    }
+    print("❌ \(suite): \(passed)/\(total) cases passed — suite is INCOMPLETE or FAILING")
+    return 1
 }

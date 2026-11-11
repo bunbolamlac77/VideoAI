@@ -2,6 +2,7 @@
 // Compliant with docs/05-ARCHITECTURE-AND-ROADMAP.md Sections 10 & 11 and docs/11-CODING-WORKFLOW-AND-CHECKLIST.md (S09).
 
 import Foundation
+import SQLite3
 
 public enum BackupMode: String, Codable, Sendable, Equatable {
     case checkpointBackup = "checkpoint_backup"
@@ -42,6 +43,8 @@ public struct BackupManifest: Codable, Sendable, Equatable {
     public let pinnedArtifacts: [PinnedArtifactManifestEntry]
     public let omittedCategories: [String]
     public let restorePrerequisites: [String]
+    /// (P1-07) Workday used to report the real claim count on restore.
+    public var workdayId: UUID? = nil
     public let createdAt: Date
 }
 
@@ -55,6 +58,8 @@ public struct RestoreReport: Codable, Sendable, Equatable {
     public let restoredClaimsCount: Int
     public let restoredApprovalsCount: Int
     public let verifiedPinnedBlobsCount: Int
+    /// (P1-06) Publications whose canonical path was re-pointed into the restored bundle.
+    public var repointedCanonicalPaths: Int = 0
     public let missingPrerequisites: [String]
     public let isFullyRestored: Bool
 }
@@ -91,26 +96,35 @@ public actor BackupRestoreService {
         }
 
         try FileManager.default.createDirectory(at: backupsRootURL, withIntermediateDirectories: true)
+        // (P1-05) The snapshot must live on a real filesystem: `sqlite3_backup` writes to a
+        // destination path, which fails on the macOS per-process temp directory.
+        let backupsRoot = backupsRootURL.resolvingSymlinksInPath().standardizedFileURL
         let backupId = UUID()
-        let stagingDir = backupsRootURL.appendingPathComponent(".staging_\(backupId.uuidString)", isDirectory: true)
-        let finalDir = backupsRootURL.appendingPathComponent("backup_\(mode.rawValue)_\(backupId.uuidString)", isDirectory: true)
+        let stagingDir = backupsRoot.appendingPathComponent(".staging_\(backupId.uuidString)", isDirectory: true)
+        let finalDir = backupsRoot.appendingPathComponent("backup_\(mode.rawValue)_\(backupId.uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
 
         do {
-            // Step 1 & 2: Capture consistent DB snapshot + root revision + pinned closure on ProjectStore actor
+            // Step 1 & 2: one consistent snapshot of the whole database, then the pinned
+            // closure is read FROM that snapshot. (P1-05) Previously the pins, revisions and
+            // publications were read from the live database and the snapshot taken
+            // afterwards, so a pin committed in between could be missing from the manifest
+            // (or point at a closure the snapshot did not contain).
             let dbFilename = "project_snapshot.db"
-            let stagingDBURL = stagingDir.appendingPathComponent(dbFilename)
-
-            guard let project = try await store.getProject(id: projectId) else {
+            let stagingDBURL = URL(fileURLWithPath: stagingDir.appendingPathComponent(dbFilename).path)
+            try await store.performOnlineSQLiteBackup(to: stagingDBURL)
+            if !FileManager.default.fileExists(atPath: stagingDBURL.path) {
+                throw ProjectStoreError.executionFailed(
+                    "Backup snapshot was not written to \(stagingDBURL.path) (store may not be a disk-backed database)"
+                )
+            }
+            let snapshot = try SnapshotClosure.read(from: stagingDBURL, projectId: projectId)
+            guard snapshot.project != nil else {
                 throw ProjectStoreError.projectNotFound(projectId)
             }
-            let schemaVer = try await store.getSchemaVersion()
-            let pinnedIds = try await store.listPinnedPublicationIds(projectId: projectId)
-            let allPubs = try await store.listPublications(projectId: projectId)
-            let pinnedPubs = allPubs.filter { $0.state == .committed && pinnedIds.contains($0.publicationId) }
-
-            // Perform SQLite Online Backup API snapshot while isolated on ProjectStore
-            try await store.performOnlineSQLiteBackup(to: stagingDBURL)
+            let project = snapshot.project!
+            let schemaVer = snapshot.schemaVersion
+            let pinnedPubs = snapshot.committedPinnedPublications
 
             // Step 3: Barrier released! Copy immutable pinned blobs outside DB lock
             let (dbHash, _) = try SHA256Helper.hashFile(at: stagingDBURL)
@@ -125,6 +139,13 @@ public actor BackupRestoreService {
                           let sha = pub.sha256Hash,
                           let bSize = pub.byteSize else { continue }
                     let relPath = "blobs/\(sha)"
+                    // (P1-05) A portable backup must contain every pinned blob; a missing
+                    // one is a backup failure, never a silently smaller manifest.
+                    guard FileManager.default.fileExists(atPath: canonPath) else {
+                        throw ProjectStoreError.integrityViolation(
+                            "Pinned artifact missing on disk during backup: \(canonPath)"
+                        )
+                    }
                     let destURL = stagingDir.appendingPathComponent(relPath)
                     if !FileManager.default.fileExists(atPath: destURL.path) {
                         try FileManager.default.copyItem(at: URL(fileURLWithPath: canonPath), to: destURL)
@@ -177,6 +198,7 @@ public actor BackupRestoreService {
                 pinnedArtifacts: manifestEntries,
                 omittedCategories: omitted,
                 restorePrerequisites: prereqs,
+                workdayId: snapshot.workdayId,
                 createdAt: Date()
             )
 
@@ -273,7 +295,19 @@ public actor BackupRestoreService {
             throw ProjectStoreError.projectNotFound(manifest.projectId)
         }
 
+        // (P1-06) Portable backups carry the blobs into a *new* directory; the restored rows
+        // must point there, otherwise every guard sees the original absolute path as missing.
+        var repointed = 0
+        if manifest.mode == .portableBackup {
+            repointed = try await restoredStore.rewriteCanonicalPaths(
+                blobDirectory: destinationDir.appendingPathComponent("blobs", isDirectory: true),
+                projectId: manifest.projectId
+            )
+        }
+
         let approvals = try await restoredStore.listApprovals(projectId: manifest.projectId)
+        // (P1-07) The report previously counted approvals as "claims".
+        let claimCount = try await restoredStore.countClaims(workdayId: manifest.workdayId ?? UUID())
         let missingPrereqs = manifest.restorePrerequisites.filter { !availablePrerequisites.contains($0) }
 
         let report = RestoreReport(
@@ -283,9 +317,10 @@ public actor BackupRestoreService {
             newSessionId: newSessionId,
             mode: manifest.mode,
             integrityVerified: integrityOK,
-            restoredClaimsCount: approvals.count,
+            restoredClaimsCount: claimCount,
             restoredApprovalsCount: approvals.count,
             verifiedPinnedBlobsCount: verifiedBlobs,
+            repointedCanonicalPaths: repointed,
             missingPrerequisites: missingPrereqs,
             isFullyRestored: missingPrereqs.isEmpty && integrityOK
         )
@@ -327,5 +362,116 @@ public actor BackupRestoreService {
         )
         _ = try await store.verifyDatabaseIntegrity()
         return backupDir
+    }
+}
+
+/// (P1-05) Everything a backup manifest needs, read from one SQLite snapshot so the
+/// manifest always describes the exact image that was copied.
+struct SnapshotClosure {
+    struct Publication {
+        let publicationId: UUID
+        let artifactType: String
+        let sha256Hash: String?
+        let canonicalPath: String?
+        let byteSize: Int?
+    }
+
+    let project: ProjectRecord?
+    let schemaVersion: Int
+    let pinnedIds: Set<UUID>
+    let pinCount: Int
+    let committedPinnedPublications: [Publication]
+    let workdayId: UUID?
+
+    static func read(from databaseURL: URL, projectId: UUID) throws -> SnapshotClosure {
+        var handle: OpaquePointer?
+        // `+immutable=1` opens the copied snapshot as a plain file: no WAL/shared-memory
+        // side files, no locks, and it never attempts to create anything. A backup image is
+        // immutable by definition, and this is what lets a read-only reader work on it.
+        let immutableURI = "file:\(databaseURL.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? databaseURL.path)?immutable=1"
+        let rc = sqlite3_open_v2(immutableURI, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nil)
+        guard rc == SQLITE_OK, let db = handle else {
+            let message = handle.map { String(cString: sqlite3_errmsg($0)) } ?? "no handle"
+            throw ProjectStoreError.executionFailed("Cannot open backup snapshot for reading: \(message)")
+        }
+        defer { sqlite3_close(db) }
+        // The snapshot is opened read-only so a backup can never mutate it through this
+        // reader; any failure to read it is reported with SQLite's own message.
+        @inline(__always) func lastError() -> String { String(cString: sqlite3_errmsg(db)) }
+
+        func rows(_ sql: String, _ args: [String]) throws -> [[String?]] {
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed("Snapshot read failed for \(sql.prefix(60)): \(lastError())")
+            }
+            defer { sqlite3_finalize(stmt) }
+            for (i, arg) in args.enumerated() {
+                sqlite3_bind_text(stmt, Int32(i + 1), arg, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            }
+            var out: [[String?]] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let columns = Int(sqlite3_column_count(stmt))
+                var row: [String?] = []
+                for c in 0..<columns {
+                    if sqlite3_column_type(stmt, Int32(c)) == SQLITE_NULL {
+                        row.append(nil)
+                    } else if let text = sqlite3_column_text(stmt, Int32(c)) {
+                        row.append(String(cString: text))
+                    } else {
+                        row.append(nil)
+                    }
+                }
+                out.append(row)
+            }
+            return out
+        }
+
+        let projectID = projectId.uuidString
+        guard let projectRow = try rows(
+            "SELECT project_id, name, current_revision FROM projects WHERE project_id = ?;",
+            [projectID]
+        ).first else {
+            return SnapshotClosure(project: nil, schemaVersion: 0, pinnedIds: [],
+                                   pinCount: 0, committedPinnedPublications: [], workdayId: nil)
+        }
+        let project = ProjectRecord(
+            projectId: UUID(uuidString: projectRow[0] ?? "") ?? projectId,
+            name: projectRow[1] ?? "",
+            currentRevision: Int(projectRow[2] ?? "0") ?? 0
+        )
+        let schemaVersionRow = try rows("PRAGMA user_version;", [])
+        let firstRow: [String?] = schemaVersionRow.first ?? []
+        let schemaVersionColumn: String = firstRow.first.flatMap({ $0 }) ?? "0"
+        let schemaVersion = Int(schemaVersionColumn) ?? 0
+
+        let pinRows = try rows(
+            "SELECT p.publication_id, a.artifact_type, a.sha256_hash, a.canonical_path, a.byte_size " +
+            "FROM artifact_pins p JOIN artifact_publications a ON a.publication_id = p.publication_id " +
+            "WHERE p.project_id = ? AND a.state = 'COMMITTED';",
+            [projectID]
+        )
+        var pinned: [Publication] = []
+        for row in pinRows {
+            pinned.append(Publication(
+                publicationId: UUID(uuidString: row[0] ?? "") ?? UUID(),
+                artifactType: row[1] ?? "",
+                sha256Hash: row[2],
+                canonicalPath: row[3],
+                byteSize: row[4].flatMap { Int($0) }
+            ))
+        }
+
+        let workdayRow = try rows(
+            "SELECT workday_id FROM workdays WHERE project_id = ? ORDER BY rowid ASC LIMIT 1;",
+            [projectID]
+        )
+        return SnapshotClosure(
+            project: project,
+            schemaVersion: schemaVersion,
+            pinnedIds: Set(pinned.map(\.publicationId)),
+            pinCount: pinned.count,
+            committedPinnedPublications: pinned,
+            workdayId: workdayRow.first.flatMap { $0.first ?? nil }.flatMap { UUID(uuidString: $0) }
+        )
     }
 }

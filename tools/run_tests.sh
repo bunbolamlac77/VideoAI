@@ -30,7 +30,10 @@ done
 rm -f "$TMP_PROBE"
 
 mkdir -p build/tests build/reports
-rm -f build/reports/*.jsonl
+# (P1-44) Keep the previous run's records so a crash mid-matrix cannot leave the review
+# package with only the summary record; the current run's files are replaced, not erased.
+mkdir -p build/reports/previous
+mv build/reports/*.jsonl build/reports/previous/ 2>/dev/null || true
 
 echo "=== [1/2] Compiling and Running Worker IPC Tests (S02) ==="
 swiftc -sdk "$SDK_PATH" \
@@ -54,7 +57,18 @@ swiftc -sdk "$SDK_PATH" \
   tests/test_resolve_spike.swift \
   -o build/tests/test_resolve_spike
 
+# (P1-40) DaVinci Resolve is an optional component: a BLOCKED spike (Resolve closed) must
+# be reported, not treated as a failure of the optional branch.
+set +e
 ./build/tests/test_resolve_spike
+RESOLVE_STATUS=$?
+set -e
+if [ "$RESOLVE_STATUS" -eq 2 ]; then
+    echo "NOTE: DaVinci Resolve spike BLOCKED (Resolve Studio not running) — recorded, not counted as PASS"
+elif [ "$RESOLVE_STATUS" -ne 0 ]; then
+    echo "FAIL: DaVinci Resolve spike exited $RESOLVE_STATUS" >&2
+    exit "$RESOLVE_STATUS"
+fi
 
 echo "=== [3/4] Running Python Framing & Model Setup Unit Tests ==="
 PYTHON_BIN="python3"
@@ -77,7 +91,7 @@ swiftc -sdk "$SDK_PATH" \
   tests/test_s02_manual_verification.swift \
   -o build/tests/test_s02_manual_verification
 
-./build/tests/test_s02_manual_verification
+TEST_RECORDS_OUT="build/reports/swift_s02_manual_records.jsonl" ./build/tests/test_s02_manual_verification
 
 echo "=== [5/6] Running Swift Gate G1 S04 Contract Unit Tests ==="
 swiftc -sdk "$SDK_PATH" \
@@ -168,7 +182,7 @@ swiftc -sdk "$SDK_PATH" \
   tests/test_source_revision_identity.swift \
   -o build/tests/test_source_revision_identity
 
-./build/tests/test_source_revision_identity
+TEST_RECORDS_OUT="build/reports/swift_source_revision_identity_records.jsonl" ./build/tests/test_source_revision_identity
 
 echo "=== [10b/16] Running Swift G2 Coverage DTO Range Expansion Tests ==="
 swiftc -sdk "$SDK_PATH" \
@@ -179,7 +193,7 @@ swiftc -sdk "$SDK_PATH" \
   tests/test_g2_coverage_dto.swift \
   -o build/tests/test_g2_coverage_dto
 
-./build/tests/test_g2_coverage_dto
+TEST_RECORDS_OUT="build/reports/swift_g2_coverage_dto_records.jsonl" ./build/tests/test_g2_coverage_dto
 
 echo "=== [10c/17] Running Swift G3 Story Request Builder Tests ==="
 swiftc -sdk "$SDK_PATH" \
@@ -191,7 +205,7 @@ swiftc -sdk "$SDK_PATH" \
   tests/test_g3_story_request.swift \
   -o build/tests/test_g3_story_request
 
-./build/tests/test_g3_story_request
+TEST_RECORDS_OUT="build/reports/swift_g3_story_request_records.jsonl" ./build/tests/test_g3_story_request
 
 echo "=== [11/15] Running Swift Gate G2 S12..S15 Analysis, Verifier & Review Closure Tests ==="
 swiftc -sdk "$SDK_PATH" \
@@ -283,6 +297,77 @@ swiftc -sdk "$SDK_PATH" \
   -o build/tests/test_g5_final_and_release
 
 TEST_RECORDS_OUT="build/reports/swift_g5_s22_s26_records.jsonl" ./build/tests/test_g5_final_and_release
+
+echo "=== [P1] Job completion (P1-01), backup/restore (P1-05/06/07), out-of-transaction hashing (P1-02) ==="
+CORE_SWIFT="packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
+  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  packages/AIVideoCore/Sources/Recovery/BackupRestoreService.swift"
+
+swiftc -sdk "$SDK_PATH" -target arm64-apple-macosx14.0 -swift-version 6 -parse-as-library \
+  $CORE_SWIFT tests/test_p1_job_completion.swift -o build/tests/test_p1_job_completion
+TEST_RECORDS_OUT="build/reports/swift_p1_job_completion_records.jsonl" ./build/tests/test_p1_job_completion
+
+swiftc -sdk "$SDK_PATH" -target arm64-apple-macosx14.0 -swift-version 6 -parse-as-library \
+  $CORE_SWIFT tests/test_p1_backup_restore.swift -o build/tests/test_p1_backup_restore
+TEST_RECORDS_OUT="build/reports/swift_p1_backup_restore_records.jsonl" ./build/tests/test_p1_backup_restore
+
+swiftc -sdk "$SDK_PATH" -target arm64-apple-macosx14.0 -swift-version 6 -parse-as-library \
+  $(find packages/AIVideoCore/Sources -name '*.swift') \
+  tests/test_p1_hashing_outside_transaction.swift -o build/tests/test_p1_hashing_outside_transaction
+TEST_RECORDS_OUT="build/reports/swift_p1_hashing_records.jsonl" ./build/tests/test_p1_hashing_outside_transaction
+
+echo "=== [G5 receipt] P0-03: native receipt is bound to the approved plan/G3/G4 chain ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  $(find packages/AIVideoCore/Sources -name '*.swift') \
+  tests/test_g5_receipt_binding.swift \
+  -o build/tests/test_g5_receipt_binding
+
+TEST_RECORDS_OUT="build/reports/swift_g5_receipt_binding_records.jsonl" ./build/tests/test_g5_receipt_binding
+
+echo "=== [G3 LLM] P0-08: provenanced LLM narration reaches S19 approval ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DomainModels.swift \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Analysis/G2AnalysisAndReviewEngine.swift \
+  packages/AIVideoCore/Sources/Storage/ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G3ProjectStore.swift \
+  packages/AIVideoCore/Sources/Storage/G3ApprovalGuard.swift \
+  packages/AIVideoCore/Sources/Publication/ArtifactPublisher.swift \
+  tests/test_g3_llm_approval.swift \
+  -o build/tests/test_g3_llm_approval
+
+TEST_RECORDS_OUT="build/reports/swift_g3_llm_approval_records.jsonl" ./build/tests/test_g3_llm_approval
+
+echo "=== [G3 scope] P0-09: evidence scope comes from claim provenance ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  packages/AIVideoCore/Sources/Models/DataContracts.swift \
+  packages/AIVideoCore/Sources/Models/G3StoryRequest.swift \
+  tests/test_g3_story_scope.swift \
+  -o build/tests/test_g3_story_scope
+
+TEST_RECORDS_OUT="build/reports/swift_g3_story_scope_records.jsonl" ./build/tests/test_g3_story_scope
+
+echo "=== [G5 native] Verifying ffmpeg-native provenance receipt in S22 guard ==="
+swiftc -sdk "$SDK_PATH" \
+  -target arm64-apple-macosx14.0 \
+  -swift-version 6 \
+  -parse-as-library \
+  $(find packages/AIVideoCore/Sources -name '*.swift') \
+  tests/test_g5_native_provenance.swift \
+  -o build/tests/test_g5_native_provenance
+
+TEST_RECORDS_OUT="build/reports/swift_g5_native_records.jsonl" ./build/tests/test_g5_native_provenance
 
 echo "=== [Final Step] Re-signing and Verifying App Bundle Integrity ==="
 find "$ROOT_DIR/apps/macos/build/AIVideo.app" -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true

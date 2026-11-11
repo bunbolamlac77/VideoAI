@@ -8,18 +8,14 @@ REGISTRY_NAME = "s11_model_registry.lock.json"
 
 
 def resolve_s11_registry() -> Path:
-    environment_directory = os.environ.get("AIVIDEO_CONTRACTS_DIR")
-    if environment_directory:
-        candidate = (
-            Path(environment_directory).expanduser()
-            / REGISTRY_NAME
-        ).resolve()
-        if not candidate.is_file():
-            raise FileNotFoundError(
-                f"Missing S11 registry at app-provided path: {candidate}"
-            )
-        return candidate
-
+    # (P1-20) Runtime contracts resolve from the package/bundle only. `AIVIDEO_CONTRACTS_DIR`
+    # let any process running the worker substitute the capability registry (or the model
+    # lock) with its own file; a build-provided location must not be caller-controlled.
+    if os.environ.get("AIVIDEO_CONTRACTS_DIR"):
+        raise RuntimeError(
+            "CONTRACTS_DIR_FORBIDDEN: runtime contracts resolve from the package/bundle, "
+            "not from AIVIDEO_CONTRACTS_DIR"
+        )
     package_file = Path(__file__).resolve()
     candidates = [
         package_file.parents[3] / "contracts" / REGISTRY_NAME,

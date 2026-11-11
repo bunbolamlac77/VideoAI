@@ -16,7 +16,9 @@ AIVideo v3.1 Protocol Specification:
 """
 
 import sys
+import tempfile
 import os
+import re
 import json
 import subprocess
 import signal
@@ -331,6 +333,82 @@ def _estimate_source_fps(pts_entries) -> float:
     return float(first.time_base_den) / float(first.time_base_num) / float(delta)
 
 
+# (P1-25) One JSON-RPC frame is capped at 1 MiB by the Swift client, which fails *every*
+# pending request when a single frame overflows. A long real clip can produce far more
+# observations than that, so the inline list is budgeted and the rest is served by
+# `g2.get_raw_observations` from the worker-owned checkpoint.
+MAX_INLINE_OBSERVATION_BYTES = 512 * 1024
+
+
+def paginate_raw_observations(
+    observations: list[dict],
+    *,
+    budget_bytes: int = MAX_INLINE_OBSERVATION_BYTES,
+) -> dict:
+    """Return an inline slice plus a cursor describing how to fetch the rest."""
+    inline: list[dict] = []
+    used = 0
+    for item in observations:
+        encoded = len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
+        if inline and used + encoded > budget_bytes:
+            break
+        inline.append(item)
+        used += encoded
+    total = len(observations)
+    return {
+        "raw_observations": inline,
+        "raw_observations_count": total,
+        "raw_observations_inline_count": len(inline),
+        "raw_observations_truncated": len(inline) < total,
+        "raw_observations_byte_budget": budget_bytes,
+        "raw_observations_next_offset": len(inline) if len(inline) < total else None,
+    }
+
+
+def handle_g2_get_raw_observations(params: dict) -> dict:
+    """(P1-25) Page through the observations the analysis recorded.
+
+    The page is read from the worker's own checkpoint for the given source revision and
+    digest; the caller never supplies a file path, so this cannot be used to read arbitrary
+    files.
+    """
+    source_rev_id = str(params.get("source_revision_id") or "")
+    source_sha = str(params.get("source_sha256") or "").lower()
+    if not re.fullmatch(r"[0-9A-Za-z_-]{1,64}", source_rev_id):
+        raise ValueError("Invalid source_revision_id")
+    if not re.fullmatch(r"[0-9a-f]{64}", source_sha):
+        raise ValueError("source_sha256 must be a 64-char lowercase hex digest")
+    offset = int(params.get("offset", 0))
+    limit = int(params.get("limit", 200))
+    if offset < 0 or not 1 <= limit <= 500:
+        raise ValueError("offset must be >= 0 and limit in 1..500")
+
+    namespace = str(params.get("checkpoint_namespace") or "")
+    safe_ns = "".join(ch for ch in namespace if ch.isalnum() or ch in "-_")[:40]
+    base = f"g2_ckpt_{source_rev_id[:8]}_{source_sha[:8]}_{safe_ns}" if safe_ns else f"g2_ckpt_{source_rev_id[:8]}_{source_sha[:8]}"
+    ckpt_path = Path(tempfile.gettempdir()) / "aivideo-g2-checkpoints" / f"{base}.json"
+    if not ckpt_path.is_file():
+        return {
+            "status": "checkpoint_missing",
+            "source_revision_id": source_rev_id,
+            "reason": "no analysis checkpoint for this revision/digest on this machine",
+        }
+    payload = json.loads(ckpt_path.read_text(encoding="utf-8"))
+    observations = list(payload.get("raw_observations") or [])
+    if str(payload.get("source_sha256", "")).lower() != source_sha:
+        raise ValueError("CHECKPOINT_PROVENANCE_MISMATCH: digest does not match the checkpoint")
+    page = observations[offset:offset + limit]
+    return {
+        "status": "ok",
+        "source_revision_id": source_rev_id,
+        "total": len(observations),
+        "offset": offset,
+        "limit": limit,
+        "raw_observations": page,
+        "next_offset": offset + len(page) if offset + len(page) < len(observations) else None,
+    }
+
+
 def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callable[[Path], Callable[[Any], dict]]] = None) -> dict:
     """
     S10..S14 End-to-End G2 Worker RPC (`g2.analyze_source`):
@@ -349,6 +427,21 @@ def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callab
         raise ValueError(
             "INSPECTOR_OVERRIDE_FORBIDDEN: g2.analyze_source does not accept an injectable "
             "inspector over JSON-RPC; vision provenance must come from the installed offline model."
+        )
+    # (P1-12) Model identity is a build decision; reject the override before any work.
+    if "models_root_dir" in params or os.environ.get("AIVIDEO_MODELS_ROOT"):
+        raise ValueError(
+            "MODELS_ROOT_FORBIDDEN: g2.analyze_source always uses the pinned offline model directory "
+            "(models_root_dir / AIVIDEO_MODELS_ROOT are not accepted)"
+        )
+    # 2026-11-11 fix (P0-01): the checkpoint is a replay cache of this model's own
+    # observations. Letting a caller choose the directory let any client pre-write a
+    # checkpoint full of "visual_model" observations and have the pipeline hand them back
+    # without ever running the model. The directory is now fixed by the worker.
+    if "checkpoint_dir" in params:
+        raise ValueError(
+            "CHECKPOINT_DIR_FORBIDDEN: g2.analyze_source fixes its own checkpoint root; "
+            "a caller may not choose where resumable state is read from."
         )
 
     from pathlib import Path
@@ -405,13 +498,20 @@ def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callab
         )
         for f in probed["pts_index"]
     ]
+    # (P1-24) Frame selection uses `select=eq(n, frame_id)` and bounds each decode after
+    # the last sampled frame, which is only sound for a contiguous index.
+    from aivideo_workers.pipeline_adapters import assert_index_is_contiguous
+
+    assert_index_is_contiguous([f.frame_id for f in pts_entries])
+
     src_sha256 = _compute_file_sha256(src_path)
     declared_frames = declared_source_frame_count(probed, indexed_count=len(pts_entries))
 
     # Check if the S11 visual model is installed offline and build the real window inspector.
     # 2026-11-10 fix (D14): the worker and the release preflight now share one definition
     # of "installed" (model_installation.inspect_model_installation).
-    models_root_override = params.get("models_root_dir")
+    # The model root is a build decision, validated at the top of this handler.
+    models_root_override = None
     s11_reg = S11ModelRegistryAndAdapters(models_root_dir=models_root_override)
     vision_installed = False
     inspector_fn = None
@@ -467,8 +567,35 @@ def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callab
             "profile_sample_count": profile["sample_count"],
         }
 
-    ckpt_dir = Path(params.get("checkpoint_dir") or tempfile.gettempdir())
-    ckpt_path = ckpt_dir / f"g2_ckpt_{source_rev_id[:8]}_{src_sha256[:8]}.json"
+    # The checkpoint root is fixed by the worker (P0-01). An optional `checkpoint_namespace`
+    # is purely a label inside that root — it can never redirect the path — and lets one
+    # source be analysed under several profile fingerprints without colliding.
+    ckpt_dir = Path(tempfile.gettempdir()) / "aivideo-g2-checkpoints"
+    safe_rev = "".join(ch for ch in source_rev_id if ch.isalnum() or ch in "-_")[:36]
+    namespace = str(params.get("checkpoint_namespace") or "")
+    safe_ns = "".join(ch for ch in namespace if ch.isalnum() or ch in "-_")[:40]
+    ckpt_path = ckpt_dir / (
+        f"g2_ckpt_{safe_rev[:8]}_{src_sha256[:8]}_{safe_ns}.json"
+        if safe_ns
+        else f"g2_ckpt_{safe_rev[:8]}_{src_sha256[:8]}.json"
+    )
+    # Provenance is recorded in every checkpoint and required on resume: observations may
+    # only be replayed by a run that really has the same inspector.
+    if inspector_factory is not None:
+        checkpoint_provenance = {
+            "inspector": "test_seam",
+            "profile": BoundedPipelineConfig().runtime_profile_id,
+        }
+    elif inspector_fn is not None:
+        checkpoint_provenance = {
+            "inspector": "offline_visual_model",
+            "model_role": "visual_analysis_primary",
+            "weights_state": weights_verification,
+            "vision_sample_count": int(params.get("vision_sample_count", 2)),
+            "profile": BoundedPipelineConfig().runtime_profile_id,
+        }
+    else:
+        checkpoint_provenance = {"inspector": "none"}
 
     pipeline = FullFrameAnalysisPipeline(BoundedPipelineConfig())
     # When vision_installed is False, window_inspector_fn is None -> returns blocked_model_unavailable!
@@ -482,6 +609,7 @@ def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callab
         window_inspector_fn=inspector_fn,
         window_prefilter=window_prefilter,
         prefilter_signature=prefilter_signature,
+        checkpoint_provenance=checkpoint_provenance,
     )
 
     claims_out = []
@@ -541,8 +669,8 @@ def handle_g2_analyze_source(params: dict, *, inspector_factory: Optional[Callab
         },
         "color_decision": probed["color_decision"],
         "coverage_ledger": compact_coverage_ledger_payload(ledger.to_dict()),
-        "raw_observations_count": len(raw_obs),
-        "raw_observations": [o.to_dict() for o in raw_obs],
+        # (P1-25) budgeted inline payload; the remainder is paged via g2.get_raw_observations
+        **paginate_raw_observations([o.to_dict() for o in raw_obs]),
         "audio_branch_state": audio_res.audio_state,
         "omission_findings_count": len(findings),
         "claims": claims_out,
@@ -559,6 +687,8 @@ METHODS = {
     "ai.local_infer_test": handle_local_infer_test,
     "ai.local_model_infer": handle_local_infer_test,
     "g2.analyze_source": handle_g2_analyze_source,
+    # (P1-25) paged read of the observations that did not fit in one 1 MiB frame
+    "g2.get_raw_observations": handle_g2_get_raw_observations,
     "resolve.status": handle_resolve_status,
     "resolve.spike_timeline": handle_resolve_spike,
 }

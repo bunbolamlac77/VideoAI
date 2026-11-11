@@ -6,10 +6,12 @@ Covers S12.T1, S12.T2, S12.T3, and S12.T4.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 _ROOT = Path(__file__).resolve().parents[1]
 for _p in (_ROOT, _ROOT / "workers" / "src"):
@@ -315,18 +317,22 @@ class TestS12FullFramePipeline(unittest.TestCase):
                 timeout=20,
             )
 
-            # 1) Uninstalled models_root -> blocked_model_unavailable
+            # 1) Uninstalled model root -> blocked_model_unavailable
+            # (P1-12) the model root is pinned; a missing install is simulated by pointing
+            # AIVIDEO_APP_SUPPORT (an app-level setting) at an empty directory.
             empty_models_root = tmp_path / "empty_models"
-            res_uninstalled = handle_g2_analyze_source(
-                {
+            empty_models_root.mkdir(parents=True, exist_ok=True)
+            with mock.patch.dict(os.environ, {"AIVIDEO_APP_SUPPORT": str(empty_models_root)}):
+                res_uninstalled = handle_g2_analyze_source(
+                    {
                     "file_path": str(video_path),
                     "source_revision_id": "00000000-0000-4000-8000-000000000777",
                     "workday_id": "00000000-0000-4000-8000-000000000888",
                     "brief_text": "Đi qua cầu lúc 9h. Mưa lớn làm đường trơn.",
-                    "models_root_dir": str(empty_models_root),
-                    "checkpoint_dir": str(tmp_path / "ckpt_uninstalled"),
-                }
-            )
+                        # P0-01: worker-owned checkpoint root; the namespace isolates cases.
+                        "checkpoint_namespace": f"uninstalled-{tmp_path.name}",
+                    }
+                )
             self.assertFalse(res_uninstalled["vision_model_installed"])
             self.assertEqual(res_uninstalled["coverage_ledger"]["detailed_pass_status"], "blocked_model_unavailable")
             self.assertEqual(res_uninstalled["coverage_ledger"]["frame_input_coverage"], 0.0)
@@ -345,16 +351,18 @@ class TestS12FullFramePipeline(unittest.TestCase):
             )
             (vis_dir / "model.safetensors").write_bytes(b"SAFETENSORS_OFFLINE_WEIGHTS_STUB")
 
-            res_stub = handle_g2_analyze_source(
-                {
-                    "file_path": str(video_path),
-                    "source_revision_id": "00000000-0000-4000-8000-000000000777",
-                    "workday_id": "00000000-0000-4000-8000-000000000888",
-                    "brief_text": "Đi qua cầu lúc 9h. Mưa lớn làm đường trơn.",
-                    "models_root_dir": str(installed_models_root),
-                    "checkpoint_dir": str(tmp_path / "ckpt_stub"),
-                }
-            )
+            # (P1-12) stub weights live in a profile directory the worker cannot be pointed at
+            # per request: it resolves the pinned root from the app-support profile instead.
+            with mock.patch.dict(os.environ, {"AIVIDEO_APP_SUPPORT": str(installed_models_root)}):
+                res_stub = handle_g2_analyze_source(
+                    {
+                        "file_path": str(video_path),
+                        "source_revision_id": "00000000-0000-4000-8000-000000000777",
+                        "workday_id": "00000000-0000-4000-8000-000000000888",
+                        "brief_text": "Đi qua cầu lúc 9h. Mưa lớn làm đường trơn.",
+                        "checkpoint_namespace": f"stub-{tmp_path.name}",
+                    }
+                )
             self.assertFalse(res_stub["vision_model_installed"])
             self.assertEqual(res_stub["coverage_ledger"]["detailed_pass_status"], "blocked_model_unavailable")
             self.assertEqual(res_stub["coverage_ledger"]["frame_input_coverage"], 0.0)
@@ -378,9 +386,8 @@ class TestS12FullFramePipeline(unittest.TestCase):
                     "source_revision_id": "00000000-0000-4000-8000-000000000777",
                     "workday_id": "00000000-0000-4000-8000-000000000888",
                     "brief_text": "Đi qua cầu lúc 9h. Mưa lớn làm đường trơn.",
-                    "models_root_dir": str(installed_models_root),
-                    "checkpoint_dir": str(tmp_path / "ckpt_fixture"),
-                },
+                    "checkpoint_namespace": f"fixture-{tmp_path.name}",
+                    },
                 inspector_factory=lambda _path: mock_inspector,
             )
             self.assertTrue(res_fixture["vision_model_installed"])

@@ -11,23 +11,34 @@ reverse). This module is the single source of truth; callers choose the depth:
   state = "missing"            -> no model directory
   state = "incomplete"         -> directory exists but required artifacts are absent/empty
   state = "present_unverified" -> artifacts exist, no installation manifest (cannot prove integrity)
-  state = "verified"           -> artifacts match the recorded install manifest (and pinned size)
+  state = "verified"           -> artifacts match the recorded install manifest AND the
+                                  weights hash equals the value pinned in this source file
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Optional
 
 VISUAL_ROLE = "visual_analysis_primary"
+# (P1-12) The only weights this build accepts. The value is pinned in source (and printed by
+# tools/setup_s11_model.py); an install manifest can never substitute its own identity, and
+# the shallow check compares the declared hash rather than trusting size alone.
+PINNED_VISUAL_WEIGHTS_SHA256 = "90eeb02604181dbcccd0a30a1f550a4a8928ca7dcbee4aee1449239306cfdfca"
 INSTALL_MANIFEST = ".aivideo-install-manifest.json"
 REQUIRED_ARTIFACTS = ("config.json", "model.safetensors", "tokenizer.json", "preprocessor_config.json")
 
 
 def default_models_root() -> Path:
-    return Path.home() / "Library" / "Application Support" / "AIVideo" / "Models"
+    # (P1-12) The root is an app-level setting, never a per-request parameter. It resolves
+    # from the app-support profile directory so a differently-provisioned machine (or the
+    # test harness) can be pointed at its own pinned store.
+    support = os.environ.get("AIVIDEO_APP_SUPPORT", "").strip()
+    base = Path(support).expanduser() if support else Path.home() / "Library" / "Application Support" / "AIVideo"
+    return base / "Models"
 
 
 def _sha256_file(path: Path) -> str:
@@ -95,6 +106,9 @@ def inspect_model_installation(
         result["reason"] = "INSTALL_MANIFEST_INVALID: missing 'files' map"
         return result
 
+    # The pinned identity is the manifest's declared weights digest, read before hashing.
+    recorded_weights = str(files.get("model.safetensors", {}).get("sha256", "")).lower()
+
     for name in REQUIRED_ARTIFACTS:
         recorded = files.get(name)
         if not isinstance(recorded, dict):
@@ -106,6 +120,8 @@ def inspect_model_installation(
             result["state"] = "present_unverified"
             result["reason"] = f"ARTIFACT_SIZE_MISMATCH: {name} (manifest {recorded.get('size_bytes')}, actual {actual_size})"
             return result
+        # Hashing decides *integrity* (bytes match the manifest). Whether those bytes are the
+        # pinned revision is a separate identity question answered below, for both depths.
         if deep:
             actual_sha = _sha256_file(directory / name)
             if actual_sha != str(recorded.get("sha256", "")):
@@ -113,8 +129,16 @@ def inspect_model_installation(
                 result["reason"] = f"ARTIFACT_HASH_MISMATCH: {name}"
                 return result
 
+    # (P1-12) A manifest that describes *some* weights is not "verified": the recorded
+    # weights hash must equal the pinned revision this build was validated against.
+    if role == VISUAL_ROLE and recorded_weights != PINNED_VISUAL_WEIGHTS_SHA256:
+        result["state"] = "present_unverified"
+        result["reason"] = "PINNED_WEIGHT_SHA256_MISMATCH: install manifest describes different weights"
+        return result
+
     result["state"] = "verified"
     result["verified"] = True
+    result["pinned_weights_sha256"] = PINNED_VISUAL_WEIGHTS_SHA256
     result["model_id"] = manifest.get("model_id")
     result["revision"] = manifest.get("revision")
     return result

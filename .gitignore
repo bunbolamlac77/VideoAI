@@ -121,3 +121,6 @@ logs/
 reports/evidence/s02_t1_finder_launch.json
 reports/evidence/s02_t2_bookmark.json
 reports/evidence/s02_worker_bundle.json
+
+# G2 benchmark resume checkpoints are written next to the clips on every heavy run
+fixtures/smoke/ckpt_v2_*.json

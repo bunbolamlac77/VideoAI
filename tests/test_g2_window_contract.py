@@ -240,9 +240,9 @@ class TestAudioStatusHonesty(unittest.TestCase):
             )
 
     def test_audio_without_asr_is_not_reported_as_completed(self) -> None:
-        """D16: no ASR transcript means 'not_configured', never 'completed'."""
+        """D16/P1-27: no ASR transcript means the audio was never transcribed, not 'no speech'."""
         ledger, _, audio, _ = self._run(has_audio=True)
-        self.assertEqual(audio.audio_state, "no_speech")
+        self.assertEqual(audio.audio_state, "audio_present_untranscribed")
         self.assertEqual(audio.asr_status, "not_configured")
         self.assertEqual(ledger.audio_analysis_status, "not_configured")
 

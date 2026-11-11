@@ -366,11 +366,10 @@ public actor WorkerClient {
         env["PATH"] = (extraPaths + [basePath]).joined(separator: ":")
         if let resURL = Bundle.main.resourceURL {
             env["AIVIDEO_APP_RESOURCES"] = resURL.path
-            let contractsDir = resURL.appendingPathComponent("contracts").path
-            if FileManager.default.fileExists(atPath: contractsDir) {
-                env["AIVIDEO_CONTRACTS_DIR"] = contractsDir
-            }
         }
+        // (P1-20) Runtime contracts resolve from the package/bundle by position; the worker
+        // refuses AIVIDEO_CONTRACTS_DIR outright, so the app must never set it.
+        env.removeValue(forKey: "AIVIDEO_CONTRACTS_DIR")
         // G3 file writes are restricted to an app-owned staging directory.
         if let support = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
@@ -398,6 +397,13 @@ public actor WorkerClient {
                 at: g5, withIntermediateDirectories: true
             )
             env["AIVIDEO_G5_WORK_ROOT"] = g5.path
+
+            // (P1-15) The ffmpeg renderer takes its output root from the app only.
+            let renders = support.appendingPathComponent("AIVideo/Renders", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: renders, withIntermediateDirectories: true
+            )
+            env["AIVIDEO_RENDER_ROOT"] = renders.path
         }
         proc.environment = env
 
@@ -802,14 +808,17 @@ public actor WorkerClient {
         sourceRevisionId: String,
         workdayId: String,
         briefText: String,
-        prefilterEnabled: Bool = false
+        prefilterEnabled: Bool = false,
+        // (P1-12) The model root is pinned by the app profile; it is not an RPC parameter.
+        modelsRootDir: String? = nil  // must stay nil; rejected by the worker
     ) async throws -> G2AnalyzeSourceResult {
         let params = G2AnalyzeSourceParams(
             filePath: filePath,
             sourceRevisionId: sourceRevisionId,
             workdayId: workdayId,
             briefText: briefText,
-            prefilter: prefilterEnabled ? G2PrefilterParams(enabled: true) : nil
+            prefilter: prefilterEnabled ? G2PrefilterParams(enabled: true) : nil,
+            modelsRootDir: modelsRootDir
         )
         // Full-frame G2 analysis is proportional to clip length; 60 s timed out on real footage.
         return try await sendRequest(method: "g2.analyze_source", params: params, timeoutSeconds: 1800.0)

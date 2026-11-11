@@ -87,7 +87,8 @@ class TestRealVLMInference(unittest.TestCase):
                 res["action_or_scene_type"],
                 ("active_motion_scene", "scenic_or_motion", "steady_visual_scene"),
             )
-            self.assertEqual(res["subject_track_id"], "trk-w0000")
+            # (P1-29) no subject tracker runs, so no subject may be claimed
+            self.assertIsNone(res["subject_track_id"])
             self.assertTrue(len(res["observation_text"]) > 10)
             self.assertIn("Qwen3-VL", res["observation_text"])
 

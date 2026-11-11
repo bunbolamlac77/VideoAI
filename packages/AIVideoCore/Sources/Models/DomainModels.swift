@@ -478,6 +478,10 @@ public struct G2AnalyzeSourceParams: Codable, Sendable {
     public let workdayId: String
     public let briefText: String
     public let prefilter: G2PrefilterParams?
+    /// (P1-12) Retained only so old callers fail loudly: the worker refuses any
+    /// `models_root_dir`, because a caller-chosen model directory could point at weights
+    /// it wrote itself. The pinned location is an app-level profile setting.
+    public let modelsRootDir: String?
 
     public enum CodingKeys: String, CodingKey {
         case filePath = "file_path"
@@ -485,6 +489,7 @@ public struct G2AnalyzeSourceParams: Codable, Sendable {
         case workdayId = "workday_id"
         case briefText = "brief_text"
         case prefilter
+        case modelsRootDir = "models_root_dir"
     }
 
     public init(
@@ -492,13 +497,15 @@ public struct G2AnalyzeSourceParams: Codable, Sendable {
         sourceRevisionId: String,
         workdayId: String,
         briefText: String,
-        prefilter: G2PrefilterParams? = nil
+        prefilter: G2PrefilterParams? = nil,
+        modelsRootDir: String? = nil
     ) {
         self.filePath = filePath
         self.sourceRevisionId = sourceRevisionId
         self.workdayId = workdayId
         self.briefText = briefText
         self.prefilter = prefilter
+        self.modelsRootDir = modelsRootDir
     }
 }
 

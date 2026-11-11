@@ -193,7 +193,13 @@ class TestReleaseReadiness(unittest.TestCase):
         with mock.patch.object(g5_capabilities, "load_capability_registry", return_value=fake):
             self.assertFalse(readiness.check_contracts_and_registry()["passed"])
 
-    def test_missing_resolve_blocks_release_even_when_other_gates_pass(self):
+    def test_missing_resolve_is_a_warning_since_native_renderer_is_default(self):
+        """Phase 1c: the ffmpeg native renderer is the default path.
+
+        Resolve is only needed for the legacy managed-timeline / .drp handoff, so a
+        missing install must NOT block a release — but it must still be reported
+        honestly as a warning.
+        """
         success = {"passed": True}
         with tempfile.TemporaryDirectory() as tmp, \
              mock.patch.object(readiness, "REPORT", Path(tmp) / "report.json"), \
@@ -203,11 +209,12 @@ class TestReleaseReadiness(unittest.TestCase):
              mock.patch.object(readiness, "check_models_presence", return_value={"visual_model_installed": True, "status": "VERIFIED_PINNED_LOCAL"}), \
              mock.patch.object(readiness, "check_resolve_installation", return_value={"installed": False}), \
              mock.patch.object(readiness, "check_field_corpus_and_certification", return_value={"live_field_corpus_certified": True, "certification_status": "CERTIFIED_FIELD_CORPUS"}):
-            self.assertEqual(readiness.run_preflight(), 2)
+            self.assertEqual(readiness.run_preflight(), 0)
             report = json.loads(readiness.REPORT.read_text())
-        self.assertTrue(any("DAVINCI_RESOLVE_NOT_INSTALLED" in b for b in report["blockers"]))
+        self.assertFalse(any("DAVINCI" in b for b in report["blockers"]))
+        self.assertTrue(any("DAVINCI_RESOLVE_OPTIONAL_NOT_INSTALLED" in w for w in report["warnings"]))
         self.assertTrue(report["timestamp"].endswith("+00:00"))
-        self.assertFalse(report["ready_for_production_release"])
+        self.assertTrue(report["ready_for_production_release"])
 
 
 if __name__ == "__main__":

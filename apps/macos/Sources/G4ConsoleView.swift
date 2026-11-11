@@ -28,14 +28,14 @@ struct G4ConsoleView: View {
     @State private var beatId: String = "beat-01"
     @State private var mappingPublicationId: String = ""
     @State private var fontPath: String = ""
-    @State private var cues: [G4CaptionCue] = [
-        G4CaptionCue(text: "Nội dung đã duyệt", startFrame: 0, endFrame: 24)
-    ]
+    // (P1-53) No placeholder caption: an empty editor forces the cues to come from the
+    // approved G3 beats instead of burning a placeholder sentence into the video.
+    @State private var cues: [G4CaptionCue] = []
 
     // Raw JSON bindings maintained for full backward compatibility
     @State private var stageJSON = """
     {"beat_id":"beat-01","mapping_publication_id":"","font_path":"",
-     "cues":[{"text":"Nội dung đã duyệt","start_frame":0,"end_frame":24}]}
+     "cues":[]}
     """
     @State private var assetJSON = "[]"
     @State private var resultText = "Chưa chạy G4"
@@ -61,22 +61,13 @@ struct G4ConsoleView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // Notice Banner
-            HStack(spacing: 10) {
-                Image(systemName: "film.stack")
-                    .font(.title2)
-                    .foregroundStyle(Color.brandTeal)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("G4 — Dựng Preview Resolve 1080×1920 & Duyệt S20/S21")
-                        .font(.headline)
-                    Text("Yêu cầu kịch bản đã duyệt canonical G3. Assets và preview bắt buộc commit qua S08.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.brandTeal.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            // Scope rule, one line (the page header already carries the title).
+            Label(
+                "Cần kịch bản đã duyệt canonical G3; assets và preview bắt buộc commit qua S08.",
+                systemImage: "checkmark.shield"
+            )
+            .font(.system(size: 11, design: .rounded))
+            .foregroundStyle(.secondary)
 
             // Form 1: Beat Caption Staging & S08 Publish
             Card(title: "1. Soạn và Stage phụ đề CFR24 cho từng Beat", symbol: "character.bubble") {
@@ -220,10 +211,18 @@ struct G4ConsoleView: View {
                             HStack(spacing: 6) {
                                 if isBusy { ProgressView().controlSize(.small) }
                                 Image(systemName: "wand.and.stars")
-                                Text("Dựng & Render Preview tự động")
+                                Text("Dựng & render tự động")
                             }
                         }
                         .buttonStyle(.borderedProminent)
+                        .disabled(isBusy || !state.isWorkerConnected || publishedAssets.isEmpty)
+
+                        Button {
+                            Task { await runNativePreview() }
+                        } label: {
+                            Label("Render native 1080p", systemImage: "bolt.horizontal.circle")
+                        }
+                        .buttonStyle(.bordered)
                         .disabled(isBusy || !state.isWorkerConnected || publishedAssets.isEmpty)
 
                         Button {
@@ -401,7 +400,8 @@ struct G4ConsoleView: View {
                 }
             }
         }
-        if !state.cachedCaptionCues.isEmpty && (cues.count <= 1 && (cues.first?.text == "Nội dung đã duyệt" || cues.isEmpty)) {
+        // (P1-53) Fill only from the approved script, and only while the editor is empty.
+        if !state.cachedCaptionCues.isEmpty && cues.isEmpty {
             cues = state.cachedCaptionCues
         }
         if let firstBeat = state.cachedStoryBeats.first {
@@ -409,12 +409,65 @@ struct G4ConsoleView: View {
         }
     }
 
+    /// Phase 1b/1c: render the approved 1080x1920 preview with ffmpeg.
+    private func runNativePreview() async {
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            var params = try requestParams()
+            var voiceTexts: [String: G3JSONValue] = [:]
+            for beat in state.cachedStoryBeats {
+                voiceTexts[beat.beatId] = .string(beat.voiceText)
+            }
+            if var fields = params.fields {
+                fields["voice_texts"] = .object(voiceTexts)
+                fields["write_srt"] = .bool(true)
+                params = .object(fields)
+            }
+            let renderParams = params
+            // (P1-11) The native ffmpeg render is heavy work: take the S07 global lease for
+            // its duration so it cannot run alongside a Resolve render or model inference.
+            let response: G3JSONValue = try await ResourceGovernor.shared.withHeavyLease(
+                projectId: (try? environment().2) ?? UUID(),
+                kind: .heavyMediaConform,
+                workerPid: state.worker.workerPid == 0 ? nil : state.worker.workerPid
+            ) {
+                try await state.worker.sendRequest(
+                    method: "g4.render.native", params: renderParams, timeoutSeconds: 1800
+                )
+            }
+            resultText = response.json
+            if response.fields?["status"]?.string == "NATIVE_PREVIEW_VERIFIED" {
+                // `approveG4Preview` validates the receipt object itself.
+                receiptJSON = response.fields?["receipt"]?.json ?? ""
+                previewPath = response.fields?["preview_path"]?.string ?? ""
+                previewSHA = response.fields?["preview_sha256"]?.string ?? ""
+                previewPubID = nil
+                publishedPreviewPath = ""
+                reviewed = false
+            } else {
+                receiptJSON = ""
+                previewPath = ""
+                previewSHA = ""
+                previewPubID = nil
+                publishedPreviewPath = ""
+                reviewed = false
+            }
+        } catch {
+            receiptJSON = ""
+            previewPath = ""
+            previewSHA = ""
+            previewPubID = nil
+            publishedPreviewPath = ""
+            reviewed = false
+            resultText = "Native preview blocked: \(error.localizedDescription)"
+        }
+    }
+
+    /// Phase 1c: 1-click preview now renders with ffmpeg. The numbered Resolve
+    /// buttons stay available for the legacy managed timeline.
     private func runFullPreviewPipeline() async {
-        await rpc("g4.timeline.build")
-        guard !resultText.contains("Lỗi") && !resultText.contains("blocked") else { return }
-        await rpc("g4.render.start")
-        guard !resultText.contains("Lỗi") && !resultText.contains("blocked") else { return }
-        await rpc("g4.render.inspect")
+        await runNativePreview()
     }
 
     private func syncFormToStageJSON() {
@@ -537,7 +590,9 @@ struct G4ConsoleView: View {
             let videoPub = try await publisher.publishG4File(
                 store: store, projectId: projectID,
                 source: URL(fileURLWithPath: video),
-                artifactType: "g4_captioned_cfr", expectedSHA256: videoSHA
+                artifactType: "g4_captioned_cfr", expectedSHA256: videoSHA,
+                // (P1-01) video + conform receipt = the job is only done after both.
+                expectedPublicationCount: 2
             )
             let receiptPub = try await publisher.publishG4File(
                 store: store, projectId: projectID,
@@ -552,6 +607,12 @@ struct G4ConsoleView: View {
                 "receipt_publication_id": .string(receiptPub.publicationId.uuidString),
             ]))
             assetJSON = G3JSONValue.array(assetItems).json
+            // (P1-54) remember the mapping publication the worker validated, so the final
+            // stage fields can only ever be filled with a real `g2_source_mapping` id.
+            if let mappingField = (try? G3JSONValue.parse(stageJSON))?.fields?["mapping_publication_id"]?.string,
+               mappingField.count == 36 {
+                state.latestG2MappingPublicationId = mappingField
+            }
             receiptJSON = ""
             previewPubID = nil
             publishedPreviewPath = ""

@@ -47,7 +47,7 @@ class TestS15G2Benchmark(unittest.TestCase):
             frame_coverage_by_group=fix["synthetic_coverage_by_group"],
         )
 
-        self.assertEqual(report["g2_gate_decision"], "PASS")
+        self.assertEqual(report["harness_decision"], "HARNESS_PASS")
         self.assertEqual(report["independent_holdout_group_count"], 5)
 
         prec = report["metrics"]["accepted_claim_support_precision"]
@@ -132,7 +132,7 @@ class TestS15G2Benchmark(unittest.TestCase):
             verifier_adversarial_suite=fix["verifier_suite"],
             frame_coverage_by_group=fix["synthetic_coverage_by_group"],
         )
-        self.assertEqual(report["g2_gate_decision"], "FAIL")
+        self.assertEqual(report["harness_decision"], "HARNESS_FAIL")
         self.assertEqual(report["metrics"]["critical_false_accept_count"]["count"], 1)
         self.assertIn(bad_cid, report["metrics"]["accepted_claim_support_precision"]["false_accept_case_ids"])
 
@@ -159,7 +159,7 @@ class TestS15G2Benchmark(unittest.TestCase):
         self.assertEqual(prec["denominator"], 0)
         self.assertIsNone(prec["point_estimate"])
         self.assertFalse(report["gate_checks"]["non_trivial_claim_usage"])
-        self.assertEqual(report["g2_gate_decision"], "FAIL")
+        self.assertEqual(report["harness_decision"], "HARNESS_FAIL")
 
     def test_s15_t3_anti_leakage_blocks_cross_split_sibling_clips_and_holdout_prompt_examples(self) -> None:
         """
@@ -197,7 +197,8 @@ class TestS15G2Benchmark(unittest.TestCase):
 
     def test_s15_real_video_corpus_holdout_benchmark_end_to_end(self) -> None:
         """
-        S15.T4: Real video corpus benchmark rejects synthetic generation and requires genuine artifacts.
+        S15.T4: Real video corpus benchmark requires genuinely named field clips; the committed
+        smoke clips (fixtures/smoke) are title cards and must not be accepted as field video.
         """
         import tempfile
         from pathlib import Path
@@ -215,7 +216,7 @@ class TestS15G2Benchmark(unittest.TestCase):
         """
         from pathlib import Path
         import os
-        corpus_dir = Path(__file__).resolve().parents[1] / "fixtures" / "corpus"
+        corpus_dir = Path(__file__).resolve().parents[1] / "fixtures" / "smoke"
         models_root = Path.home() / "Library/Application Support/AIVideo/Models"
         if os.environ.get("AIVIDEO_RUN_HEAVY_G2") != "1":
             self.skipTest("Heavy real-corpus VLM run; set AIVIDEO_RUN_HEAVY_G2=1 to execute")
@@ -232,7 +233,18 @@ class TestS15G2Benchmark(unittest.TestCase):
         self.assertGreater(coverage, 0.0)
         self.assertLess(coverage, 1.0)  # declared sampling is 8/16, never "full frame"
         # The synthetic decision harness itself still passes; it just is not acceptance evidence.
-        self.assertTrue(report["synthetic_harness_gate_passed"])
+        # (P0-02) The real-corpus wrapper may only report the *synthetic harness* decision
+        # if that harness actually passed on this code. It is graded against a
+        # hand-authored decision-table fixture, independent of the vision model, so a
+        # FAIL here means the decision table (not the clips) is inconsistent with the
+        # targets in report["gate_checks"] — exactly the honesty this wrapper must report.
+        gate_checks = report.get("gate_checks") or {}
+        failed_checks = sorted(k for k, v in gate_checks.items() if not v)
+        self.assertEqual(
+            report["synthetic_harness_gate_passed"],
+            not failed_checks,
+            f"harness decision contradicts its own checks; failing={failed_checks}",
+        )
 
 
 

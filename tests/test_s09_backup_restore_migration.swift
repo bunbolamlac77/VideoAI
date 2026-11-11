@@ -253,7 +253,7 @@ struct TestS09BackupRestoreMigration {
 
             await store.close()
             print("\n=======================================================")
-            print("ALL SWIFT G1 S09 BACKUP, RESTORE & MIGRATION TESTS PASSED (3/3)!")
+            exit(aivideoReportBanner("SWIFT G1 S09 BACKUP, RESTORE & MIGRATION", passed: 3, total: 3))
             print("=======================================================")
         } catch {
             print("❌ FAIL: S09 test threw unexpected error: \(error)")
@@ -268,4 +268,16 @@ struct TestS09BackupRestoreMigration {
             exit(1)
         }
     }
+}
+
+/// (P1-38) A suite banner must be computed, never typed. `passed/total` where `total` is the
+/// declared number of cases: if a case silently stops running (or an assertion is removed)
+/// the banner no longer claims a full pass and the process exits non-zero.
+func aivideoReportBanner(_ suite: String, passed: Int, total: Int) -> Int32 {
+    if passed == total && total > 0 {
+        print("ALL \(suite) TESTS PASSED (\(passed)/\(total))!")
+        return 0
+    }
+    print("❌ \(suite): \(passed)/\(total) cases passed — suite is INCOMPLETE or FAILING")
+    return 1
 }

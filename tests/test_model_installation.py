@@ -19,6 +19,7 @@ for _p in (_ROOT, _ROOT / "workers" / "src"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
+from aivideo_workers import model_installation
 from aivideo_workers.model_installation import (
     INSTALL_MANIFEST,
     REQUIRED_ARTIFACTS,
@@ -51,6 +52,13 @@ def _write_manifest(directory: Path, *, corrupt_size: bool = False, corrupt_hash
         "files": files,
     }
     (directory / INSTALL_MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def _set_weights_hash(directory: Path, sha256_hex: str) -> None:
+    manifest_path = directory / model_installation.INSTALL_MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["model.safetensors"]["sha256"] = sha256_hex
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
 class TestModelInstallationStates(unittest.TestCase):
@@ -101,11 +109,28 @@ class TestModelInstallationStates(unittest.TestCase):
             root = Path(tmp)
             directory = _write_artifacts(root)
             _write_manifest(directory)
+            # (P1-12) "verified" is only granted to the pinned weights revision; a fixture
+            # that simply hashes whatever it wrote is reported unverified at both depths.
             shallow = inspect_model_installation(root)
-            deep = inspect_model_installation(root, deep=True)
-        self.assertEqual(shallow["state"], "verified")
-        self.assertEqual(deep["state"], "verified")
-        self.assertEqual(deep["revision"], "rev-test")
+            deep_declared = inspect_model_installation(root, deep=True)
+            # Declaring the pinned identity is what the real installer records.
+            _set_weights_hash(directory, model_installation.PINNED_VISUAL_WEIGHTS_SHA256)
+            shallow_pinned = inspect_model_installation(root)
+        self.assertEqual(shallow["state"], "present_unverified")
+        self.assertEqual(deep_declared["state"], "present_unverified")
+        self.assertIn("PINNED_WEIGHT_SHA256_MISMATCH", shallow["reason"])
+        self.assertEqual(shallow_pinned["state"], "verified")
+        self.assertEqual(shallow_pinned["revision"], "rev-test")
+
+    def test_self_written_weights_cannot_verify(self) -> None:
+        """(P1-12) A manifest that matches files the caller wrote is still not "verified"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory = _write_artifacts(root)
+            _write_manifest(directory)  # manifest describes the fixture's own weights
+            status = inspect_model_installation(root)
+        self.assertEqual(status["state"], "present_unverified")
+        self.assertIn("PINNED_WEIGHT_SHA256_MISMATCH", status["reason"])
 
 
 if __name__ == "__main__":

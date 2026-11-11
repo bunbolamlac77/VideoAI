@@ -22,28 +22,23 @@ from aivideo_workers.g5_release_audit import evaluate_e0_e1_accounting
 
 
 class TestReadinessSecurity(unittest.TestCase):
-    def test_registry_resolution_prefers_app_provided_contracts_dir(self):
+    def test_runtime_registry_cannot_be_redirected_by_environment(self):
+        """(P1-20) `AIVIDEO_CONTRACTS_DIR` used to substitute the capability registry.
+
+        The runtime now refuses the variable outright: any process able to start the worker
+        could otherwise hand it a registry claiming every capability is enabled.
+        """
         with tempfile.TemporaryDirectory() as td:
             bundle = Path(td)
             source = resolve_s11_registry()
             (bundle / source.name).write_bytes(source.read_bytes())
-            with patch.dict(
-                os.environ,
-                {"AIVIDEO_CONTRACTS_DIR": str(bundle)},
-            ):
-                self.assertEqual(
-                    resolve_s11_registry().parent,
-                    bundle.resolve(),
-                )
-                self.assertIn(
-                    "capabilities",
-                    load_capability_registry(),
-                )
-                registry = S11ModelRegistryAndAdapters()
-                self.assertEqual(
-                    registry.registry_path,
-                    (bundle / source.name).resolve(),
-                )
+            with patch.dict(os.environ, {"AIVIDEO_CONTRACTS_DIR": str(bundle)}):
+                with self.assertRaisesRegex(RuntimeError, "CONTRACTS_DIR_FORBIDDEN"):
+                    resolve_s11_registry()
+                with self.assertRaisesRegex(RuntimeError, "CONTRACTS_DIR_FORBIDDEN"):
+                    load_capability_registry()
+        # Without the variable the pinned registry still resolves from the package/bundle.
+        self.assertIn("capabilities", load_capability_registry())
 
     def test_fake_e0_e1_rows_never_certify_field_corpus(self):
         runs = [

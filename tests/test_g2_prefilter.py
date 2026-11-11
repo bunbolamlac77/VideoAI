@@ -12,6 +12,7 @@ Rules under test:
 from __future__ import annotations
 
 from pathlib import Path
+import time
 import subprocess
 import sys
 import tempfile
@@ -225,7 +226,9 @@ class TestRPCIntegration(unittest.TestCase):
             "file_path": str(clip),
             "source_revision_id": "00000000-0000-4000-8000-000000000901",
             "workday_id": "00000000-0000-4000-8000-000000000902",
-            "checkpoint_dir": str(tmp / "ckpt"),
+            # P0-01: the checkpoint root is worker-owned; only a label inside it is accepted.
+            # Each case uses its own namespace so profile fingerprints never collide.
+            "checkpoint_namespace": f"{Path(tmp).name}-{time.time_ns()}",
         }
         if prefilter is not None:
             params["prefilter"] = prefilter

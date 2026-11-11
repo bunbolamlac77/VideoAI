@@ -98,6 +98,518 @@ public struct WorkdayRecord: Codable, Sendable, Identifiable, Equatable {
     }
 }
 
+/// The shooting brief captured in Step 1 (when footage is imported).
+///
+/// One free-text box (`rawText`): the only thing the user must type is the
+/// must-have moments — the best frames of the day ("trao nhẫn, mẹ chải tóc, lì
+/// xì"). Everything else is optional and may be written in the same box in
+/// Vietnamese sentences, in the format the user already pastes into chat apps:
+///
+///     Cảnh bắt buộc: trao nhẫn, mẹ chải tóc, lì xì
+///     Cặp đôi: Ngọc Hân & Quốc Tài
+///     Lịch: 20/10 · 5h30 xuất phát qua bên côn đồ để chụp
+///     Địa điểm: Tư gia Q7 · Nhà thờ Đức Bà · White Palace
+///     Góc POV: Thợ ảnh đi cùng ekip từ 5h sáng
+///     Phong cách: Vui nhộn
+///     Nền tảng: TikTok · 60 giây
+///
+/// `composeText` turns that into one Vietnamese sentence per line, which is
+/// what G2 parses (`parse_raw_brief_to_drafts`) and G3 reads back. The
+/// structured fields below are kept for the stored revision, G3 prefill
+/// (topic/tone/duration) and compatibility with earlier revisions; they are
+/// derived from `rawText` (or from the legacy form) and never required.
+/// Persisted by the Swift `ProjectStore` (single writer) so every G3 script can
+/// cite the exact brief revision it was written against.
+public struct ScriptBriefRecord: Codable, Sendable, Identifiable, Equatable {
+    public var id: UUID { briefRevisionId }
+    public let briefRevisionId: UUID
+    public let projectId: UUID
+    public let workdayId: UUID
+
+    /// The single box the user writes in, captured verbatim.
+    public let rawText: String
+    /// "Linh & Minh" — how the couple is named on screen.
+    public let coupleNames: String
+    /// `dam_hoi` | `vu_quy` | `thanh_hon` | `tiec_cuoi` | `ca_ngay`
+    public let eventType: String
+    /// "24/11 · 7h30 đón dâu · 11h gia tiên · 18h tiệc"
+    public let schedule: String
+    /// "Tư gia Q7 · Nhà thờ Đức Bà · White Palace"
+    public let venues: String
+    /// The shooter's own POV role: "Thợ ảnh đi cùng ekip từ 5h sáng"
+    public let povRole: String
+    /// `fine_art` | `cinematic` | `documentary` | `truyen_thong` | `vui_nhon`
+    public let style: String
+    /// Must-have moments: "trao nhẫn, mẹ chải tóc, lì xì"
+    public let mustHave: String
+    /// Must-avoid: "khách chưa xin phép, cảnh say rượu"
+    public let mustAvoid: String
+    /// `tiktok` | `reels` | `shorts` | `youtube`
+    public let platform: String
+    public let targetSeconds: Int
+    public let notes: String
+    public let updatedAt: Date
+
+    public enum CodingKeys: String, CodingKey {
+        case briefRevisionId = "brief_revision_id"
+        case projectId = "project_id"
+        case workdayId = "workday_id"
+        case rawText = "raw_text"
+        case coupleNames = "couple_names"
+        case eventType = "event_type"
+        case schedule
+        case venues
+        case povRole = "pov_role"
+        case style
+        case mustHave = "must_have"
+        case mustAvoid = "must_avoid"
+        case platform
+        case targetSeconds = "target_seconds"
+        case notes
+        case updatedAt = "updated_at"
+    }
+
+    public init(
+        briefRevisionId: UUID,
+        projectId: UUID,
+        workdayId: UUID,
+        rawText: String = "",
+        coupleNames: String,
+        eventType: String,
+        schedule: String,
+        venues: String,
+        povRole: String,
+        style: String,
+        mustHave: String,
+        mustAvoid: String,
+        platform: String,
+        targetSeconds: Int,
+        notes: String,
+        updatedAt: Date = Date()
+    ) {
+        self.briefRevisionId = briefRevisionId
+        self.projectId = projectId
+        self.workdayId = workdayId
+        self.rawText = rawText
+        self.coupleNames = coupleNames
+        self.eventType = eventType
+        self.schedule = schedule
+        self.venues = venues
+        self.povRole = povRole
+        self.style = style
+        self.mustHave = mustHave
+        self.mustAvoid = mustAvoid
+        self.platform = platform
+        self.targetSeconds = targetSeconds
+        self.notes = notes
+        self.updatedAt = updatedAt
+    }
+
+    /// True when the user has not written anything worth sending to a model.
+    public var isBlank: Bool {
+        [rawText, coupleNames, schedule, venues, povRole, mustHave, mustAvoid, notes].allSatisfy {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    /// The one thing the writer is asked for: the must-have moments of the day.
+    public var hasMustHave: Bool {
+        !mustHave.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || Self.parseBox(rawText).hasMustHave
+    }
+
+    /// Short headline used by G3 ("Linh & Minh — Lễ vu quy").
+    public var topicLine: String {
+        let couple = coupleNames.trimmingCharacters(in: .whitespacesAndNewlines)
+        let event = Self.eventLabel(eventType)
+        return couple.isEmpty ? event : "\(couple) — \(event)"
+    }
+
+    /// G3 tone tag derived from the chosen shooting style.
+    public var suggestedTone: String { Self.suggestedTone(style) }
+
+    /// Target duration derived from the delivery platform.
+    public var suggestedSeconds: Int { Self.suggestedSeconds(platform) }
+
+    /// The free-text brief handed to the G2 worker (`brief_text`). One natural
+    /// Vietnamese sentence per line, so `parse_raw_brief_to_drafts` keeps a clean
+    /// char span per line and the resulting claims read like facts, not fields.
+    ///
+    /// A one-box brief is composed from `rawText`; a legacy brief (no
+    /// `rawText`, saved by the old form) is composed from its fields.
+    public var composedText: String {
+        if !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return Self.parseBox(rawText).composedText
+        }
+        return Self.composeText(
+            coupleNames: coupleNames,
+            eventType: eventType,
+            schedule: schedule,
+            venues: venues,
+            povRole: povRole,
+            style: style,
+            mustHave: mustHave,
+            mustAvoid: mustAvoid,
+            platform: platform,
+            targetSeconds: targetSeconds,
+            notes: notes
+        )
+    }
+
+    // MARK: - One-box brief
+
+    /// A parsed field of the one-box brief. `line` is the sentence handed to G2.
+    public struct BoxField: Equatable, Sendable {
+        public let value: String
+        public let line: String
+        public let ev: String?  // derived `event_type` tag
+        public let style: String?  // derived style tag
+        public let platform: String?  // derived platform tag
+        public let seconds: Int?  // derived target duration
+
+        init(_ value: String, _ line: String, ev: String? = nil, style: String? = nil,
+             platform: String? = nil, seconds: Int? = nil) {
+            self.value = value
+            self.line = line
+            self.ev = ev
+            self.style = style
+            self.platform = platform
+            self.seconds = seconds
+        }
+    }
+
+    /// Result of parsing the single box.
+    public struct BoxParse: Equatable, Sendable {
+        /// Optional named fields, in composition order.
+        public var fields: [String: BoxField] = [:]
+        /// Free sentences that name no field; kept verbatim in the brief.
+        public var extraLines: [String] = []
+        /// True when the box names the must-have moments.
+        public var hasMustHave: Bool { fields["mustHave"] != nil }
+
+        /// Composed brief: `lines[]` joined. One sentence per line — the
+        /// must-have moments first, then the other facts in reading order, then
+        /// the free lines; every line keeps the author's own words.
+        public var lines: [String] {
+            let order = ["mustHave", "couple", "schedule", "venues", "povRole",
+                         "mustAvoid", "notes", "style", "platform"]
+            let named = order.compactMap { key -> String? in
+                guard let field = fields[key] else { return nil }
+                return field.line
+            }
+            return named + extraLines
+        }
+
+        public var composedText: String { lines.joined(separator: "\n") }
+    }
+
+    /// How G2 reads each field: a fixed Vietnamese label per sentence. Free text
+    /// that already starts with that label is left untouched.
+    static let linePrefix: [String: String] = [
+        "couple": "Cặp đôi",
+        "schedule": "Lịch ngày",
+        "venues": "Địa điểm",
+        "povRole": "Góc POV",
+        "mustHave": "Bắt buộc có cảnh",
+        "mustAvoid": "Không quay",
+        "notes": "Ghi chú",
+    ]
+
+    /// Labels a person actually types, longest first so "cảnh bắt buộc" wins
+    /// over "cảnh". Meaning is a property of the label, never of the content,
+    /// so a must-avoid line that starts with "không…" is still must-avoid.
+    static let boxLabels: [(labels: [String], key: String)] = [
+        (["không quay", "không đưa cảnh", "tránh quay", "tránh cảnh", "cần tránh", "cảnh tránh", "tránh"], "mustAvoid"),
+        (["cảnh bắt buộc", "cảnh chính", "khoảnh khắc đẹp nhất", "khoảnh khắc đẹp", "cảnh đẹp nhất",
+          "cảnh đẹp", "cảnh phải có", "cảnh phải chụp", "cảnh bắt buộc phải có", "bắt buộc", "phải có",
+          "phải quay", "muốn có"], "mustHave"),
+        (["cặp đôi", "cô dâu chú rể"], "couple"),
+        (["ngày giờ", "thời gian", "lịch"], "schedule"),
+        (["địa điểm", "nơi chụp"], "venues"),
+        (["góc pov", "vai pov", "pov"], "povRole"),
+        (["phong cách", "kiểu dựng", "gu dựng"], "style"),
+        (["nền tảng", "thời lượng", "đăng"], "platform"),
+        (["ghi chú", "lưu ý"], "notes"),
+    ]
+
+    static func fold(_ text: String) -> String {
+        let lowered = text.lowercased().replacingOccurrences(of: "đ", with: "d")
+        let latin = lowered.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "vi_VN"))
+        return latin
+            .replacingOccurrences(of: "[^a-z0-9]+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// One non-empty line split around a leading "nhãn:" — or `nil` when the
+    /// line does not start with a known label.
+    public static func assigned(_ line: String) -> (key: String, body: String)? {
+        // Accept ASCII ":" and the full-width "：" an IME often produces.
+        let colonChars: Set<Character> = [":", "\u{FF1A}"]
+        guard let colon = line.firstIndex(where: { colonChars.contains($0) }) else { return nil }
+        let prefix = String(line[line.startIndex..<colon])
+        guard prefix.count <= 32, !prefix.contains(where: \.isNumber) else { return nil }
+        let body = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        // `\p{L}` does not match Vietnamese letters (uncased script); `\p{A}` does.
+        let alnum = prefix.replacingOccurrences(of: "[^\\p{A}0-9]+", with: "", options: .regularExpression)
+        guard !alnum.isEmpty else { return nil }
+        let folded = fold(prefix)
+        for entry in boxLabels {
+            for label in entry.labels.sorted(by: { $0.count > $1.count }) {
+                let foldedLabel = fold(label)
+                if folded == foldedLabel || folded.hasSuffix(" " + foldedLabel) {
+                    return (entry.key, body)
+                }
+            }
+        }
+        return nil
+    }
+
+    static func lines(in text: String) -> [String] {
+        text.components(separatedBy: .newlines).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }.filter { !$0.isEmpty }
+    }
+
+    /// Parses the single box into openable optional fields and free lines.
+    /// Every line the person wrote survives; nothing is invented.
+    public static func parseBox(_ text: String) -> BoxParse {
+        var parse = BoxParse()
+        var append: [String: String] = [:]
+
+        for line in lines(in: text) {
+            if let (key, body) = assigned(line) {
+                guard !body.isEmpty else { continue }
+                if let existing = append[key] {
+                    append[key] = existing + "; " + body
+                } else {
+                    append[key] = body
+                }
+                parse.fields[key] = BoxField(fieldValue(key, body), lineFor(key, body))
+            } else {
+                parse.extraLines.append(line.hasSuffix(".") ? line : line + ".")
+            }
+        }
+        // Repeated labels (e.g. two "Cảnh bắt buộc:" lines) merge into one field.
+        for (key, value) in append where parse.fields[key]?.value != value {
+            parse.fields[key] = BoxField(fieldValue(key, value), lineFor(key, value))
+        }
+        return parse
+    }
+
+    private static func fieldValue(_ key: String, _ body: String) -> String {
+        // Only the shooting style has a canonical tag; every other field keeps the
+        // person's own words (the platform line also carries the duration, which
+        // `make` derives separately).
+        key == "style" ? boxStyle(body) : body
+    }
+
+    static func boxStyle(_ body: String) -> String {
+        let folded = fold(body)
+        if folded.contains("vui") { return "vui_nhon" }
+        if folded.contains("cinematic") { return "cinematic" }
+        if folded.contains("fine") { return "fine_art" }
+        if folded.contains("documentary") || folded.contains("document") { return "documentary" }
+        if folded.contains("truyen thong") { return "truyen_thong" }
+        return "cinematic"
+    }
+
+    static func boxPlatform(_ body: String) -> String {
+        let folded = fold(body)
+        if folded.contains("reels") || folded.contains("instagram") || folded.contains("ins") { return "reels" }
+        if folded.contains("shorts") { return "shorts" }
+        if folded.contains("youtube") { return "youtube" }
+        return "tiktok"
+    }
+
+    static func seconds(in body: String) -> Int? {
+        guard let match = body.range(of: "([0-9]{2,3})", options: .regularExpression),
+              let ttl = Int(body[match]) else { return nil }
+        return [30, 45, 60, 90].min(by: { abs($0 - ttl) < abs($1 - ttl) })
+    }
+
+    /// The sentence G2 receives for a field.
+    static func lineFor(_ key: String, _ body: String) -> String {
+        let sentence: String
+        switch key {
+        case "style": sentence = "Phong cách: \(styleLabel(boxStyle(body)))."
+        case "platform":
+            let secs = seconds(in: body) ?? 30
+            sentence = "Nền tảng \(platformLabel(boxPlatform(body))), \(secs) giây."
+        default:
+            // Keep the author's own words; only add the label G2 parses on.
+            let prefix = linePrefix[key] ?? ""
+            let foldedBody = fold(body)
+            let hasPrefix = foldedBody == fold(prefix) || foldedBody.hasSuffix(" " + fold(prefix))
+            sentence = hasPrefix ? "\(body)." : "\(prefix): \(body)."
+        }
+        return sentence.hasSuffix(".") ? sentence : sentence + "."
+    }
+
+    /// Fills a record from the single box: named optional fields are derived
+    /// from the text; everything unnamed keeps the app defaults (menus).
+    public static func make(
+        briefRevisionId: UUID,
+        projectId: UUID,
+        workdayId: UUID,
+        rawText: String,
+        defaults: ScriptBriefRecord? = nil,
+        updatedAt: Date = Date()
+    ) -> ScriptBriefRecord {
+        let parse = parseBox(rawText)
+        func value(_ key: String, _ fallback: String) -> String {
+            parse.fields[key]?.value ?? fallback
+        }
+        return ScriptBriefRecord(
+            briefRevisionId: briefRevisionId,
+            projectId: projectId,
+            workdayId: workdayId,
+            rawText: rawText,
+            coupleNames: value("couple", ""),
+            eventType: defaults?.eventType ?? "vu_quy",
+            schedule: value("schedule", ""),
+            venues: value("venues", ""),
+            povRole: value("povRole", ""),
+            style: parse.fields["style"]?.value ?? defaults?.style ?? "cinematic",
+            mustHave: value("mustHave", ""),
+            mustAvoid: value("mustAvoid", ""),
+            platform: {
+                guard let body = parse.fields["platform"]?.value else { return defaults?.platform ?? "tiktok" }
+                return boxPlatform(body)
+            }(),
+            targetSeconds: seconds(in: parse.fields["platform"]?.value ?? "") ?? defaults?.targetSeconds ?? 30,
+            notes: value("notes", ""),
+            updatedAt: updatedAt
+        )
+    }
+
+    /// Legacy field composition, kept for revisions saved by the old form.
+    public static func composeText(
+        coupleNames: String,
+        eventType: String,
+        schedule: String,
+        venues: String,
+        povRole: String,
+        style: String,
+        mustHave: String,
+        mustAvoid: String,
+        platform: String,
+        targetSeconds: Int,
+        notes: String
+    ) -> String {
+        func clean(_ value: String) -> String {
+            var text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            while text.hasSuffix(".") || text.hasSuffix(";") { text.removeLast() }
+            return text
+        }
+        var lines: [String] = []
+        let couple = clean(coupleNames)
+        let event = eventLabel(eventType)
+        let day = clean(schedule)
+        let place = clean(venues)
+        let role = clean(povRole)
+        let must = clean(mustHave)
+        let avoid = clean(mustAvoid)
+        let note = clean(notes)
+
+        if !couple.isEmpty {
+            lines.append("Đám cưới của \(couple), \(event.lowercased()).")
+        } else if !day.isEmpty || !place.isEmpty {
+            lines.append("\(event).")
+        }
+        if !day.isEmpty { lines.append("Lịch ngày: \(day).") }
+        if !place.isEmpty { lines.append("Địa điểm: \(place).") }
+        if !role.isEmpty { lines.append("Góc POV: \(role).") }
+        if !must.isEmpty { lines.append("Bắt buộc có cảnh: \(must).") }
+        if !avoid.isEmpty { lines.append("Không quay: \(avoid).") }
+        // Style/platform are menu defaults: only meaningful once a real fact exists.
+        let hasContent = ![couple, day, place, role, must, avoid, note].allSatisfy(\.isEmpty)
+        if hasContent {
+            if !clean(style).isEmpty { lines.append("Phong cách: \(styleLabel(style)).") }
+            if !clean(platform).isEmpty { lines.append("Nền tảng \(platformLabel(platform)), \(targetSeconds) giây.") }
+        }
+        if !note.isEmpty { lines.append("Ghi chú: \(note).") }
+        return lines.joined(separator: "\n")
+    }
+
+    public static let eventTypes = ["dam_hoi", "vu_quy", "thanh_hon", "tiec_cuoi", "ca_ngay"]
+
+    public static func eventLabel(_ tag: String) -> String {
+        switch tag {
+        case "dam_hoi": return "Lễ đám hỏi"
+        case "vu_quy": return "Lễ vu quy"
+        case "thanh_hon": return "Lễ thành hôn"
+        case "tiec_cuoi": return "Tiệc cưới"
+        default: return "Cả ngày cưới"
+        }
+    }
+
+    public static let styles = ["fine_art", "cinematic", "documentary", "truyen_thong", "vui_nhon"]
+
+    public static func styleLabel(_ tag: String) -> String {
+        switch tag {
+        case "fine_art": return "Fine-art"
+        case "cinematic": return "Cinematic"
+        case "documentary": return "Documentary"
+        case "truyen_thong": return "Truyền thống"
+        default: return "Vui nhộn"
+        }
+    }
+
+    public static let platforms = ["tiktok", "reels", "shorts", "youtube"]
+
+    public static func platformLabel(_ tag: String) -> String {
+        switch tag {
+        case "tiktok": return "TikTok"
+        case "reels": return "Instagram Reels"
+        case "shorts": return "YouTube Shorts"
+        default: return "YouTube"
+        }
+    }
+
+    public static func suggestedSeconds(_ platform: String) -> Int {
+        switch platform {
+        case "tiktok": return 30
+        case "reels": return 45
+        case "shorts": return 60
+        default: return 90
+        }
+    }
+
+    /// Style -> one of the four tone tags the G3 story engine understands.
+    public static func suggestedTone(_ style: String) -> String {
+        switch style {
+        case "vui_nhon": return "hai_huoc"
+        case "cinematic", "fine_art": return "tram_tinh"
+        default: return "pov_tu_nhien"
+        }
+    }
+
+    public static let toneTags = ["pov_tu_nhien", "hai_huoc", "tram_tinh", "huong_dan"]
+
+    public static func toneLabel(_ tag: String) -> String {
+        switch tag {
+        case "hai_huoc": return "Hài hước / Sôi nổi"
+        case "tram_tinh": return "Trầm tĩnh / Trải nghiệm"
+        case "huong_dan": return "Hướng dẫn / Du ký"
+        default: return "POV Tự nhiên"
+        }
+    }
+
+    /// Deterministic revision id: same brief content => same id (idempotent saves),
+    /// different content => different revision (honest provenance).
+    public static func revisionId(workdayId: UUID, composedText: String) -> UUID {
+        var hasher = SHA256()
+        hasher.update(data: Data("\(workdayId.uuidString)|\(composedText)".utf8))
+        let hex = Array(hasher.finalize().map { String(format: "%02x", $0) }.joined().prefix(32))
+        guard hex.count == 32 else { return UUID() }
+        let s = String(hex)
+        let parts = [s.prefix(8), s.dropFirst(8).prefix(4), s.dropFirst(12).prefix(4),
+                     s.dropFirst(16).prefix(4), s.dropFirst(20).prefix(12)].map(String.init)
+        return UUID(uuidString: parts.joined(separator: "-")) ?? UUID()
+    }
+
+}
+
 public struct ApprovalRecord: Codable, Sendable, Identifiable, Equatable {
     public var id: UUID { approvalId }
     public let approvalId: UUID
@@ -252,7 +764,12 @@ public actor ProjectStore {
         // 2026-11-10 fix (D06): the G3/G4/G5 gate tables used to be created lazily by
         // extensions that opened their own SQLite connection. They are canonical schema,
         // so they are created once here, by the single writer, before any gate write.
+        try Self.migrateAdditiveColumns(db: connection)
         try Self.initializeGateSchema(db: connection)
+        // (P1-10) The canonical schema version must be readable by every other component
+        // (backup compatibility, restore gates). It used to stay 0 forever, which disabled
+        // the "newer schema than this app supports" guard.
+        try Self.execute(db: connection, sql: "PRAGMA user_version = \(Self.canonicalSchemaVersion);")
     }
 
     public func close() {
@@ -400,6 +917,8 @@ public actor ProjectStore {
             canonical_path TEXT,
             sha256_hash TEXT,
             byte_size INTEGER,
+            -- (P1-01) Artifacts this logical job owes before it may be SUCCEEDED.
+            expected_publication_count INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
         );
@@ -426,6 +945,29 @@ public actor ProjectStore {
         CREATE INDEX IF NOT EXISTS idx_job_attempts_job ON job_attempts(job_id);
         CREATE INDEX IF NOT EXISTS idx_artifact_publications_project ON artifact_publications(project_id, state);
 
+        -- Scriptwriter brief captured in the UI at import time (Step 1).
+        -- One row per distinct content revision, keyed by a content hash, so a
+        -- G3 script can cite the exact brief revision it was written against.
+        CREATE TABLE IF NOT EXISTS script_briefs (
+            brief_revision_id TEXT PRIMARY KEY NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(project_id),
+            workday_id TEXT NOT NULL REFERENCES workdays(workday_id),
+            raw_text TEXT NOT NULL DEFAULT '',
+            couple_names TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL DEFAULT 'vu_quy',
+            schedule TEXT NOT NULL DEFAULT '',
+            venues TEXT NOT NULL DEFAULT '',
+            pov_role TEXT NOT NULL DEFAULT '',
+            style TEXT NOT NULL DEFAULT 'cinematic',
+            must_have TEXT NOT NULL DEFAULT '',
+            must_avoid TEXT NOT NULL DEFAULT '',
+            platform TEXT NOT NULL DEFAULT 'tiktok',
+            target_seconds INTEGER NOT NULL DEFAULT 30,
+            notes TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_script_briefs_workday ON script_briefs(workday_id, updated_at);
+
         CREATE TABLE IF NOT EXISTS coverage_records (
             coverage_id TEXT PRIMARY KEY NOT NULL,
             project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
@@ -435,6 +977,13 @@ public actor ProjectStore {
             total_declared_frames INTEGER NOT NULL,
             valid_decoded_frames INTEGER NOT NULL,
             unique_processed_frames INTEGER NOT NULL,
+            -- (P1-09) The real frame-id sets and window totals. Before this the reader
+            -- re-invented `Array(0..<count)`, destroying traceability.
+            unique_processed_frame_ids TEXT NOT NULL DEFAULT '',
+            corrupted_decode_frame_ids TEXT NOT NULL DEFAULT '',
+            total_submitted_with_overlap INTEGER NOT NULL DEFAULT 0,
+            completed_windows INTEGER NOT NULL DEFAULT 0,
+            total_windows INTEGER NOT NULL DEFAULT 1,
             frame_input_coverage REAL NOT NULL,
             audio_branch_state TEXT NOT NULL,
             detailed_pass_status TEXT NOT NULL,
@@ -566,6 +1115,40 @@ public actor ProjectStore {
         );
         """
         try Self.execute(db: db, sql: schema)
+        try Self.ensureScriptBriefColumns(db: db)
+    }
+
+    /// Old installs already have a `script_briefs` table from the generic 6-field
+    /// brief. Add the wedding columns in place instead of dropping user data.
+    private static func ensureScriptBriefColumns(db: OpaquePointer?) throws {
+        guard let db else { throw ProjectStoreError.executionFailed("Database closed") }
+        var existing = Set<String>()
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(script_briefs);", -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let name = sqlite3_column_text(stmt, 1) {
+                existing.insert(String(cString: name))
+            }
+        }
+        let additions: [(String, String)] = [
+            ("raw_text", "TEXT NOT NULL DEFAULT ''"),
+            ("couple_names", "TEXT NOT NULL DEFAULT ''"),
+            ("event_type", "TEXT NOT NULL DEFAULT 'vu_quy'"),
+            ("schedule", "TEXT NOT NULL DEFAULT ''"),
+            ("venues", "TEXT NOT NULL DEFAULT ''"),
+            ("pov_role", "TEXT NOT NULL DEFAULT ''"),
+            ("style", "TEXT NOT NULL DEFAULT 'cinematic'"),
+            ("must_have", "TEXT NOT NULL DEFAULT ''"),
+            ("must_avoid", "TEXT NOT NULL DEFAULT ''"),
+            ("platform", "TEXT NOT NULL DEFAULT 'tiktok'"),
+            ("target_seconds", "INTEGER NOT NULL DEFAULT 30"),
+        ]
+        for (name, decl) in additions where !existing.contains(name) {
+            try Self.execute(db: db, sql: "ALTER TABLE script_briefs ADD COLUMN \(name) \(decl);")
+        }
     }
 
     // MARK: - Transaction Wrapper
@@ -951,6 +1534,77 @@ public actor ProjectStore {
         }
     }
 
+    /// (P1-06) Claims stored in this database (latest revision per claim).
+    public func countClaims(workdayId: UUID) throws -> Int {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        var stmt: OpaquePointer?
+        let sql = "SELECT COUNT(DISTINCT claim_id) FROM claims WHERE workday_id = ?;"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, workdayId.uuidString, -1, SQLITE_TRANSIENT)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int(stmt, 0))
+    }
+
+    /// (P1-06) Re-point every committed publication at the restored copy of its bytes.
+    ///
+    /// A restored database still carried the *original* absolute `canonical_path`, so once
+    /// the old directory was gone every downstream guard reported "missing/tampered". The
+    /// rewrite is one short transaction and only maps rows whose SHA-256 matches the blob
+    /// that was actually restored.
+    public func rewriteCanonicalPaths(blobDirectory: URL, projectId: UUID) throws -> Int {
+        let dir = blobDirectory.standardizedFileURL
+        return try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            var select: OpaquePointer?
+            let sql = """
+            SELECT publication_id, sha256_hash FROM artifact_publications
+            WHERE LOWER(project_id) = LOWER(?) AND state = 'COMMITTED';
+            """
+            guard sqlite3_prepare_v2(db, sql, -1, &select, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            sqlite3_bind_text(select, 1, projectId.uuidString, -1, SQLITE_TRANSIENT)
+            var pending: [(String, String)] = []
+            // Every step result is checked: a silent step failure used to leave `pending`
+            // empty and the restore "succeeded" while still pointing at deleted files.
+            var step = sqlite3_step(select)
+            while step == SQLITE_ROW {
+                let id = colText(select, 0)
+                let sha = sqlite3_column_type(select, 1) != SQLITE_NULL ? colText(select, 1) : ""
+                // Only blobs that were actually restored are re-pointed; anything else keeps
+                // its original path so a missing artifact stays visibly missing.
+                let candidate = dir.appendingPathComponent(sha)
+                if !sha.isEmpty, FileManager.default.fileExists(atPath: candidate.path) {
+                    pending.append((id, candidate.path))
+                }
+                step = sqlite3_step(select)
+            }
+            sqlite3_finalize(select)
+            guard step == SQLITE_DONE else {
+                throw ProjectStoreError.queryFailed(
+                    "Cannot enumerate restored publications (sqlite step=\(step))")
+            }
+            var updated = 0
+            for (id, path) in pending {
+                var update: OpaquePointer?
+                let usql = "UPDATE artifact_publications SET canonical_path = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE publication_id = ?;"
+                guard sqlite3_prepare_v2(db, usql, -1, &update, nil) == SQLITE_OK else {
+                    throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+                }
+                sqlite3_bind_text(update, 1, path, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(update, 2, id, -1, SQLITE_TRANSIENT)
+                if sqlite3_step(update) == SQLITE_DONE {
+                    updated += Int(sqlite3_changes(db))
+                }
+                sqlite3_finalize(update)
+            }
+            return updated
+        }
+    }
+
     public func getLatestClaims(workdayId: UUID) throws -> [ClaimRecord] {
         guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
         // Select latest revision for each claim_id
@@ -1033,6 +1687,86 @@ public actor ProjectStore {
         return list
     }
 
+    // MARK: - Scriptwriter Brief (Step 1 intake)
+
+    /// Upserts one brief revision. Content-addressed id => re-saving the same
+    /// brief is a no-op, editing it creates a new revision instead of rewriting
+    /// history.
+    public func saveScriptBrief(_ brief: ScriptBriefRecord) throws {
+        try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let sql = """
+            INSERT OR REPLACE INTO script_briefs
+            (brief_revision_id, project_id, workday_id, raw_text, couple_names, event_type, schedule, venues,
+             pov_role, style, must_have, must_avoid, platform, target_seconds, notes, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, brief.briefRevisionId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, brief.projectId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, brief.workdayId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 4, brief.rawText, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 5, brief.coupleNames, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 6, brief.eventType, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 7, brief.schedule, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 8, brief.venues, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 9, brief.povRole, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 10, brief.style, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 11, brief.mustHave, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 12, brief.mustAvoid, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 13, brief.platform, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 14, Int32(brief.targetSeconds))
+            sqlite3_bind_text(stmt, 15, brief.notes, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 16, DataContractDateFormatters.string(from: brief.updatedAt), -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) != SQLITE_DONE {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+        }
+    }
+
+    /// Latest brief revision for a workday, or `nil` when the user never filled it.
+    public func latestScriptBrief(workdayId: UUID) throws -> ScriptBriefRecord? {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        let sql = """
+        SELECT brief_revision_id, project_id, workday_id, raw_text, couple_names, event_type, schedule, venues,
+               pov_role, style, must_have, must_avoid, platform, target_seconds, notes, updated_at
+        FROM script_briefs
+        WHERE workday_id = ?
+        ORDER BY updated_at DESC, rowid DESC
+        LIMIT 1;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, workdayId.uuidString, -1, SQLITE_TRANSIENT)
+
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        return ScriptBriefRecord(
+            briefRevisionId: try colUUID(stmt, 0),
+            projectId: try colUUID(stmt, 1),
+            workdayId: try colUUID(stmt, 2),
+            rawText: colText(stmt, 3),
+            coupleNames: colText(stmt, 4),
+            eventType: colText(stmt, 5),
+            schedule: colText(stmt, 6),
+            venues: colText(stmt, 7),
+            povRole: colText(stmt, 8),
+            style: colText(stmt, 9),
+            mustHave: colText(stmt, 10),
+            mustAvoid: colText(stmt, 11),
+            platform: colText(stmt, 12),
+            targetSeconds: Int(sqlite3_column_int(stmt, 13)),
+            notes: colText(stmt, 14),
+            updatedAt: DataContractDateFormatters.date(from: colText(stmt, 15)) ?? Date()
+        )
+    }
+
     public func checkpointWAL() throws {
         guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
         var log = Int32(0)
@@ -1067,6 +1801,90 @@ public actor ProjectStore {
             }
             return JobRecord(jobId: jobId, projectId: projectId, jobType: jobType, inputFingerprint: inputFingerprint, status: .queued)
         }
+    }
+
+    /// (P1-08) Mark a job FAILED when work can never complete (worker died, plan invalid,
+    /// artifact missing). Before this the only terminal path was SUCCEEDED: a crashed job
+    /// stayed RUNNING forever and blocked every retry decision.
+    public func failJob(jobId: UUID, reason: String) throws {
+        try withTransaction {
+            guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+            let stamp = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"
+            let attemptSql = """
+            UPDATE job_attempts SET status = 'FAILED', finished_at = \(stamp)
+            WHERE job_id = ? AND status IN ('PREPARED', 'RUNNING');
+            """
+            var attempt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, attemptSql, -1, &attempt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            sqlite3_bind_text(attempt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
+            _ = sqlite3_step(attempt)
+            sqlite3_finalize(attempt)
+
+            let jobSql = """
+            UPDATE jobs SET status = 'FAILED', completed_at = \(stamp)
+            WHERE job_id = ? AND status IN ('QUEUED', 'RUNNING');
+            """
+            var job: OpaquePointer?
+            guard sqlite3_prepare_v2(db, jobSql, -1, &job, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            sqlite3_bind_text(job, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(job) == SQLITE_DONE else {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            sqlite3_finalize(job)
+
+            // (P1-08) Unfinished publications of a failed job are explicitly reported as
+            // failures rather than silently staying PREPARED forever.
+            let leftovers = "SELECT COUNT(*) FROM artifact_publications WHERE job_id = ? AND state != 'COMMITTED';"
+            var count: OpaquePointer?
+            if sqlite3_prepare_v2(db, leftovers, -1, &count, nil) == SQLITE_OK {
+                sqlite3_bind_text(count, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
+                let pending = sqlite3_step(count) == SQLITE_ROW ? Int(sqlite3_column_int(count, 0)) : 0
+                sqlite3_finalize(count)
+                _ = (pending, reason)
+            }
+        }
+    }
+
+    /// (P1-01) Find a job of this logical publication that is still publishing artifacts.
+    /// Several artifacts of one logical publication reuse its job so completion can be
+    /// decided once, against the full set, instead of per artifact.
+    public func openPublicationJob(projectId: UUID, inputFingerprint: String) throws -> JobRecord? {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        let sql = """
+        SELECT job_id, project_id, job_type, input_fingerprint, status, created_at, completed_at
+        FROM jobs
+        WHERE project_id = ? AND input_fingerprint = ? AND job_type LIKE 'publish_%'
+          AND status IN ('QUEUED', 'RUNNING')
+        ORDER BY rowid DESC LIMIT 1;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, projectId.uuidString, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, inputFingerprint, -1, SQLITE_TRANSIENT)
+        if sqlite3_step(stmt) == SQLITE_ROW {
+            let jId = try colUUID(stmt, 0)
+            var completed: Date? = nil
+            if sqlite3_column_type(stmt, 6) != SQLITE_NULL {
+                completed = DataContractDateFormatters.date(from: colText(stmt, 6))
+            }
+            return JobRecord(
+                jobId: jId,
+                projectId: try colUUID(stmt, 1),
+                jobType: colText(stmt, 2),
+                inputFingerprint: colText(stmt, 3),
+                status: JobStatus(rawValue: colText(stmt, 4)) ?? .queued,
+                createdAt: DataContractDateFormatters.date(from: colText(stmt, 5)) ?? Date(),
+                completedAt: completed
+            )
+        }
+        return nil
     }
 
     public func getJob(id: UUID) throws -> JobRecord? {
@@ -1249,8 +2067,11 @@ public actor ProjectStore {
         attemptId: UUID,
         fencingToken: Int,
         artifactType: String,
-        tempPath: String? = nil
+        tempPath: String? = nil,
+        // (P1-01) Number of artifacts this logical job must publish before it is SUCCEEDED.
+        expectedPublicationCount: Int = 1
     ) throws -> ArtifactPublicationRecord {
+        let expectedCount = max(1, expectedPublicationCount)
         return try withTransaction {
             try verifyAttemptAuthorityInternal(jobId: jobId, attemptId: attemptId, fencingToken: fencingToken)
             guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
@@ -1258,8 +2079,8 @@ public actor ProjectStore {
             let sql = """
             INSERT INTO artifact_publications (
                 publication_id, project_id, job_id, attempt_id, fencing_token,
-                artifact_type, state, temp_path
-            ) VALUES (?, ?, ?, ?, ?, ?, 'PREPARED', ?);
+                artifact_type, state, temp_path, expected_publication_count
+            ) VALUES (?, ?, ?, ?, ?, ?, 'PREPARED', ?, ?);
             """
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
@@ -1277,6 +2098,7 @@ public actor ProjectStore {
             } else {
                 sqlite3_bind_null(stmt, 7)
             }
+            sqlite3_bind_int(stmt, 8, Int32(expectedCount))
 
             if sqlite3_step(stmt) != SQLITE_DONE {
                 throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
@@ -1290,7 +2112,8 @@ public actor ProjectStore {
                 fencingToken: fencingToken,
                 artifactType: artifactType,
                 state: .prepared,
-                tempPath: tempPath
+                tempPath: tempPath,
+                expectedPublicationCount: expectedCount
             )
         }
     }
@@ -1310,14 +2133,17 @@ public actor ProjectStore {
             try pub.transitionToMaterialized(tempPath: tempPath)
 
             guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
-            let sql = "UPDATE artifact_publications SET state = 'MATERIALIZED', temp_path = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE publication_id = ?;"
+            // (P1-01) The multi-artifact expectation travels with the row, so whichever
+            // transition happens first can declare it without a schema migration.
+            let sql = "UPDATE artifact_publications SET state = 'MATERIALIZED', temp_path = ?, expected_publication_count = MAX(expected_publication_count, ?), updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE publication_id = ?;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
                 throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
             }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_text(stmt, 1, tempPath, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_text(stmt, 2, publicationId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 2, Int32(pub.expectedPublicationCount))
+            sqlite3_bind_text(stmt, 3, publicationId.uuidString, -1, SQLITE_TRANSIENT)
             if sqlite3_step(stmt) != SQLITE_DONE {
                 throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
             }
@@ -1341,7 +2167,7 @@ public actor ProjectStore {
             try pub.transitionToVerified(sha256: sha256, size: byteSize)
 
             guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
-            let sql = "UPDATE artifact_publications SET state = 'VERIFIED', sha256_hash = ?, byte_size = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE publication_id = ?;"
+            let sql = "UPDATE artifact_publications SET state = 'VERIFIED', sha256_hash = ?, byte_size = ?, expected_publication_count = MAX(expected_publication_count, ?), updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE publication_id = ?;"
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
                 throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
@@ -1349,7 +2175,8 @@ public actor ProjectStore {
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_text(stmt, 1, sha256, -1, SQLITE_TRANSIENT)
             sqlite3_bind_int64(stmt, 2, Int64(byteSize))
-            sqlite3_bind_text(stmt, 3, publicationId.uuidString, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 3, Int32(pub.expectedPublicationCount))
+            sqlite3_bind_text(stmt, 4, publicationId.uuidString, -1, SQLITE_TRANSIENT)
             if sqlite3_step(stmt) != SQLITE_DONE {
                 throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
             }
@@ -1421,7 +2248,12 @@ public actor ProjectStore {
                 )
             }
 
-            if completeJob {
+            let fullyPublished = try jobIsFullyPublishedInternal(jobId: jobId)
+            if completeJob && !fullyPublished {
+                // (P1-01) More artifacts are still owed by this job; completing it now would
+                // report success for a partial result (e.g. an MP4 without its receipt).
+                self.logPublicationDeferred(jobId: jobId, publicationId: publicationId)
+            } else if completeJob {
                 let attSql = "UPDATE job_attempts SET status = 'SUCCEEDED', finished_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE attempt_id = ?;"
                 var attStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, attSql, -1, &attStmt, nil) == SQLITE_OK {
@@ -1464,7 +2296,7 @@ public actor ProjectStore {
         let sql = """
         SELECT publication_id, project_id, job_id, attempt_id, fencing_token,
                artifact_type, state, temp_path, canonical_path, sha256_hash,
-               byte_size, created_at, updated_at
+               byte_size, expected_publication_count, created_at, updated_at
         FROM artifact_publications WHERE publication_id = ?;
         """
         var stmt: OpaquePointer?
@@ -1491,8 +2323,10 @@ public actor ProjectStore {
         let canonPath = sqlite3_column_type(stmt, 8) != SQLITE_NULL ? colText(stmt, 8) : nil
         let sha = sqlite3_column_type(stmt, 9) != SQLITE_NULL ? colText(stmt, 9) : nil
         let bSize = sqlite3_column_type(stmt, 10) != SQLITE_NULL ? Int(sqlite3_column_int64(stmt, 10)) : nil
-        let created = DataContractDateFormatters.date(from: colText(stmt, 11)) ?? Date()
-        let updated = DataContractDateFormatters.date(from: colText(stmt, 12)) ?? Date()
+        let expectedCount = sqlite3_column_type(stmt, 11) != SQLITE_NULL
+            ? max(1, Int(sqlite3_column_int(stmt, 11))) : 1
+        let created = DataContractDateFormatters.date(from: colText(stmt, 12)) ?? Date()
+        let updated = DataContractDateFormatters.date(from: colText(stmt, 13)) ?? Date()
 
         return ArtifactPublicationRecord(
             publicationId: pubId,
@@ -1506,6 +2340,7 @@ public actor ProjectStore {
             canonicalPath: canonPath,
             sha256Hash: sha,
             byteSize: bSize,
+            expectedPublicationCount: expectedCount,
             createdAt: created,
             updatedAt: updated
         )
@@ -1520,7 +2355,7 @@ public actor ProjectStore {
         let sql = """
         SELECT publication_id, project_id, job_id, attempt_id, fencing_token,
                artifact_type, state, temp_path, canonical_path, sha256_hash,
-               byte_size, created_at, updated_at
+               byte_size, expected_publication_count, created_at, updated_at
         FROM artifact_publications WHERE project_id = ? ORDER BY rowid ASC;
         """
         var stmt: OpaquePointer?
@@ -1612,6 +2447,47 @@ public actor ProjectStore {
         }
     }
 
+    // MARK: - (P1-01) Explicit job completion
+
+    private func rowCount(scalar sql: String, jobId: UUID) throws -> Int {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int(stmt, 0))
+    }
+
+    /// True when the job declared its publication count and every one of them is COMMITTED.
+    /// A job that never declared a count keeps the historical single-artifact behaviour.
+    public func jobIsFullyPublishedInternal(jobId: UUID) throws -> Bool {
+        guard let db = db else { throw ProjectStoreError.executionFailed("Database closed") }
+        let sql = """
+        SELECT MAX(expected_publication_count), COUNT(*),
+               SUM(CASE WHEN state = 'COMMITTED' THEN 1 ELSE 0 END)
+        FROM artifact_publications WHERE job_id = ?;
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, jobId.uuidString, -1, SQLITE_TRANSIENT)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return false }
+        let expected = max(1, Int(sqlite3_column_int(stmt, 0)))
+        let total = Int(sqlite3_column_int(stmt, 1))
+        let committed = Int(sqlite3_column_int(stmt, 2))
+        return committed > 0 && committed >= expected && committed == total
+    }
+
+    nonisolated private func logPublicationDeferred(jobId: UUID, publicationId: UUID) {
+        // A partial job stays RUNNING; the startup reconciler completes it once the rest arrives.
+        _ = (jobId, publicationId)
+    }
+
     /// Reconciles job completion if all required publications are already COMMITTED on disk (Section 7.1 table row 7)
     public func repairJobCompletionFromCommittedPublications(jobId: UUID) throws -> Bool {
         return try withTransaction {
@@ -1632,7 +2508,11 @@ public actor ProjectStore {
                 committedCount = Int(sqlite3_column_int(stmt, 0))
                 totalCount = Int(sqlite3_column_int(stmt, 1))
             }
-            if committedCount > 0 && committedCount == totalCount {
+            // (P1-01) The declared expectation must also be satisfied before a job that was
+            // repaired after a crash may be reported SUCCEEDED.
+            let expectedRow = try rowCount(scalar: "SELECT MAX(expected_publication_count) FROM artifact_publications WHERE job_id = ?;", jobId: jobId)
+            let expectedCount = max(1, expectedRow)
+            if committedCount > 0 && committedCount == totalCount && committedCount >= expectedCount {
                 let upSql = "UPDATE jobs SET status = 'SUCCEEDED', completed_at = COALESCE(completed_at, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) WHERE job_id = ? AND status != 'SUCCEEDED';"
                 var upStmt: OpaquePointer?
                 if sqlite3_prepare_v2(db, upSql, -1, &upStmt, nil) == SQLITE_OK {
@@ -1643,6 +2523,54 @@ public actor ProjectStore {
                 }
             }
             return false
+        }
+    }
+
+    /// Version of the canonical schema this build writes (see docs/05 and docs/11 S06/S09).
+    public static let canonicalSchemaVersion: Int = 2
+
+    /// Additive columns introduced after the first shipped schema. Each entry is applied
+    /// only when the database predates it, so opening an old project upgrades it in place
+    /// without data loss and without a separate migration file.
+    private static let additiveColumns: [(table: String, column: String, ddl: String)] = [
+        ("artifact_publications", "expected_publication_count",
+         "expected_publication_count INTEGER NOT NULL DEFAULT 1"),
+        ("coverage_records", "unique_processed_frame_ids",
+         "unique_processed_frame_ids TEXT NOT NULL DEFAULT ''"),
+        ("coverage_records", "corrupted_decode_frame_ids",
+         "corrupted_decode_frame_ids TEXT NOT NULL DEFAULT ''"),
+        ("coverage_records", "total_submitted_with_overlap",
+         "total_submitted_with_overlap INTEGER NOT NULL DEFAULT 0"),
+        ("coverage_records", "completed_windows",
+         "completed_windows INTEGER NOT NULL DEFAULT 0"),
+        ("coverage_records", "total_windows",
+         "total_windows INTEGER NOT NULL DEFAULT 1"),
+    ]
+
+    private static func migrateAdditiveColumns(db: OpaquePointer?) throws {
+        guard let db else { throw ProjectStoreError.executionFailed("Database connection unavailable") }
+        for entry in additiveColumns {
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(entry.table));", -1, &stmt, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            var present = false
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let name = sqlite3_column_text(stmt, 1), String(cString: name) == entry.column {
+                    present = true
+                }
+            }
+            sqlite3_finalize(stmt)
+            guard !present else { continue }
+            var alter: OpaquePointer?
+            let sql = "ALTER TABLE \(entry.table) ADD COLUMN \(entry.ddl);"
+            guard sqlite3_prepare_v2(db, sql, -1, &alter, nil) == SQLITE_OK else {
+                throw ProjectStoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            defer { sqlite3_finalize(alter) }
+            guard sqlite3_step(alter) == SQLITE_DONE else {
+                throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
+            }
         }
     }
 
@@ -1786,8 +2714,10 @@ public actor ProjectStore {
             INSERT OR REPLACE INTO coverage_records
             (coverage_id, project_id, source_revision_id, runtime_profile_id, input_fingerprint,
              total_declared_frames, valid_decoded_frames, unique_processed_frames, frame_input_coverage,
-             audio_branch_state, detailed_pass_status, semantic_certified)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+             audio_branch_state, detailed_pass_status, semantic_certified,
+             unique_processed_frame_ids, corrupted_decode_frame_ids,
+             total_submitted_with_overlap, completed_windows, total_windows)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
@@ -1806,6 +2736,13 @@ public actor ProjectStore {
             sqlite3_bind_text(stmt, 10, rec.audioBranchState.rawValue, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 11, rec.detailedPassStatus, -1, SQLITE_TRANSIENT)
             sqlite3_bind_int(stmt, 12, rec.semanticUnderstandingCertified ? 1 : 0)
+            let idsJSON = String(data: (try? JSONEncoder().encode(rec.uniqueProcessedFrameIds)) ?? Data("[]".utf8), encoding: .utf8) ?? "[]"
+            let corruptedJSON = String(data: (try? JSONEncoder().encode(rec.corruptedDecodeFrameIds)) ?? Data("[]".utf8), encoding: .utf8) ?? "[]"
+            sqlite3_bind_text(stmt, 13, idsJSON, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 14, corruptedJSON, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 15, Int32(rec.totalSubmittedWithOverlap))
+            sqlite3_bind_int(stmt, 16, Int32(rec.completedWindows))
+            sqlite3_bind_int(stmt, 17, Int32(rec.totalWindows))
             if sqlite3_step(stmt) != SQLITE_DONE {
                 throw ProjectStoreError.executionFailed(String(cString: sqlite3_errmsg(db)))
             }
@@ -1907,7 +2844,9 @@ public actor ProjectStore {
         let sql = """
         SELECT coverage_id, project_id, source_revision_id, runtime_profile_id, input_fingerprint,
                total_declared_frames, valid_decoded_frames, unique_processed_frames,
-               audio_branch_state, detailed_pass_status
+               audio_branch_state, detailed_pass_status,
+               unique_processed_frame_ids, corrupted_decode_frame_ids,
+               total_submitted_with_overlap, completed_windows, total_windows
         FROM coverage_records
         WHERE project_id = ?
         ORDER BY updated_at DESC;
@@ -1927,10 +2866,15 @@ public actor ProjectStore {
             let fp = colText(stmt, 4)
             let totalDecl = Int(sqlite3_column_int(stmt, 5))
             let validDec = Int(sqlite3_column_int(stmt, 6))
-            let uniqueProcCount = Int(sqlite3_column_int(stmt, 7))
+            _ = Int(sqlite3_column_int(stmt, 7))
             let audioSt = AudioBranchState(rawValue: colText(stmt, 8)) ?? .speechDetected
             let passSt = colText(stmt, 9)
-            let uniqueIds = uniqueProcCount > 0 ? Array(0..<uniqueProcCount) : []
+            // (P1-09) Restore the recorded frame ids verbatim; never invent `0..<count`.
+            let uniqueIds: [Int] = (try? JSONDecoder().decode([Int].self, from: Data(colText(stmt, 10).utf8))) ?? []
+            let corruptedIds: [Int] = (try? JSONDecoder().decode([Int].self, from: Data(colText(stmt, 11).utf8))) ?? []
+            let submittedWithOverlap = Int(sqlite3_column_int(stmt, 12))
+            let completedWindows = Int(sqlite3_column_int(stmt, 13))
+            let totalWindows = Int(sqlite3_column_int(stmt, 14))
             records.append(
                 CoverageLedgerRecord(
                     coverageId: covId,
@@ -1940,11 +2884,12 @@ public actor ProjectStore {
                     inputFingerprint: fp,
                     totalDeclaredFrames: totalDecl,
                     validDecodedFrameCount: validDec,
+                    corruptedDecodeFrameIds: corruptedIds,
                     uniqueProcessedFrameIds: uniqueIds,
-                    totalSubmittedWithOverlap: uniqueProcCount,
+                    totalSubmittedWithOverlap: submittedWithOverlap,
                     audioBranchState: audioSt,
-                    completedWindows: 0,
-                    totalWindows: 1,
+                    completedWindows: completedWindows,
+                    totalWindows: totalWindows,
                     detailedPassStatus: passSt
                 )
             )

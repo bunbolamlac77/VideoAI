@@ -283,7 +283,11 @@ def run_g2_analysis_eligible_benchmark(
     observable_events: Sequence[LabeledObservableEvent],
     verifier_adversarial_suite: Sequence[VerifierAdversarialCase],
     frame_coverage_by_group: Dict[str, Tuple[int, int]],  # group_id -> (unique_processed_frames, total_valid_frames)
-    label_source: str = "synthetic_decision_harness_fixture",
+    # (P1-13) `label_source` used to be a free string: any caller could pass
+    # "human_labeled_holdout" and the harness would report itself acceptance-eligible
+    # without a single human label existing. Eligibility is now derived from a signed
+    # field-corpus manifest (the same artefact `tools/sign_field_corpus.py` produces).
+    label_provenance: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     S15.1 - S15.5 & S15.T1 - S15.T4:
@@ -461,15 +465,36 @@ def run_g2_analysis_eligible_benchmark(
         "full_frame_input_coverage": (frame_coverage_ratio is not None and frame_coverage_ratio == 1.0),
     }
     g2_gate_passed = all(gate_checks.values())
-    # 2026-11-10 fix (D05): this harness grades hand-authored labels. That is a valid
-    # regression test of the decision table, but it is NOT acceptance evidence for the
-    # vision model on real footage. Acceptance requires human-labelled holdout data.
-    acceptance_eligible = label_source == "human_labeled_holdout"
+    # 2026-11-10 fix (D05) + (P1-13): this harness grades hand-authored labels. That is a
+    # valid regression test of the decision table, but it is NOT acceptance evidence for the
+    # vision model on real footage. Only a *verified* signed human/field manifest may make
+    # the run acceptance-eligible, and the string is derived from that verification.
+    from .g5_release_audit import validate_signed_field_manifest as _validate_manifest
 
+    provenance = label_provenance if isinstance(label_provenance, dict) else None
+    provenance_ok = bool(provenance) and bool(_validate_manifest(provenance))
+    provenance_scope = (provenance or {}).get("corpus_scope", {}) if provenance_ok else {}
+    provenance_labels = provenance_scope.get("labels", {}) if isinstance(provenance_scope, dict) else {}
+    human_field_labels = (
+        list(provenance_labels.get("labeler_types") or []) == ["human"]
+        and list(provenance_labels.get("source_kinds") or []) == ["field_footage"]
+    )
+    acceptance_eligible = provenance_ok and human_field_labels
+    label_source = (
+        "human_labeled_holdout" if acceptance_eligible
+        else "agent_labeled_synthetic_fixture"
+    )
+
+    # (P1-14) The decision is named for what it is: a decision-harness result graded on
+    # hand-authored labels. Emitting a bare "PASS" let any consumer grep it as acceptance.
+    harness_decision = "HARNESS_PASS" if g2_gate_passed else "HARNESS_FAIL"
     return {
         "checkpoint_stage": "G2_analysis_eligible",
+        "decision_kind": "decision_harness_fixture",
+        "harness_decision": harness_decision,
         "evaluation_mode": label_source,
         "label_source": label_source,
+        "label_provenance_verified": provenance_ok,
         "acceptance_eligible": acceptance_eligible,
         "acceptance_gate_decision": (
             "ELIGIBLE_PASS"
@@ -531,7 +556,7 @@ def run_g2_analysis_eligible_benchmark(
             "G5_project_abstention_rate": "NOT_RUN (Scheduled for Gate G5 end-to-end evaluation — S25.5)",
         },
         "gate_checks": gate_checks,
-        "g2_gate_decision": "PASS" if g2_gate_passed else "FAIL",
+        "g2_gate_decision": harness_decision,  # (P1-14) HARNESS_PASS / HARNESS_FAIL
     }
 
 
@@ -932,6 +957,7 @@ def build_canonical_g2_benchmark_fixture() -> Dict[str, Any]:
 def run_real_video_corpus_g2_benchmark(
     work_dir: str | Path,
     models_root_dir: Optional[str | Path] = None,
+    signed_manifest: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     S15 Real Video Corpus Benchmark Mode:
@@ -947,7 +973,7 @@ def run_real_video_corpus_g2_benchmark(
         probe_and_index_real_video,
     )
     from .pipeline_adapters import S11ModelRegistryAndAdapters
-    from .corpus_labels import load_clip_labels, summarize_label_eligibility
+    from .corpus_labels import load_clip_labels_with_problems, summarize_label_eligibility
     from .full_frame_pipeline import BoundedPipelineConfig, FullFrameAnalysisPipeline
 
     wdir = Path(work_dir).resolve()
@@ -978,6 +1004,16 @@ def run_real_video_corpus_g2_benchmark(
     real_coverage_by_group: Dict[str, Tuple[int, int]] = {}
     group_observations: Dict[str, List[str]] = {}
 
+    # (P0-01) A checkpoint may only resume observations that were produced by THIS
+    # inspector. The provenance records which model/profile wrote the file, and a stale
+    # checkpoint from another run is rebuilt instead of being replayed.
+    checkpoint_provenance = {
+        "inspector": "offline_visual_model",
+        "model_role": "visual_analysis_primary",
+        "profile": BoundedPipelineConfig().runtime_profile_id,
+        "corpus_dir": str(wdir),
+    }
+
     for g_idx, hg in enumerate(manifest.holdout_trip_group_ids):
         clip_path = wdir / f"{hg}.mp4"
 
@@ -1004,6 +1040,7 @@ def run_real_video_corpus_g2_benchmark(
             checkpoint_path=wdir / f"ckpt_v2_{hg}.json",
             has_audio_stream=bool(probed.get("has_audio_stream", False)),
             window_inspector_fn=inspector_fn,
+            checkpoint_provenance=checkpoint_provenance,
         )
         real_coverage_by_group[hg] = (
             len(ledger.unique_post_processor_frame_ids),
@@ -1011,8 +1048,11 @@ def run_real_video_corpus_g2_benchmark(
         )
         group_observations[hg] = [o.observation_id for o in raw_obs]
 
-    labels = load_clip_labels(wdir / "labels")
-    label_summary = summarize_label_eligibility(labels)
+    labels, label_problems = load_clip_labels_with_problems(wdir / "labels")
+    # (P1-21) A label file that cannot be parsed/schema-checked is a blocker, never a skip.
+    label_summary = summarize_label_eligibility(labels, label_problems)
+    # (P1-13) `label_summary` describes the loose label files on disk; it can never make the
+    # run acceptance-eligible on its own. The manifest argument is what the caller signs."
     report = run_g2_analysis_eligible_benchmark(
         manifest=manifest,
         asset_to_group_map=base_fx["asset_to_group_map"],
@@ -1022,16 +1062,15 @@ def run_real_video_corpus_g2_benchmark(
         observable_events=base_fx["observable_events"],
         verifier_adversarial_suite=base_fx["verifier_suite"],
         frame_coverage_by_group=real_coverage_by_group,
-        label_source=(
-            "human_labeled_holdout"
-            if label_summary["acceptance_eligible"]
-            else "agent_labeled_synthetic_fixture"
-        ),
+        # (P1-13) only a verified signed manifest can make this run acceptance-eligible
+        label_provenance=signed_manifest,
     )
     # 2026-11-10 fix (D05): a real-video run only measures frame coverage and produces
     # observations. Claim precision / event recall / verifier FAR are still graded against
     # the synthetic fixture, so this run is SMOKE evidence, never Gate G2 acceptance.
-    report["synthetic_harness_gate_passed"] = report["g2_gate_decision"] == "PASS"
+    report["synthetic_harness_gate_passed"] = report.get("harness_decision") == "HARNESS_PASS"
+    # (P1-14) The wrapper decision is SMOKE_ONLY; the harness decision stays in
+    # `harness_decision` so the two can never be confused.
     report["g2_gate_decision"] = "SMOKE_ONLY"
     report["corpus_mode"] = "smoke"
     report["real_video_corpus_verified"] = False

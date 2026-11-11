@@ -63,8 +63,19 @@ def _g5_safe_root() -> Path:
     return path
 
 
+# (P1-17) The disk-full simulation exists for the S25 fault suite only. It is honoured only
+# when the worker is explicitly running under the test harness, so a stray environment
+# variable can never make a real 4K render believe it has free space it does not have.
+SIMULATE_FREE_BYTES_ENV = "AIVIDEO_G5_SIMULATE_FREE_BYTES"
+TEST_HARNESS_ENV = "AIVIDEO_TEST_HARNESS"
+
+
+def _simulation_allowed() -> bool:
+    return os.environ.get(TEST_HARNESS_ENV) == "1"
+
+
 def _preflight_disk_space(root: Path, min_bytes: int = MIN_FREE_DISK_BYTES) -> dict:
-    override = os.environ.get("AIVIDEO_G5_SIMULATE_FREE_BYTES")
+    override = os.environ.get(SIMULATE_FREE_BYTES_ENV) if _simulation_allowed() else None
     if override is not None:
         free_bytes = int(override)
         total_bytes = max(free_bytes, min_bytes * 2)
@@ -607,6 +618,49 @@ def approved_final_plan(db_path: str, project_id: str, assets: list[dict]) -> di
         return result
 
 
+def validate_resolve_drp_structure(path: Path) -> dict:
+    """(P1-23) A .drp must *be* a Resolve project archive, not merely a ZIP file.
+
+    `zipfile.is_zipfile` accepts any archive, so a renamed text file or an arbitrary ZIP
+    passed the "Resolve handoff" check. A genuine DRP contains a project database plus the
+    timeline/media payload Resolve writes; an empty or unrelated archive is rejected here.
+    """
+    import zipfile as _zipfile
+
+    must(
+        path.is_file() and path.stat().st_size > 1024 and _zipfile.is_zipfile(path),
+        f"DRP_STRUCTURE_INVALID: {path.name} is not a ZIP archive",
+    )
+    try:
+        with _zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            bad = archive.testzip()
+    except _zipfile.BadZipFile as exc:
+        raise G4Blocked(f"DRP_STRUCTURE_INVALID: {path.name}: {exc}") from exc
+    must(bad is None, f"DRP_STRUCTURE_INVALID: {path.name} has a corrupt member ({bad})")
+    must(bool(names), f"DRP_STRUCTURE_INVALID: {path.name} is empty")
+    lowered = [n.lower() for n in names]
+    has_database = any(n.endswith((".db", ".sqlite")) for n in lowered)
+    must(
+        has_database,
+        f"DRP_STRUCTURE_INVALID: {path.name} contains no Resolve project database "
+        f"(members: {names[:6]})",
+    )
+    has_payload = any(
+        n.endswith((".xml", ".dprj", ".otio", ".json", ".fcpxml")) or "/" in n
+        for n in lowered
+    )
+    must(
+        has_payload,
+        f"DRP_STRUCTURE_INVALID: {path.name} contains no timeline/media payload",
+    )
+    return {
+        "member_count": len(names),
+        "has_project_database": has_database,
+        "members_sample": names[:8],
+    }
+
+
 def _final_names(plan: dict) -> tuple[str, str]:
     return "AIVideo_G5_" + plan["plan_sha256"][:20], "G5_FINAL_" + plan["plan_sha256"][:20]
 
@@ -751,13 +805,9 @@ def build_final(params: dict, *, resolve=None) -> dict:
             drp = drp_dir / (name + ".drp")
             temp = drp_dir / (name + ".partial.drp")
             must(not drp.exists() and not temp.exists(), "G5 DRP already exists; reconcile first")
-            must(
-                pm.ExportProject(name, str(temp)) is True
-                and temp.is_file()
-                and temp.stat().st_size > 1024
-                and zipfile.is_zipfile(temp),
-                "Resolve G5 DRP export not verifiable",
-            )
+            # (P1-23) structural validation, not just "is a zip"
+            must(pm.ExportProject(name, str(temp)) is True, "Resolve G5 DRP export failed")
+            validate_resolve_drp_structure(temp)
             os.replace(temp, drp)
             receipt = {
                 "schema": "g5-s22-build-receipt-v1",
@@ -881,11 +931,10 @@ def render_final_inspect(params: dict, *, resolve=None) -> dict:
             path = Path(receipt["output_path"])
             must(path.is_file() and path.stat().st_size > 1024, "Resolve completed but final MP4 missing")
             drp_path = Path(build_receipt["drp_path"])
+            # (P1-23) a renamed ZIP is not a Resolve project
+            validate_resolve_drp_structure(drp_path)
             must(
-                drp_path.is_file()
-                and drp_path.stat().st_size > 1024
-                and zipfile.is_zipfile(drp_path)
-                and hash_file(drp_path) == build_receipt["drp_sha256"],
+                hash_file(drp_path) == build_receipt["drp_sha256"],
                 "Managed G5 DRP missing or modified",
             )
             final_sha = hash_file(path)

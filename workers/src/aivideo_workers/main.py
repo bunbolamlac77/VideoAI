@@ -17,6 +17,7 @@ for _directory in (
 
 from aivideo_workers import main_g2 as legacy
 from aivideo_workers import g3_rpc_safe as g3
+from aivideo_workers import native_render
 from aivideo_workers import g4_stage, g4_resolve
 from aivideo_workers.g4_core import technical_qc
 from aivideo_workers import g5_final, g5_capabilities, g5_release_audit, g5_release_guards
@@ -36,10 +37,14 @@ def handle_initialize(params: dict) -> dict:
                 "g3.story.generate",
                 "g3.story.edit",
                 "g3.voice.trial",
+                "g3.voice.phrases",
                 "g3.cut.search",
                 "g3.cut.stage",
                 "g3.approval.propose",
                 "g3.metrics.script_ready",
+                "video.render.native",
+                "g4.render.native",
+                "g5.render.native_4k",
                 "g4.caption.stage",
                 "g4.timeline.build",
                 "g4.render.start",
@@ -79,10 +84,14 @@ legacy.METHODS.update({
     "g3.story.generate": g3.generate_story,
     "g3.story.edit": g3.edit_story,
     "g3.voice.trial": g3.voice_trial,
+    "g3.voice.phrases": g3.voice_phrases,
     "g3.cut.search": g3.search_cuts,
     "g3.cut.stage": g3.stage_cut_plan,
     "g3.approval.propose": g3.approval_proposal,
     "g3.metrics.script_ready": g3.script_ready_metrics,
+    "video.render.native": native_render.render_native,
+    "g4.render.native": native_render.render_g4_native,
+    "g5.render.native_4k": native_render.render_g5_native,
     "g4.caption.stage": g4_stage.stage_captioned_clip,
     "g4.timeline.build": g4_resolve.build,
     "g4.render.start": g4_resolve.render_start,

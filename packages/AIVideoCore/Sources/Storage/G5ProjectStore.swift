@@ -245,6 +245,43 @@ extension ProjectStore {
             throw G3StoreError.blocked("G5 final render/QC receipt is not tied to the current S19/S21 snapshot")
         }
 
+        // (P1-02) Evidence is gathered and hashed BEFORE the write transaction. Hashing a
+        // 4K MP4 (or a dozen dependency artifacts) inside `BEGIN IMMEDIATE` blocked the single
+        // canonical writer — and therefore the whole app — for the duration of the IO.
+        let databasePath = dbURL?.path ?? ""
+        guard let candidateRow = try G5S22Guard.readApprovedCandidate(
+            databasePath: databasePath, projectId: projectId,
+            g3ApprovalId: currentG3.approvalId, expectedManifestSHA: currentG3.manifestSHA256
+        ) else {
+            throw G3StoreError.conflict("G3 approval changed since the receipt was produced")
+        }
+        guard let totalFrames = candidateRow.manifest["total_frames"] as? Int else {
+            throw G3StoreError.blocked("Approved G3 frame count missing")
+        }
+        guard let finalBytes = G5S22Guard.publicationLocation(
+            databasePath: databasePath, projectId: projectId, id: finalPublicationId.uuidString,
+            expected: finalSHA, expectedTypes: ["g5_final_mp4"]
+        ), let drpBytes = G5S22Guard.publicationLocation(
+            databasePath: databasePath, projectId: projectId, id: drpPublicationId.uuidString,
+            expected: drpSHA, expectedTypes: ["g5_handoff_drp", "g5_native_receipt"]
+        ) else {
+            throw G3StoreError.blocked("G5 final MP4 or provenance is not a committed S08 publication")
+        }
+        // The bytes are measured once, read-only, before the write lock is taken;
+        // (P1-02) only these digests are compared once the transaction opens.
+        let finalMeasurement = try G5S22Guard.measureFile(finalBytes.sha, path: finalBytes.path)
+        let drpMeasurement = try G5S22Guard.measureFile(drpBytes.sha, path: drpBytes.path)
+        try G5S22Guard.verifyFinalProvenance(
+            mp4Path: finalBytes.path, provenancePath: drpBytes.path,
+            expectedFrames: totalFrames,
+            expectation: G5S22Guard.NativeReceiptExpectation(
+                planSHA256: planSHA,
+                g3ApprovalId: currentG3.approvalId.uuidString,
+                g4ApprovalId: currentG4.approvalId.uuidString,
+                publicationIDs: Set(dependencies)
+            )
+        )
+
         return try g5Transaction { db in
             guard let approval = try G5SQL.row(db, """
                 SELECT a.manifest_sha256,a.script_revision_id,a.workday_id,a.manifest_json,
@@ -268,7 +305,13 @@ extension ProjectStore {
             try G5S22Guard.verifyFinalBindings(
                 db: db, project: projectId, g4Approval: currentG4,
                 candidate: script, manifest: manifestObj,
-                dependencyIDs: dependencies
+                dependencyIDs: dependencies,
+                fileReader: { id, kind, expected, maxSize in
+                    try G5S22Guard.readPublishedArtifact(
+                        databasePath: databasePath, project: projectId, id: id,
+                        kind: kind, expectedSHA: expected, maxSize: maxSize
+                    )
+                }
             )
             guard let finalPub = try G5SQL.row(db, """
                 SELECT state,artifact_type,sha256_hash,canonical_path,byte_size
@@ -276,30 +319,22 @@ extension ProjectStore {
                 """, [finalPublicationId.uuidString, projectId.uuidString]),
                 finalPub[0] == "COMMITTED", finalPub[1] == "g5_final_mp4",
                 finalPub[2] == finalSHA,
-                let expectedFinalSize = Int64(finalPub[4]), expectedFinalSize > 1024 else {
+                let expectedFinalSize = Int64(finalPub[4]), expectedFinalSize > 1024,
+                // (P1-02) the bytes were measured before the write lock; compare the sizes here
+                finalMeasurement.size == expectedFinalSize else {
                 throw G3StoreError.blocked("G5 final MP4 is not a committed S08 publication")
             }
             guard let drpPub = try G5SQL.row(db, """
                 SELECT state,artifact_type,sha256_hash,canonical_path,byte_size
                 FROM artifact_publications WHERE publication_id=? AND project_id=?
                 """, [drpPublicationId.uuidString, projectId.uuidString]),
-                drpPub[0] == "COMMITTED", drpPub[1] == "g5_handoff_drp",
+                drpPub[0] == "COMMITTED",
+                drpPub[1] == "g5_handoff_drp" || drpPub[1] == "g5_native_receipt",
                 drpPub[2] == drpSHA,
-                let expectedDrpSize = Int64(drpPub[4]), expectedDrpSize > 1024 else {
+                let expectedDrpSize = Int64(drpPub[4]), expectedDrpSize > 1024,
+                drpMeasurement.size == expectedDrpSize else {
                 throw G3StoreError.blocked("G5 Resolve .drp archive is not a committed S08 publication")
             }
-            let measuredFinal = try G5SQL.fileSHA(finalPub[3])
-            let measuredDrp = try G5SQL.fileSHA(drpPub[3])
-            guard measuredFinal.0 == finalSHA, measuredFinal.1 == expectedFinalSize,
-                  measuredDrp.0 == drpSHA, measuredDrp.1 == expectedDrpSize else {
-                throw G3StoreError.blocked("Published G5 final MP4 or DRP bytes changed on disk")
-            }
-            guard let totalFrames = manifestObj["total_frames"] as? Int else {
-                throw G3StoreError.blocked("Approved G3 frame count missing")
-            }
-            try G5S22Guard.verifyFinalMP4AndDRP(
-                mp4Path: finalPub[3], drpPath: drpPub[3], expectedFrames: totalFrames
-            )
             if let existing = try G5SQL.row(db, """
                 SELECT approval_id,reviewed_by,final_publication_id,drp_publication_id
                 FROM g5_final_approvals
@@ -403,8 +438,8 @@ extension ProjectStore {
                     dependencyIDs: dependencyIDs
                 )
                 guard let totalFrames = manifestObj["total_frames"] as? Int else { return nil }
-                try G5S22Guard.verifyFinalMP4AndDRP(
-                    mp4Path: found[9], drpPath: found[12], expectedFrames: totalFrames
+                try G5S22Guard.verifyFinalProvenance(
+                    mp4Path: found[9], provenancePath: found[12], expectedFrames: totalFrames
                 )
             } catch {
                 return nil

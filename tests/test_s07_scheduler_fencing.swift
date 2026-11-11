@@ -78,8 +78,8 @@ struct TestS07SchedulerFencing {
                 kind: .modelInference,
                 workerPid: 10001
             )
-            guard case .granted(let leaseA) = decisionA else {
-                fatalError("Expected leaseA granted")
+            guard case .granted(let leaseA) = decisionA, let attemptA else {
+                fatalError("Expected leaseA granted with an attempt")
             }
             assert(attemptA.fencingToken == 1)
 
@@ -110,8 +110,8 @@ struct TestS07SchedulerFencing {
                 kind: .modelInference,
                 workerPid: 10002
             )
-            guard case .granted(let leaseB) = decisionB else {
-                fatalError("Expected leaseB granted")
+            guard case .granted(let leaseB) = decisionB, let attemptB else {
+                fatalError("Expected leaseB granted with an attempt")
             }
             assert(attemptB.fencingToken == 2, "Attempt B must get monotonic fencing token 2")
 
@@ -195,6 +195,7 @@ struct TestS07SchedulerFencing {
             guard case .granted(let leaseA2) = decA2 else {
                 fatalError("Expected Project A heavy lease granted")
             }
+            guard attA2 != nil else { fatalError("A granted lease must come with its attempt") }
 
             // Project B simultaneously requests heavy lease -> MUST BE DENIED while Project A holds it
             let (_, decB1) = try await scheduler.startHeavyAttempt(
@@ -257,16 +258,19 @@ struct TestS07SchedulerFencing {
             // Test 3: S07.T3 — Hung worker / unconfirmed termination blocks new heavy lease & Core restart revokes old session
             print("\n[Test 3] S07.T3: Zombie worker PID still alive blocks new heavy lease & Core restart revokes old session...")
             let jobHang = try await store.enqueueJob(projectId: projectA.projectId, jobType: "hung_infer", inputFingerprint: "fp_hang")
+            // (P1-03) The governor now proves a zombie PID is really alive via kill(pid, 0),
+            // so the "worker still running" fixture must be a process that exists.
+            let livePid = ProcessInfo.processInfo.processIdentifier
             let (attHang, decHang) = try await scheduler.startHeavyAttempt(
                 store: store,
                 projectId: projectA.projectId,
                 jobId: jobHang.jobId,
                 workerSessionId: "session-old",
                 kind: .modelInference,
-                workerPid: 30099
+                workerPid: livePid
             )
-            guard case .granted(let leaseHang) = decHang else {
-                fatalError("Expected leaseHang granted")
+            guard case .granted(let leaseHang) = decHang, let attHang else {
+                fatalError("Expected leaseHang granted with an attempt")
             }
 
             // Simulate missed heartbeats (>15s)
@@ -293,12 +297,12 @@ struct TestS07SchedulerFencing {
                 workerPid: 30100
             )
             assert(
-                decBlockedByZombie == .deniedZombieWorkerStillAlive(pid: 30099),
-                "Live worker PID 30099 must prevent granting a new heavy lease even after token revocation"
+                decBlockedByZombie == .deniedZombieWorkerStillAlive(pid: livePid),
+                "Live worker PID must prevent granting a new heavy lease even after token revocation"
             )
 
             // Confirm PID 30099 finally terminated, and simulate Core restart with new session "session-new"
-            await governor.confirmWorkerProcessTerminated(pid: 30099)
+            await governor.confirmWorkerProcessTerminated(pid: livePid)
             let revokedCount = try await store.revokeAllOldSessionAttempts(newSessionId: "session-new")
             assert(revokedCount >= 1, "Core restart must revoke all active attempts from old session")
 
@@ -306,15 +310,95 @@ struct TestS07SchedulerFencing {
                 testcaseId: "S07.T3",
                 requirementId: "JOB-05",
                 expected: "Missed heartbeat flags suspect; unconfirmed worker PID blocks new heavy lease; core restart revokes old session attempts",
-                observed: "PID 30099 blocked new lease until confirmed dead; session-old attempts revoked on startup",
+                observed: "Live worker PID blocked new lease until confirmed dead; session-old attempts revoked on startup",
                 status: "PASS",
                 exitStatus: 0
             )
             print("   ✅ PASS: S07.T3 Zombie worker lease protection & session recovery verified.")
 
+            // Test 4: S07.T4 — (P1-03) a crashed lease holder must not brick the app forever
+            print("\n[Test 4] S07.T4: Crashed lease holder is reclaimed after the heartbeat timeout...")
+            let jobCrash = try await store.enqueueJob(projectId: projectA.projectId, jobType: "crashed_infer", inputFingerprint: "fp_crash")
+            let crashedPid: Int32 = 999999 // no such process
+            let (_, decCrash) = try await scheduler.startHeavyAttempt(
+                store: store,
+                projectId: projectA.projectId,
+                jobId: jobCrash.jobId,
+                workerSessionId: "session-crash",
+                kind: .modelInference,
+                workerPid: crashedPid
+            )
+            guard case .granted = decCrash else {
+                fatalError("Expected the crashed-worker lease to be granted initially")
+            }
+            let heldNow = await governor.acquireHeavyLease(
+                projectId: projectA.projectId, jobId: jobCrash.jobId, attemptId: UUID(),
+                fencingToken: 9, kind: .modelInference, workerPid: nil
+            )
+            if case .deniedActiveLeaseHeld = heldNow { } else {
+                fatalError("An active lease must still be held while its holder is fresh")
+            }
+            // No heartbeat for longer than the lease timeout + the worker process is gone.
+            let longAgo = Date().addingTimeInterval(-3600)
+            await governor.recordHeartbeat(attemptId: UUID(), timestamp: longAgo)
+            let reclaimed = await governor.acquireHeavyLease(
+                projectId: projectB.projectId, jobId: jobCrash.jobId, attemptId: UUID(),
+                fencingToken: 10, kind: .modelInference, workerPid: nil,
+                now: Date().addingTimeInterval(3600)
+            )
+            guard case .granted(let reclaimedToken) = reclaimed else {
+                fatalError("A lease whose worker is gone and heartbeat is stale must be reclaimed")
+            }
+            await governor.releaseHeavyLease(leaseId: reclaimedToken.leaseId)
+            recordS07TestResult(
+                testcaseId: "S07.T4", requirementId: "JOB-05",
+                expected: "Crashed lease holder does not brick the governor forever",
+                observed: "Dead PID + stale heartbeat reclaimed; live holder still denied",
+                status: "PASS", exitStatus: 0
+            )
+            print("   ✅ PASS: S07.T4 crashed lease holder reclaimed; live holder still protected.")
+
+            // Test 5: S07.T5 — (P1-04) a denied lease must not revoke the previous attempt
+            print("\n[Test 5] S07.T5: Denied lease leaves the previous attempt intact...")
+            let jobOrder = try await store.enqueueJob(projectId: projectB.projectId, jobType: "ordered_infer", inputFingerprint: "fp_order")
+            let (firstAttempt, firstDecision) = try await scheduler.startHeavyAttempt(
+                store: store, projectId: projectB.projectId, jobId: jobOrder.jobId,
+                workerSessionId: "session-order", kind: .modelInference, workerPid: livePid
+            )
+            guard case .granted(let orderLease) = firstDecision, let firstAttempt else {
+                fatalError("Expected the first ordered attempt to be granted")
+            }
+            // Someone else holds the slot now, so the second attempt must be denied up front.
+            let holderToken = await governor.currentActiveLease()
+            assert(holderToken?.leaseId == orderLease.leaseId)
+            let (secondAttempt, secondDecision) = try await scheduler.startHeavyAttempt(
+                store: store, projectId: projectB.projectId, jobId: jobOrder.jobId,
+                workerSessionId: "session-order-2", kind: .resolveRender, workerPid: nil
+            )
+            assert(secondAttempt == nil, "A denied lease must not create an attempt")
+            if case .deniedActiveLeaseHeld = secondDecision { } else {
+                fatalError("Expected the second attempt to be denied while the slot is held")
+            }
+            // The first attempt must still be able to publish: it was never revoked.
+            let stillValid = try await store.createPublicationIntent(
+                projectId: projectB.projectId, jobId: jobOrder.jobId,
+                attemptId: firstAttempt.attemptId, fencingToken: firstAttempt.fencingToken,
+                artifactType: "ordered_json",
+                tempPath: tempDir.appendingPathComponent("ordered_temp.json").path
+            )
+            assert(stillValid.fencingToken == firstAttempt.fencingToken)
+            await governor.releaseHeavyLease(leaseId: orderLease.leaseId)
+            recordS07TestResult(
+                testcaseId: "S07.T5", requirementId: "JOB-02",
+                expected: "A denied heavy lease leaves the job's existing attempt intact",
+                observed: "Denied attempt returned nil and the previous attempt could still publish",
+                status: "PASS", exitStatus: 0
+            )
+            print("   ✅ PASS: S07.T5 denied lease did not revoke the previous attempt.")
+
             await store.close()
             print("\n=======================================================")
-            print("ALL SWIFT G1 S07 SCHEDULER & GOVERNOR TESTS PASSED (3/3)!")
+            print("ALL SWIFT G1 S07 SCHEDULER & GOVERNOR TESTS PASSED (5/5)!")
             print("=======================================================")
         } catch {
             print("❌ FAIL: S07 test threw unexpected error: \(error)")

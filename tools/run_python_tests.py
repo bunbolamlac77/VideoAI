@@ -19,51 +19,89 @@ DISCOVERY_PATTERN = "test_*.py"
 
 
 def requirement_id(test_id: str) -> str:
-    if "test_rpc_strict_json" in test_id:
-        return "INV-03"
-    if "test_s11_install_and_release_preflight" in test_id:
-        return "OFF-01"
-    if "test_s05_snapshot" in test_id:
-        return "DATA-01"
-    if "test_g1_contracts" in test_id:
-        return "DATA-04"
-    if "test_model_setup" in test_id:
-        return "OFF-01"
-    if "test_s10_media_indexer" in test_id:
-        return "MEDIA-01"
-    if "test_s11_model_adapters" in test_id:
-        return "AI-01"
-    if "test_s12_full_frame_pipeline" in test_id:
-        return "AI-01"
-    if "test_s13_semantic_verifier" in test_id:
-        return "AI-03"
-    if "test_s14_review_workflow" in test_id:
-        return "AI-09"
-    if "test_s15_g2_benchmark" in test_id:
-        return "AI-05"
-    if "test_s16_to_s19_g3" in test_id:
-        if "s16" in test_id:
-            return "STORY-01"
-        if "s17" in test_id:
-            return "AUD-01"
-        if "s18" in test_id:
-            return "EDIT-01"
-        return "STORY-03"
-    if "test_g3_security_rpc" in test_id:
-        return "INV-03"
-    if "test_s20_s21_g4" in test_id:
-        return "RES-02"
-    if "test_s22_to_s26_g5" in test_id:
-        if "s22" in test_id:
-            return "RES-03"
-        if "s23" in test_id:
-            return "REL-06"
-        return "REL-03"
-    if "test_readiness_security" in test_id:
-        return "SEC-01"
-    if "test_p0_integrity_gates" in test_id:
-        return "SEC-02"
-    return "JOB-04"
+    """(P1-45) Map a test to the requirement it verifies.
+
+    This used to be a handful of if-statements with a catch-all of `JOB-04`, which parked
+    ~half the suite under one id and made traceability meaningless. The mapping is now table
+    driven and the fallback distinguishes *known but unmapped* modules from genuinely
+    generic tests, so a new module shows up as unmapped instead of hiding in JOB-04.
+    """
+    for marker, requirement in REQUIREMENT_MARKERS:
+        if marker in test_id:
+            return requirement
+    module = test_id.split(".")[1] if test_id.startswith("tests.") and test_id.count(".") > 1 else ""
+    return UNTRACED_REQUIREMENT if module in KNOWN_MODULES else GENERIC_REQUIREMENT
+
+
+# Order matters: the first matching marker wins (most specific first).
+REQUIREMENT_MARKERS = (
+    ("test_rpc_strict_json", "INV-03"),
+    ("test_s11_install_and_release_preflight", "OFF-01"),
+    ("test_s05_snapshot", "DATA-01"),
+    ("test_g1_contracts", "DATA-04"),
+    ("test_model_setup", "OFF-01"),
+    ("test_s10_media_indexer", "MEDIA-01"),
+    ("test_s11_model_adapters", "AI-01"),
+    ("test_s12_full_frame_pipeline", "AI-01"),
+    ("test_s13_semantic_verifier", "AI-03"),
+    ("test_s14_review_workflow", "AI-09"),
+    ("test_s15_g2_benchmark", "AI-05"),
+    ("test_s16_to_s19_g3", "STORY-01"),
+    ("test_g3_security_rpc", "INV-03"),
+    ("test_s20_s21_g4", "RES-02"),
+    ("test_s22_to_s26_g5", "RES-03"),
+    ("test_readiness_security", "SEC-01"),
+    ("test_p0_integrity_gates", "SEC-02"),
+    # 2026-11-11 audit regressions
+    ("test_g2_checkpoint_integrity", "AI-01"),
+    ("test_g2_window_audit", "AI-01"),
+    ("test_g2_window_contract", "AI-01"),
+    ("test_g2_prefilter", "AI-05"),
+    ("test_g3_voice_gate", "STORY-01"),
+    ("test_g3_story", "STORY-01"),
+    ("test_g5_fault_suite_honesty", "REL-03"),
+    ("test_g5_final_and_release", "RES-03"),
+    ("test_package_review_gate", "REL-03"),
+    ("test_smoke_corpus_honesty", "AI-05"),
+    ("test_corpus_labels", "AI-05"),
+    ("test_p1_", "INV-05"),
+    ("test_wedding_scenes", "AI-03"),
+    ("test_script_brief_parser", "STORY-01"),
+    ("test_s16_story_llm", "STORY-01"),
+    ("test_s17_", "AUD-01"),
+    ("test_s20_native_render", "RES-03"),
+    ("test_artifact_schema", "DATA-04"),
+    ("test_source_hygiene", "INV-03"),
+    ("test_single_writer_invariants", "INV-03"),
+    ("test_qa_anchor_invariants", "SEC-01"),
+    ("test_audit_hardening", "SEC-02"),
+    ("test_runner_records", "JOB-04"),
+    ("test_framing_resilience", "AI-01"),
+    ("test_s11_vision_pixel_budget", "OFF-01"),
+    ("test_model_installation", "OFF-01"),
+    ("test_package_review_fault_injection", "REL-03"),
+    ("test_s11_real_vlm_inference", "AI-01"),
+    ("test_source_revision_identity", "DATA-01"),
+    ("test_worker_", "INV-03"),
+    ("test_contracts", "DATA-04"),
+    ("test_p0_", "SEC-02"),
+)
+
+# Modules whose requirements are declared above; a test from one of these that matches no
+# marker is a traceability gap, not a "JOB-04" test.
+KNOWN_MODULES = (
+    "test_g1_contracts",
+    "test_g2_coverage_dto",
+    "test_g3_story_request",
+    "test_source_revision_identity",
+    "test_g5_native_provenance",
+    "test_s02_manual_verification",
+    "test_g5_receipt_binding",
+    "test_g3_llm_approval",
+    "test_g3_story_scope",
+)
+UNTRACED_REQUIREMENT = "UNTRACED"
+GENERIC_REQUIREMENT = "JOB-04"
 
 
 def record_test(records_file, test_id, req_id, status, exit_status, expected, observed,

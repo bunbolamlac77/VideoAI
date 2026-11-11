@@ -317,6 +317,26 @@ FORBIDDEN_EPISTEMIC_OVERRIDES = {
 }
 
 
+def _preference_store_path(requested: Any) -> Path:
+    """Resolve the only writable preference location, refusing anything outside it."""
+    root = Path.home() / "Library" / "Application Support" / "AIVideo" / "Preferences"
+    default = root / "g5_preferences.json"
+    if not requested:
+        return default
+    candidate = Path(str(requested)).expanduser()
+    resolved_root = root.resolve()
+    try:
+        resolved = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
+    except OSError as exc:  # pragma: no cover - defensive
+        must(False, f"PREFERENCE_PATH_REFUSED: {exc}")
+        raise
+    must(
+        resolved == resolved_root or resolved_root in resolved.parents,
+        "PREFERENCE_PATH_REFUSED: preferences must live under the app's Preferences directory",
+    )
+    return resolved
+
+
 def manage_preference_profile(params: dict[str, Any]) -> dict[str, Any]:
     """Manage local user preferences while strictly blocking fact/epistemic overrides (S23.T2)."""
     action = str(params.get("action", "view")).strip().lower()
@@ -324,7 +344,10 @@ def manage_preference_profile(params: dict[str, Any]) -> dict[str, Any]:
         action in ("view", "edit", "reset", "export", "apply_soft_weights"),
         f"Unsupported preference action: {action}",
     )
-    store_path = Path(params["profile_path"]).expanduser() if params.get("profile_path") else None
+    # (P1-16) The profile path was caller-controlled and `mkdir(parents=True)` ran on it, so
+    # any RPC client could write files anywhere the worker could. Preferences are user data
+    # and only ever live under the app's own Application Support directory.
+    store_path = _preference_store_path(params.get("profile_path"))
 
     current = dict(DEFAULT_PREFERENCES)
     if store_path and store_path.is_file() and action != "reset":
@@ -398,6 +421,7 @@ def manage_preference_profile(params: dict[str, Any]) -> dict[str, Any]:
         "status": "OK",
         "action": action,
         "profile": effective,
+        "profile_path": str(store_path) if store_path else None,
         "export_sha256": digest(canon(effective)),
     }
 

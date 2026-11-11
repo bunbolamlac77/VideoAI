@@ -290,7 +290,19 @@ struct TestG1Contracts {
         }
 
         print("\n=======================================================")
-        print("ALL SWIFT G1 CONTRACT TESTS PASSED (\(passCount)/\(passCount))!")
+        exit(aivideoReportBanner("SWIFT G1 CONTRACT", passed: passCount, total: 5))
         print("=======================================================\n")
     }
+}
+
+/// (P1-38) A suite banner must be computed, never typed. `passed/total` where `total` is the
+/// declared number of cases: if a case silently stops running (or an assertion is removed)
+/// the banner no longer claims a full pass and the process exits non-zero.
+func aivideoReportBanner(_ suite: String, passed: Int, total: Int) -> Int32 {
+    if passed == total && total > 0 {
+        print("ALL \(suite) TESTS PASSED (\(passed)/\(total))!")
+        return 0
+    }
+    print("❌ \(suite): \(passed)/\(total) cases passed — suite is INCOMPLETE or FAILING")
+    return 1
 }

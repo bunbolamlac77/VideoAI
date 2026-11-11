@@ -121,6 +121,8 @@ public actor ArtifactPublicationService {
         filename: String,
         content: Data,
         completeJob: Bool = true,
+        // (P1-01) How many artifacts this job must publish before it may be SUCCEEDED.
+        expectedPublicationCount: Int = 1,
         idempotencyKey: String? = nil,
         faultHook: PublicationFaultHook? = nil
     ) async throws -> ArtifactPublicationRecord {
@@ -134,7 +136,8 @@ public actor ArtifactPublicationService {
             attemptId: attemptId,
             fencingToken: fencingToken,
             artifactType: artifactType,
-            tempPath: tempURL.path
+            tempPath: tempURL.path,
+            expectedPublicationCount: expectedPublicationCount
         )
 
         // Worker writes output to attempt-isolated temp file

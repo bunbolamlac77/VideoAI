@@ -102,10 +102,15 @@ jobs:
         run: |
           python3 -m unittest discover -s tools/autobridge/tests -p 'test_*.py' -v
 
-      - name: Parse All Swift Sources (fast syntax gate)
+      # (P1-43) `-frontend -parse` only checks syntax: it resolves no imports and no types.
+      # Typecheck the core package with warnings as errors so a broken type or a new
+      # warning fails CI instead of reaching a release.
+      - name: Typecheck AIVideoCore (warnings are errors)
         run: |
-          swiftc -frontend -parse apps/macos/Sources/*.swift \
-            packages/AIVideoCore/Sources/*/*.swift tests/*.swift
+          SDK="$(xcrun --sdk macosx --show-sdk-path)"
+          swiftc -sdk "$SDK" -target arm64-apple-macosx14.0 -swift-version 6 \
+            -parse-as-library -typecheck -warnings-as-errors \
+            packages/AIVideoCore/Sources/*/*.swift
 
       - name: Build macOS App (must compile with zero warnings)
         shell: bash

@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import resource
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from .child_process import run_tracked
 from .runtime_paths import resolve_s11_registry
+from .wedding_scenes import detect_wedding_scenes, prompt_guide, wedding_scene_sentence
 
 
 # Strictly enforce offline execution (no background HuggingFace / cloud downloads)
@@ -117,6 +119,24 @@ def measure_current_process_memory(
         budget_limit_bytes=budget_limit_bytes,
         within_budget=peak_rss <= budget_limit_bytes,
     )
+
+
+def assert_index_is_contiguous(frame_ids: Sequence[int]) -> None:
+    """(P1-24) Fail closed unless `frame_id` equals the frame's position in the index.
+
+    The window decoder selects frames with `select=eq(n, frame_id)` and bounds the decode
+    after the last sampled frame, which is only correct for a contiguous index.
+    """
+    expected = 0
+    for fid in frame_ids:
+        if int(fid) != expected:
+            raise PipelineAdapterError(
+                "NON_CONTIGUOUS_FRAME_INDEX",
+                f"frame_id {fid} does not follow position {expected}; windows cannot be "
+                "addressed with select=eq(n, frame_id)",
+                {"frame_id": int(fid), "expected": expected},
+            )
+        expected += 1
 
 
 def sample_window_frame_ids(
@@ -266,6 +286,77 @@ def validate_model_policy_on_16gb(model_id: str) -> None:
             )
 
 
+# MARK: - Vision pixel budget (S11.4 / docs/03 Section 2)
+#
+# Qwen3-VL emits vision tokens proportional to pixel count (28x28 patch, 2x2
+# merge => ~196 px per token). mlx_vlm's own default cap is 16*16*2*2*2*6144
+# (~12.6 MP), so a 1080x1920 frame passes through at full size: ~2.07 MP
+# => ~10.5k vision tokens, which is pure prefill on the GPU and dominates G2
+# latency. The registry declares `default_pixel_budget: 589824` but that value
+# was never forwarded to the model, so every window paid full-resolution cost.
+# Both the ffmpeg decode (physical downscale) and the processor (`max_pixels`
+# belt-and-braces) now use this budget.
+VISION_PIXEL_CAP_ENV = "AIVIDEO_VLM_MAX_PIXELS"
+DEFAULT_VISION_PIXEL_CAP = 589824  # == contracts/s11_model_registry.lock.json
+MIN_VISION_PIXEL_CAP = 28 * 28 * 4  # ~56x56: below this, observation text degrades
+MAX_VISION_PIXEL_CAP = 1048576  # 1024x1024: above this the cap costs frames, not pixels
+
+
+def resolve_vision_pixel_cap(raw: Optional[str] = None) -> int:
+    """Resolve the env-overridable vision pixel budget (fail-closed on bad input)."""
+    value = os.environ.get(VISION_PIXEL_CAP_ENV, "") if raw is None else raw
+    text = str(value).strip()
+    if not text:
+        return DEFAULT_VISION_PIXEL_CAP
+    try:
+        cap = int(text)
+    except ValueError as exc:
+        raise PipelineAdapterError(
+            "INVALID_VISION_PIXEL_CAP",
+            f"{VISION_PIXEL_CAP_ENV}='{text}' is not an integer.",
+            {"env": VISION_PIXEL_CAP_ENV, "value": text},
+        ) from exc
+    if not MIN_VISION_PIXEL_CAP <= cap <= MAX_VISION_PIXEL_CAP:
+        raise PipelineAdapterError(
+            "INVALID_VISION_PIXEL_CAP",
+            f"{VISION_PIXEL_CAP_ENV}={cap} outside allowed range "
+            f"[{MIN_VISION_PIXEL_CAP}, {MAX_VISION_PIXEL_CAP}].",
+            {"env": VISION_PIXEL_CAP_ENV, "value": cap},
+        )
+    return cap
+
+
+def vision_frame_target_size(width: int, height: int, pixel_cap: int) -> Tuple[int, int]:
+    """Largest aspect-preserving, even-sized frame within `pixel_cap`.
+
+    Downscaling happens once in ffmpeg before JPEG encoding, so the pixels are
+    physically absent rather than silently subsampled by the model processor.
+    The aspect ratio is preserved exactly (no squash): caption text and framing
+    stay truthful evidence, which the patch-grid alignment would distort by up
+    to 14 px per side. The processor still applies its own 28-px grid internally.
+    """
+    if width <= 0 or height <= 0:
+        raise PipelineAdapterError("INVALID_FRAME_SIZE", f"Frame size {width}x{height} is invalid.")
+    if pixel_cap <= 0:
+        raise PipelineAdapterError("INVALID_VISION_PIXEL_CAP", "pixel_cap must be positive.")
+    if width * height <= pixel_cap:
+        return width - (width % 2), height - (height % 2)
+
+    scale = (pixel_cap / float(width * height)) ** 0.5
+    target_w = max(2, int(width * scale))
+    target_h = max(2, int(height * scale))
+    target_w -= target_w % 2  # yuv420p / mjpeg require even dimensions
+    target_h -= target_h % 2
+    while target_w * target_h > pixel_cap and (target_w > 2 or target_h > 2):
+        if target_w >= target_h and target_w > 2:
+            target_w -= 2
+        elif target_h > 2:
+            target_h -= 2
+        else:
+            break
+    return target_w, target_h
+
+
 # Module-level cache for loaded VLM neural inference engines
 _VLM_MODEL_CACHE: Dict[str, Tuple[Any, Any]] = {}
 
@@ -276,7 +367,7 @@ class S11ModelRegistryAndAdapters:
     - Vision (`Qwen3-VL-4B-Instruct-4bit`)
     - Text/Story (`Qwen3-8B-4bit`)
     - ASR (`whisper.cpp` `ggml-large-v3.bin`)
-    - Vietnamese TTS (`VieNeu-TTS-v3-Turbo` ONNX CPU fp32)
+    - Vietnamese TTS (`Kokoro-Vietnamese` torch CPU fp32, 82M params)
     - Visual Embedding (`facebook/dinov2-base`)
     """
 
@@ -412,7 +503,7 @@ class S11ModelRegistryAndAdapters:
         return parsed
 
     @staticmethod
-    def validate_vieneu_tts_wav_output(
+    def validate_tts_wav_output(
         script_text: str,
         normalized_voice_text: str,
         wav_bytes: bytes,
@@ -420,7 +511,8 @@ class S11ModelRegistryAndAdapters:
         speed: float = 1.0,
     ) -> Dict[str, Any]:
         """
-        S11.T4 & docs/03 Section 9: Validates Vietnamese TTS output from VieNeu-TTS-v3-Turbo.
+        S11.T4 & docs/03 Section 9: Validates Vietnamese TTS output (engine-agnostic;
+        current engine is Kokoro-Vietnamese `P-TTS-KOKORO-VI-V1`, superseding VieNeu).
         - Speed must default to 1.0x (never silently sped up).
         - Sample rate must match canonical 48000 Hz (or declared profile).
         - Rejects empty/header-only WAV or corrupted Vietnamese text.
@@ -451,6 +543,9 @@ class S11ModelRegistryAndAdapters:
             "speed": speed,
             "duration_sec": round(duration_sec, 4),
         }
+
+    # Backwards-compatible alias: the validator never depended on the engine.
+    validate_vieneu_tts_wav_output = validate_tts_wav_output
 
     @staticmethod
     def evaluate_dinov2_shot_candidates(
@@ -564,10 +659,51 @@ class S11ModelRegistryAndAdapters:
 
         vlm_model, vlm_processor = _VLM_MODEL_CACHE[cache_key]
 
+        # Vision prefill dominates G2 latency, so enforce the declared pixel budget
+        # on the frames themselves. When the source size cannot be probed, fall back
+        # to the processor-side `max_pixels` cap only (still correct, just one extra
+        # resample) instead of failing an otherwise healthy analysis run.
+        vision_pixel_cap = resolve_vision_pixel_cap()
+        vision_target_size: Optional[Tuple[int, int]] = None
+        source_size: Optional[Tuple[int, int]] = None
+        try:
+            probe = run_tracked(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height", "-of", "json", str(vpath)],
+                capture_output=True, timeout=30,
+            )
+            stream = json.loads(probe.stdout.decode("utf-8", errors="replace"))["streams"][0]
+            source_size = (int(stream["width"]), int(stream["height"]))
+            vision_target_size = vision_frame_target_size(*source_size, vision_pixel_cap)
+        except (OSError, subprocess.SubprocessError, KeyError, IndexError, TypeError, ValueError) as exc:
+            print(
+                f"[vision-budget] cannot probe {vpath.name} ({exc}); "
+                f"applying processor-only cap {vision_pixel_cap}px",
+                file=sys.stderr, flush=True,
+            )
+        if source_size is not None and vision_target_size is not None:
+            print(
+                f"[vision-budget] {source_size[0]}x{source_size[1]} -> "
+                f"{vision_target_size[0]}x{vision_target_size[1]} "
+                f"({vision_target_size[0] * vision_target_size[1]} px, cap {vision_pixel_cap})",
+                file=sys.stderr, flush=True,
+            )
+        scale_filter = (
+            f",scale={vision_target_size[0]}:{vision_target_size[1]}:flags=bicubic"
+            if vision_target_size is not None else ""
+        )
+
+        # (P1-24) `frame_id` is the frame's position in the media index and windows are
+        # contiguous slices of it, so `eq(n, frame_id)` addresses the right picture and the
+        # decode can stop after the last sampled frame. That assumption is checked against
+        # the media index when the inspector is built (see `assert_index_is_contiguous`).
+
         def _inspect_window(win: Any) -> Dict[str, Any]:
             intended_ids: List[int] = [int(x) for x in win.intended_frame_ids]
             if not intended_ids:
                 raise PipelineAdapterError("EMPTY_WINDOW", f"Window {win.window_index} has no intended frames")
+            if win.window_index == 0:
+                expected_seq = None
 
             start_fid = intended_ids[0]
             end_fid_inc = intended_ids[-1]
@@ -577,7 +713,13 @@ class S11ModelRegistryAndAdapters:
             frame_jpgs: List[Path] = []
 
             try:
+                # (P1-24) Stop decoding after the last requested frame. `select=eq(n,...)`
+                # used to run from frame 0 to EOF for *every* window, so an N-window clip
+                # cost N full decodes and a long 4K source blew the per-window timeout.
+                # `frame_id` is the 0-based position in the indexed frame list, so the
+                # requested frames are the first `planned_ids[-1] + 1` decoded frames.
                 select_expr = "+".join(f"eq(n\\,{fid})" for fid in planned_ids)
+                max_input_frames = str(planned_ids[-1] + 1)
                 cmd = [
                     "ffmpeg",
                     "-nostdin",
@@ -587,13 +729,19 @@ class S11ModelRegistryAndAdapters:
                     "-i",
                     str(vpath),
                     "-vf",
-                    f"select='{select_expr}'",
+                    # Downscale BEFORE JPEG encode so the vision budget is physically
+                    # enforced, independent of whichever cap the processor applies.
+                    f"select='{select_expr}'" + scale_filter,
                     "-fps_mode",
                     "passthrough",
                     "-q:v",
                     "2",
                     str(work_dir / "frame_%04d.jpg"),
                 ]
+                # Decode at most up to the last sampled frame (see comment above). The cap
+                # belongs to the output, so it goes right before the output pattern.
+                output_target = cmd[-1]
+                cmd = cmd[:-1] + ["-frames:v", str(len(planned_ids)), output_target]
                 res = run_tracked(cmd, capture_output=True, timeout=60)
                 frame_jpgs = sorted(work_dir.glob("frame_*.jpg"))
                 if res.returncode != 0 or len(frame_jpgs) != len(planned_ids):
@@ -608,7 +756,8 @@ class S11ModelRegistryAndAdapters:
                 # Real Qwen3-VL local neural multimodal inference over the declared sample
                 prompt_text = (
                     f"Mô tả ngắn gọn diễn biến của {len(frame_jpgs)} khung hình theo đúng thứ tự thời gian "
-                    "(tối đa 40 từ tiếng Việt)."
+                    "(tối đa 40 từ tiếng Việt). "
+                    + prompt_guide()
                 )
                 vlm_config = getattr(vlm_model, "config", None)
                 if vlm_config is None and hasattr(mlx_vlm, "load_config"):
@@ -628,19 +777,42 @@ class S11ModelRegistryAndAdapters:
                     prompt=formatted_prompt,
                     image=[str(p) for p in frame_jpgs],
                     max_tokens=80,
+                    # Belt-and-braces: the frames are already downscaled above, and
+                    # this keeps the processor's own sizing inside the same budget.
+                    max_pixels=vision_pixel_cap,
                     verbose=False,
                 )
-                raw_text = getattr(vlm_out, "text", str(vlm_out)).strip().replace("\ufffd", "").replace("\x00", "")
+                raw_text_out = getattr(vlm_out, "text", str(vlm_out))
+                # (P1-28) Never "repair" model output into validity: U+FFFD means the decode
+                # produced garbage. Sanitising it silently turned corrupt text into an
+                # "observed" claim, so it is rejected instead.
+                if "\ufffd" in raw_text_out:
+                    raise PipelineAdapterError(
+                        "INVALID_VLM_OUTPUT",
+                        f"VLM output for window {win.window_index} contains U+FFFD replacement "
+                        "characters; refusing to record it as an observation",
+                        {"window_index": win.window_index, "frame_ids": planned_ids},
+                    )
+                raw_text = raw_text_out.replace("\x00", "").strip()
                 if not raw_text:
                     raise PipelineAdapterError(
                         "INVALID_VLM_OUTPUT",
                         f"VLM returned empty output for window {win.window_index} frames {planned_ids}",
                     )
 
+                # Wedding taxonomy: conservative cue matching on the model text.
+                # Labels are evidence-linked (they quote the model's own words) and
+                # never inferred from generic "cô dâu/chú rể" mentions.
+                wedding_scene_keys = detect_wedding_scenes(raw_text)
+                wedding_sentence = wedding_scene_sentence(wedding_scene_keys)
+
                 lower_text = raw_text.lower()
-                if any(k in lower_text for k in ("chạy", "lái xe", "di chuyển", "đi", "xe", "nhanh", "hoạt động")):
+                # (P1-28) `in` matched inside longer words ("đi" in "điện thoại"), so scene
+                # class was noise. Whole-word membership keeps it reproducible.
+                tokens = set(re.findall(r"[^\W\d_]+", lower_text, re.UNICODE))
+                if tokens & {"chạy", "lái", "xe", "di", "chuyển", "nhanh", "hoạt", "động"}:
                     scene_type = "active_motion_scene"
-                elif any(k in lower_text for k in ("đường", "núi", "cảnh", "biển", "rừng", "cầu", "tĩnh", "trời", "màu")):
+                elif tokens & {"đường", "núi", "cảnh", "biển", "rừng", "cầu", "tĩnh", "trời", "màu"}:
                     scene_type = "scenic_or_motion"
                 else:
                     scene_type = "steady_visual_scene"
@@ -655,13 +827,20 @@ class S11ModelRegistryAndAdapters:
                         f"Quan sát Qwen3-VL (cửa sổ {win.window_index}, mẫu "
                         f"{len(submitted_frame_ids)}/{len(intended_ids)} frame, "
                         f"frames {start_fid}..{end_fid_inc}): {raw_text}"
+                        + (f" {wedding_sentence}" if wedding_sentence else "")
                     ),
+                    "wedding_scenes": wedding_scene_keys,
                     "frame_ids": submitted_frame_ids,
+                    # (P0-02) Honest submission record: the pipeline audits against the whole
+                    # window, and `planned` is what this inspector actually asked ffmpeg for.
                     "planned_frame_ids": submitted_frame_ids,
                     "origin": "visual_model",
                     "epistemic_status": "observed",
                     "action_or_scene_type": scene_type,
-                    "subject_track_id": f"trk-w{win.window_index:04d}",
+                    # (P1-29) No subject tracking runs, so the model cannot name a track.
+                    # A per-window fabricated id made every window look like a different
+                    # subject and killed cross-window merging.
+                    "subject_track_id": None,
                     "ocr_raw_tokens": [],
                     "ocr_is_uncertain": False,
                     "has_uncertainty_boundary": has_uncertainty,
@@ -672,6 +851,7 @@ class S11ModelRegistryAndAdapters:
                 return {
                     "accepted_frame_ids": validated["frame_ids"],
                     "planned_frame_ids": list(planned_ids),
+                    "wedding_scenes": list(validated.get("wedding_scenes", [])),
                     "action_or_scene_type": validated["action_or_scene_type"],
                     "subject_track_id": validated.get("subject_track_id"),
                     "observation_text": validated["observation_text"],

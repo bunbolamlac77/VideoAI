@@ -14,6 +14,13 @@ dependencies = [
 test = [
     "jsonschema>=4.23,<5",
 ]
+# Vietnamese TTS engine (G3/S17). Optional: the worker degrades to
+# `blocked_tts_runtime_unavailable` when it is absent. Install with
+#   uv pip install --python <runtime> "aivideo-workers[tts]"
+# Weights are separate (tools/setup_local_models.py --install --tts).
+tts = [
+    "kokoro-vietnamese @ git+https://github.com/iamdinhthuan/Kokoro-Vietnamese",
+]
 
 [build-system]
 requires = ["hatchling"]

@@ -282,3 +282,298 @@
   4. Test phụ thuộc model (token limit, preflight, inference) fail khi runner không có weights → ghi SKIPPED thay vì FAIL.
   5. Diagnostics: check-run công khai chứa non-PASS + log tail (logs GitHub cần auth).
 - **Kết quả**: run [42838639795](https://github.com/bunbolamlac77/VideoAI/actions/runs/42838639795) **success** (4m54s) — Python 213 test, build 0 warning, 17 nhóm Swift.
+
+## 2026-11-10 — Vision pixel budget (rút gọn chi phí xem video, giữ chất lượng)
+
+- `workers/src/aivideo_workers/pipeline_adapters.py`:
+  - thêm `resolve_vision_pixel_cap()` + `DEFAULT_VISION_PIXEL_CAP = 589824` (bằng đúng `default_pixel_budget` của registry), env override `AIVIDEO_VLM_MAX_PIXELS`, fail-closed khi sai/ngoài khoảng;
+  - thêm `vision_frame_target_size()` giữ tỉ lệ khung, cạnh chẵn, không vượt ngân sách;
+  - ffmpeg downscale trước khi encode JPEG (`select=...,scale=W:H:flags=bicubic`), truyền `max_pixels` cho `mlx_vlm.generate`;
+  - fallback processor-only khi không probe được frame size (giữ nguyên hành vi cho test/harness giả lập).
+- Test mới `tests/test_s11_vision_pixel_budget.py` (9 ca): default khớp registry, override, fail-closed, tỉ lệ khung, không upscale, cạnh chẵn.
+- **Đo thật**: 2 097 152 px → 21,86 s/2 ảnh; 589 824 px → 5,98 s/cửa sổ (**~3,3×**); 262 144 px → 2,90 s nhưng bắt đầu đọc sai chữ trên khung ⇒ giữ 589 824 làm default.
+- **Nghiệm thu**: `tools/run_python_tests.py` → **222 test, 0 FAIL, 0 ERROR, 1 SKIP** (heavy S15 do chưa bật cờ), exit 0.
+
+## 2026-11-10 — Thay TTS + nối LLM kịch bản, build & cài app
+
+- TTS: `tts_engine.py` (Kokoro-Vietnamese, Apache-2.0, 82M, preset 15 giọng), registry `P-TTS-KOKORO-VI-V1`, UI/nhãn cập nhật, `voice_trial` dùng engine mới, thêm extra `tts` trong `workers/pyproject.toml`.
+- Kịch bản: `story_writer.py` (Qwen3-8B-4bit MLX) + `generate_story(script_engine=llm)` với kiểm tra trung thực và fallback; Swift `G3StoryRequestPayload.script_engine = "llm"`.
+- Tool setup: `tools/setup_local_models.py --install --all` (staging + rename, không ghi đè bản đang chạy).
+- Test mới: `test_s17_tts_engine.py` (8 ca, 1 heavy), `test_s16_story_llm.py` (11 ca, 1 heavy).
+- **Nghiệm thu**: Python **241 test · 0 FAIL · 0 ERROR · 3 SKIP** (exit 0); Swift G3 story-request suite PASS; VLM 589k-px vẫn PASS trên runtime app sau khi hạ transformers.
+- **Build & cài**: `/Applications/AIVideo.app` đã cập nhật (có `tts_engine.py`, `story_writer.py`, registry mới).
+
+## 2026-11-10 — Phase 1a: renderer ffmpeg native + đồng bộ giọng theo cụm
+
+- `native_render.py`: render 1080×1920 preview / 2160×3840 final, caption burn-in + `.srt`, crossfade / dip-to-black, beat ảnh Ken Burns, `verify_output()` giữ đúng hợp đồng QC.
+- `g3_engine.voice_phrases()` + RPC `g3.voice.phrases`: TTS từng cụm, cue offset = sample thật (`exact_phrase_sample_offsets`).
+- RPC `video.render.native`: path guard trong root, chặn ghi đè, chỉ 2 kích thước dọc.
+- Đo: 4K 276 frame — libx264 veryfast threads=4: 4,52 s / 1,49 GB; VideoToolbox 45M: 5,22 s / 762 MB.
+- Test mới: `test_s20_native_render.py` (14 ca) + `test_s17_voice_phrases.py` (5 ca, 1 heavy).
+- **Nghiệm thu**: **260 Python test · 0 FAIL · 0 ERROR · 4 SKIP**, exit 0. App đã build lại (bundle có `native_render.py` + RPC).
+- **Chưa làm (Phase 1b)**: receipt native cho `G4S21Guard`/`G5S22Guard` + nút UI; Resolve vẫn là đường mặc định.
+
+## 2026-11-10 — Phase 1b: guard S22 + nút UI native 4K
+
+- `G5S22Guard`: `verifyFinalMP4`, `verifyNativeReceipt`, `verifyFinalProvenance`, `fileSHA256`; alias `verifyFinalMP4AndDRP` giữ nguyên.
+- `G5ProjectStore.approveG5Final`: 2 call site chuyển sang `verifyFinalProvenance`.
+- `G5ConsoleView`: nút "Render native 4K (ffmpeg)" + `runNativeFinal()`; publish phân biệt `g5_handoff_drp` vs `g5_native_receipt`.
+- Worker: `g4.render.native` / `g5.render.native_4k` ghi receipt JSON cạnh MP4; cues tuỳ chọn (preburned vs reburned).
+- Test mới: `tests/test_g5_native_provenance.swift` (4 ca), wire vào `tools/run_tests.sh`; Python `test_s20_native_render.py` lên 20 ca.
+- App đã build lại (có nút mới), chưa đổi mặc định sang native.
+
+## 2026-11-10 — Phase 1c: native là mặc định, Resolve tuỳ chọn
+
+- G4: nút "Render native 1080p (ffmpeg)" + `runNativePreview()`, pipeline 1-click chuyển sang native.
+- G5: nút native thành pipeline 1-click (`runFullFinalPipeline` → `runNativeFinal`); publish receipt với type `g5_native_receipt`.
+- Receipt native xuất đúng shape `approveG4Preview`/`approveG5Final` yêu cầu (timeline_uid/signature/render_job_id/qc) + chi tiết engine ở khoá `native`.
+- `G5ProjectStore` nhận provenance type `g5_native_receipt`; `check_readiness` chuyển DaVinci thành warning; test preflight cập nhật.
+- Test: `test_s20_native_render.py` 22 ca (thêm 2 ca khoá shape receipt G4/G5).
+
+## 2026-11-10 — Phase 1c: readiness + seal model install
+
+- `tools/setup_s11_model.py --seal`: ghi install manifest cho bản cài đã có **sau khi** hash khớp pin (`90eeb026…`), fail-closed nếu lệch.
+- `check_readiness.py`: DaVinci → warning; Production Models từ `NOT_VERIFIED` → `VERIFIED_PINNED_LOCAL`.
+- Blocker còn lại duy nhất: field corpus E0/E1 (cần footage thật + nhãn người), đúng thiết kế.
+
+## 2026-11-10 — UI giản lược + brief cho người viết kịch bản (Bước 1)
+
+- **Điều hướng**: sidebar 9 mục → 4 bước chính + nhóm `Nâng cao & Chẩn đoán` thu gọn; xoá `WorkflowStepperView` (trùng sidebar); toolbar bớt menu 2 tầng, còn 1 nút mở thư mục + nút quét lại theo ngữ cảnh; nút "Kết nối lại worker" chỉ hiện khi worker mất kết nối.
+- **Brief (mới)**: thẻ "Thông tin cho người viết kịch bản" ngay dưới thẻ chọn tư liệu ở Bước 1, 6 mục, tự lưu (debounce 0.9 s), lưu bắt buộc trước khi phân tích; G3 hiển thị lại brief và prefill chủ đề/giọng điệu.
+- **Lưu trữ**: `ProjectStore` thêm bảng `script_briefs` + `saveScriptBrief` / `latestScriptBrief`; revision id content-addressed (SHA-256), không sửa DB bằng tay, giữ đúng single-writer.
+- **Sửa lỗi**: bỏ câu brief demo hardcode từng được gửi cho mọi lần phân tích G2; giờ form trống ⇒ không gửi brief.
+- **Tệp mới**: `apps/macos/Sources/ScriptBriefView.swift`, `apps/macos/Sources/AppState+ScriptBrief.swift`, `tests/test_script_brief_parser.py`.
+- **Kiểm chứng (chạy thật)**:
+  - `tools/build_macos_app.sh` → BUILD SUCCESSFUL, codesign PASS.
+  - `tools/run_s06_tests.sh` → 6/6 PASS, gồm ca mới `S06.BRIEF` (round-trip, idempotent revision, revision mới khi sửa, sống sót sau reopen WAL).
+  - `tools/run_tests.sh` → EXIT=0: Python **272 test OK (4 skip)**, toàn bộ Swift suite PASS (S02–S26, G3/G4/G5 guard, native provenance).
+  - `tests/test_source_hygiene.py` PASS: `AIVideoApp.swift` 1380 dòng, `AppState.swift` 1296 dòng (dưới ngưỡng 1700/1400).
+- **Chưa làm**: chưa chụp được ảnh màn hình thật (`screencapture` bị chặn quyền Screen Recording trong phiên này); chưa cài lại `/Applications/AIVideo.app` (mới build trong `apps/macos/build/`).
+
+### 2026-11-10 — Kiểm tra thị giác trên bản cài đặt + tinh chỉnh layout
+
+- Cài `/Applications/AIVideo.app` (build + codesign PASS, Spotlight registered), chụp cửa sổ thật bằng `screencapture -o -l<windowID>` (cửa sổ nằm trên màn hình phụ toạ độ âm nên chụp toàn màn hình bị app khác che).
+- **Phát hiện qua ảnh chụp**: thẻ brief mở sẵn ở Bước 1 đẩy danh sách 911 tư liệu và inspector xuống dưới fold.
+- **Đã sửa**: thẻ brief tự thu gọn thành 1 dòng khi đã có footage hoặc đã có nội dung, tự bung khi chưa có footage; có nút "Thu gọn/Mở rộng"; lưu xong tự thu gọn; trạng thái "Chưa có nội dung — bấm Mở rộng để ghi 6 mục" khi trống.
+- **Ảnh xác nhận cuối**: sidebar 4 bước + nhóm nâng cao thu gọn; thẻ thư mục (15 video / 896 ảnh / 76,27 GB); thẻ brief thu gọn; danh sách + inspector (22,6 s · MOV/MP4 · 234,4 MB, ffprobe thu gọn, 1 nút "Phân tích video này", link "Sang Bước 2").
+- **Ma trận cuối (sau tinh chỉnh layout)**: `tools/run_tests.sh` → **EXIT=0**, Python **272 test OK (4 skip)**.
+- **Bản cài khớp bản build**: sau khi cài lại, SHA-256 của `Contents/MacOS/AIVideo` ở `/Applications/AIVideo.app` và `apps/macos/build/AIVideo.app` đều là `803a75bc5293fd7c5914a3cff9038b8bd003340e9a1bcb5241e2963a2aa8e046` (lưu ý: chạy `run_tests.sh` ký lại bundle build nên hash có thể đổi — phải cài lại rồi mới so).
+
+## 2026-11-10 — Dữ kiện cưới POV (data model cho nghề chụp ảnh cưới)
+
+- **Brief đổi sang dữ kiện cưới** (10 trường): cặp đôi, loại lễ, ngày-giờ, địa điểm, vai POV người quay, phong cách, cảnh bắt buộc phải có, cảnh cần tránh, nền tảng + thời lượng, ghi chú. UI 6 hàng gọn, thu gọn được.
+- **Compose → câu tự nhiên**: `brief_text` giờ là các câu như "Bắt buộc có cảnh: trao nhẫn, mẹ chải tóc." thay vì nhãn `Trường: giá trị`; parser S13 phân loại đúng must_use / must_not_use / style.
+- **G3 prefill**: chủ đề = "Linh & Minh — Lễ vu quy", tone suy ra từ phong cách, thời lượng suy ra từ nền tảng; không ghi đè nếu người dùng đã sửa.
+- **DB migrate tại chỗ**: `PRAGMA table_info` + `ALTER TABLE` thêm 10 cột; đã kiểm trên DB thật của app (10 cột cũ → 20 cột, dữ liệu cũ còn nguyên).
+- **Tệp chạm**: `ProjectStore.swift` (model + schema + save/load + migration), `AppState.swift`, `AppState+ScriptBrief.swift`, `ScriptBriefView.swift`, `G3ConsoleView.swift`, `semantic_verifier.py`, 2 file test.
+- **Kiểm chứng (chạy thật)**:
+  - `tools/run_s06_tests.sh` → **6/6 PASS**, ca `S06.BRIEF` kiểm: form trống compose `""`, 8 dòng câu tự nhiên, round-trip cặp đôi/loại lễ/cảnh bắt buộc/nền tảng/thời lượng, idempotent revision, revision mới khi sửa, sống sót reopen WAL, `topicLine`.
+  - `tests/test_script_brief_parser.py` → **4/4 OK**: must_use / must_not_use / style_preference, span khớp từng ký tự, form trống không sinh draft.
+  - `tools/run_tests.sh` → **EXIT=0**, Python **272 test OK (4 skip)**, toàn bộ Swift suite PASS.
+  - `tools/build_macos_app.sh --install` → build + codesign PASS; SHA-256 binary `/Applications` == `apps/macos/build` (`3e1cd49f…`).
+  - `test_source_hygiene.py` 6/6 OK (AIVideoApp 1380, AppState 1301 dòng).
+- **Chưa làm**: chưa dạy VLM nhận diện cảnh cưới (trao nhẫn/gia tiên/lì xì) từ footage; hiện chúng chỉ đến từ brief người dùng ghi.
+
+## 2026-11-11 — VLM nhãn cảnh cưới + redesign UI toàn app
+
+### VLM cảnh cưới
+- `workers/src/aivideo_workers/wedding_scenes.py`: 10 khoảnh khắc cưới + matcher cue tiếng Việt (chuẩn hoá NFC, không phân biệt hoa/thường), hàm `prompt_guide()` và `wedding_scene_sentence()`.
+- `pipeline_adapters.py`: prompt Qwen3-VL có hướng dẫn taxonomy; sau khi model trả lời, nhãn được ghép vào `observation_text` ("Cảnh cưới nhận diện: …") và trả kèm khoá `wedding_scenes`; `action_or_scene_type` giữ nguyên 3 giá trị cũ.
+- **Kiểm chứng**: `tests/test_wedding_scenes.py` **7/7 PASS**; các suite cũ `test_s12_full_frame_pipeline` (5), `test_g2_window_contract` (14), `test_g2_prefilter` (15), `test_s11_real_vlm_inference` (1) đều PASS.
+
+### UI redesign
+- `AIVideoTheme.swift`: canvas gradient teal, panel 16pt hairline+shadow, spacing scale, `StepChip`, `PrimaryActionStyle`, `GhostActionStyle`.
+- Sidebar viết lại (tile số, accent bar, nhóm nâng cao thu gọn), page header mới (chip "BƯỚC n / 4", title rounded 30pt), chrome dùng chung restyle (Card/StatusPill/KeyValueRow/ErrorBanner/WorkerStatusCard/StatusBar).
+- Bỏ banner lặp ở G3/G4/G5; sửa picker thời lượng bị cắt (segmented → menu); rút gọn nhãn nút dài bị truncate.
+- **Kiểm chứng**: build + codesign PASS; chụp thật 4 bước trên bản cài (`/tmp/aivideo_ui_story2.png`, `_preview.png`, `_final.png`, `_media_final.png`); lần chụp cuối `/tmp/aivideo_final_media.png`.
+- **Ma trận đầy đủ**: `tools/run_tests.sh` → **EXIT=0**, Python **279 test OK (4 skip)**, toàn bộ Swift suite PASS.
+- **Bản cài khớp build**: SHA-256 `Contents/MacOS/AIVideo` hai bên đều `1c9b5914…3b61`.
+
+## 2026-11-11 — Vá 6/9 lỗi P0 từ báo cáo thẩm định (docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md)
+
+Mỗi lỗi kèm test hồi quy được chứng minh **đỏ trên code cũ → xanh sau khi sửa** (dùng `git stash` để chạy test trên bản cũ).
+
+| Lỗi | Sửa gì | Test hồi quy | Đỏ trên code cũ |
+|---|---|---|---|
+| **P0-01** checkpoint bịa qua RPC | `main_g2.py`: chặn `checkpoint_dir` (`CHECKPOINT_DIR_FORBIDDEN`), root do worker quyết định, chỉ nhận `checkpoint_namespace` làm nhãn; `full_frame_pipeline.py`: từ chối resume khi không có inspector (`CHECKPOINT_RESUME_WITHOUT_INSPECTOR`) và kiểm `provenance` của checkpoint (`CHECKPOINT_PROVENANCE_MISMATCH`) | `tests/test_g2_checkpoint_integrity.py` (5) | 5/5 fail |
+| **P0-02** audit coverage là tautology | audit dùng `win.intended_frame_ids`; planned ⊄ window → `VISUAL_SAMPLE_OUTSIDE_WINDOW`; planned nhưng model không nhận → `POST_PROCESSOR_TRUNCATION`; ledger thêm `window_frame_coverage`/`analysed_window_count` | `tests/test_g2_window_audit.py` (5) | 5/5 fail |
+| **P0-05** gate tự DONE + luôn exit 0 | `package_review.py`: gate DONE chỉ khi có record và không FAIL/BLOCKED/NOT_RUN; bỏ nhãn khen hard-code; `review_verdict()` dùng chung cho badge và `sys.exit(1)` | `tests/test_package_review_gate.py` (8) | 8/8 fail |
+| **P0-06** "5 video held-out thực tế" là title card | `fixtures/corpus` → `fixtures/smoke`; preflight thêm `check_smoke_corpus_is_not_field_evidence()` (chặn nhãn hoá smoke thành field); sửa `task_plan.md` G2/G5 sang IN_REVIEW | `tests/test_smoke_corpus_honesty.py` (4) | 4/4 fail |
+| **P0-07** UI tự khai voice "verified" | `g3_engine.voice_trial` trả `voice_review_status="unverified"`; `search_cuts` yêu cầu trạng thái do caller khai (`verified`+published / `unverified`), thiếu ⇒ `BLOCKED_VOICE_NOT_VERIFIED`; `eligible_claims` không còn mặc định `scope_revalidation_status="complete"`; G3 console gửi trạng thái thật | `tests/test_g3_voice_gate.py` (6) | 2/6 fail |
+| **P0-08** LLM rewrite chết ở S19 | worker gắn provenance từng beat (`voice_text_origin`, `voice_text_source_text`, `voice_text_sha256`, `voice_raw_output_sha256`, `voice_prompt_sha256`, `voice_model_id`) + all-or-nothing; `G3ProjectStore.beatIsProvenancedLLMRewrite` chỉ chấp nhận rewrite có đủ provenance, hash khớp narration, source = claim canonical, chữ số ⊆ claim, 8–320 ký tự | `tests/test_g3_llm_approval.swift` (5) | 1/5 fail |
+| **P0-09** scope revision bịa | `G3StoryRequestBuilder.evidenceScope/scopeRevalidationStatus`; scope rỗng ⇒ lấy `claim.sourceRevisionId`; không có provenance ⇒ `missingScope`; bỏ `"scope-g2-main"` khỏi UI lẫn raw JSON mẫu | `tests/test_g3_story_scope.swift` (4) | không compile |
+| **P0-04** fault suite tự PASS | `g5.fault.run_suite` trả `SELF_TEST_ONLY` (`release_evidence=false`, `s25_certified=false`); chỉ `validate_real_fault_suite_evidence()` (run_id + db thật + ≥4 boundary PASS) mới cấp S25; release manifest có `s25_fault_evidence`; UI đổi nhãn "self-test" | `tests/test_g5_fault_suite_honesty.py` (10) | 10/10 fail |
+
+**Nghiệm thu chạy thật trong phiên này**
+- Python: `tools/run_python_tests.py` → **317 test · 0 FAIL · 0 ERROR · 4 NOT_RUN** (4 NOT_RUN = S15 corpus / story 8B / Kokoro ×2, đúng như trước).
+- Swift (biên dịch + chạy riêng với `MacOSX.sdk`): `test_s06_project_store` (7 PASS), `test_s08_publication_reconciler` (5 PASS), `test_s19_g3_approval`, `test_g3_approval_guard`, `test_g3_llm_approval` (5/5), `test_g3_story_request`, `test_g3_story_scope` — **tất cả exit 0**.
+- Build: `./tools/build_macos_app.sh` → exit 0.
+- Preflight: `tools/check_readiness.py` → **exit 2** (NO-GO, thiếu signed field corpus) và in `Committed Smoke Corpus: 5 clip(s), not field evidence`.
+- Đã đăng ký 2 suite Swift mới vào `tools/run_tests.sh`.
+
+**Còn mở (không làm trong lượt này)**: P0-03 (receipt native chưa ràng buộc plan/publication) và 54 P1 trong báo cáo — thứ tự gợi ý: P1-01 job SUCCEEDED sớm, P1-02 hash trong transaction, P1-03/04 lease, P1-05/06 backup/restore.
+
+## 2026-11-11 — Tiếp: P0-03 (receipt native ràng buộc chuỗi phê duyệt) — hoàn tất 9/9 P0
+
+**Vấn đề**: `G5S22Guard` trước đây không có hàm `verifyNativeReceipt/verifyFinalProvenance` (mã hiện có bị mất so với tài liệu cũ) và receipt native không chứa `plan_sha256`, `g3_approval_id`, `g4_approval_id` hay id publication từng beat ⇒ bất kỳ MP4 4K đúng hình dạng + receipt tự viết đều qua S22.
+
+**Đã làm**
+- `workers/src/aivideo_workers/native_render.py`: mỗi beat trong receipt ghi `video_publication_id`, `voice_publication_id`, `mapping_publication_id`, `receipt_publication_id`; receipt ghi `plan_sha256`, `g3_approval_id`, `g3_manifest_sha256`, `g4_approval_id`, `g4_preview_sha256`; `transition_overlap_frames` tính từ beat thực dựng (không còn hằng số 0).
+- `packages/AIVideoCore/Sources/Storage/G5S22Guard.swift`: thêm `NativeReceiptExpectation`, `fileSHA256`, `verifyFinalMP4`, `verifyNativeReceipt(receipt:mp4Path:expectedFrames:expectation:)`, `verifyFinalProvenance(...expectation:)` — kiểm hình dạng, frame accounting, hash MP4, **và** ràng buộc plan/G3/G4/publication (báo lỗi: "different approved plan", "G3 approval differs", "publication outside the approved chain").
+- Test mới `tests/test_g5_receipt_binding.swift` (5 ca) + cập nhật `tests/test_g5_native_provenance.swift` (fixture có binding) và đăng ký vào `tools/run_tests.sh`.
+
+**Bằng chứng đỏ → xanh**
+- Trên logic guard **trước fix** (bản sao trong `/tmp`, không đụng repo): `❌ FAIL: receipt from another plan was accepted`.
+- Trên code hiện tại: `G5 RECEIPT BINDING TESTS PASSED (5/5)`, `G5 NATIVE PROVENANCE TESTS PASSED`.
+- Sự cố đáng ghi: trong lượt này tôi đã `git stash` trên `G5S22Guard.swift` — file **không nằm trong git index** nên stash pop đã khôi phục nhầm baseline từ HEAD và mất một bản sửa; đã dựng lại đầy đủ và **không còn dùng `git stash` cho file untracked** nữa (chứng minh đỏ-trước giờ làm trên bản sao `/tmp/av_oldguard`).
+
+**Ma trận cuối (chạy thật)**
+- Python: **317 test · 0 FAIL · 0 ERROR · 4 NOT_RUN** (`tools/run_python_tests.py`, exit 0). Hai ca `test_s20_native_render` từng đỏ do hằng số overlap đã được sửa.
+- Swift (9 suite biên dịch + chạy riêng): `s06` (7 PASS), `s08` (5 PASS), `s19`, `g3_approval_guard`, `g3_llm_approval` 5/5, `g3_story_scope`, `g3_story_request`, `g5_native_provenance`, `g5_receipt_binding` 5/5 — tất cả **exit 0**.
+- `./tools/build_macos_app.sh` → exit 0; `tools/check_readiness.py` → exit 2 (NO-GO, thiếu signed field corpus).
+
+## 2026-11-11 — Xử lý các mục còn lại: P1-01..07, full matrix, model thật, git tracking
+
+### 1. Hai thay đổi ngoài danh sách đã được review
+- `ScriptBriefView.swift`: hai biến đều gọi `optional(brief)` (cùng một `BoxParse`); `raw` chỉ chứa phần không phải dòng "Cảnh bắt buộc", nên **không** đổi sang `brief.composedText` sẽ lặp thông tin. Chỉ đổi API không tồn tại (`composedText` của `BoxParse` có thật, nhưng dùng `lines` rõ nghĩa hơn cho Text nhiều dòng). **Giữ nguyên hành vi.**
+- `G5ConsoleView.sendReleaseManifest`: đổi sang `let fields: [String: G3JSONValue]` và `G3JSONValue.object(fields)` để buộc kiểu generic của `sendRequest` rõ ràng (cùng kiểu với `runSimpleRPC`/`requestParams` bên cạnh).
+
+### 2. Git tracking
+- `G5S22Guard.swift` và 7 file nguồn khác từng **không nằm trong git index** (AIVideoTheme, AppState+ScriptBrief, ScriptBriefView, native_render, story_writer, tts_engine, wedding_scenes) → đã `git add`.
+- Đã `git add` toàn bộ test mới + 2 tài liệu audit; `git status` không còn file untracked.
+- Rút ra: **không dùng `git stash` trên file untracked** — ở lượt trước thao tác đó đã làm mất một bản sửa `G5S22Guard.swift`; lần này mọi "đỏ trước fix" đều chạy trên bản sao `/tmp`.
+
+### 3. P1 đã vá (mỗi lỗi có test)
+| Mã | Thay đổi | Test |
+|---|---|---|
+| **P1-01** | `artifact_publications.expected_publication_count` (+ migration `ALTER TABLE` tại chỗ); job chỉ SUCCEEDED khi đủ số publication COMMITTED; reconciler dùng cùng luật; `G4FilePublisher` tái dùng một job cho một logical publication | `tests/test_p1_job_completion.swift` (4/4) |
+| **P1-02** | Nhánh S22: đo hash artifact + đọc plan trên connection **read-only** trước transaction (`G5S22Guard.measureFile/readPublishedArtifact/readApprovedCandidate/publicationLocation`, `verifyFinalBindings(fileReader:)`) | `tests/test_p1_hashing_outside_transaction.swift` (3/3) |
+| **P1-03** | Governor reclaim lease khi PID đã chết + heartbeat quá hạn; reap PID tái sử dụng | S07.T4 |
+| **P1-04** | Reserve lease → allocateAttempt → bind; lease bị từ chối ⇒ `attempt == nil`, attempt cũ không bị revoke | S07.T5 |
+| **P1-05** | Backup đọc closure từ chính snapshot (`SnapshotClosure`, mở `immutable=1`); thiếu pinned blob ⇒ fail | `tests/test_p1_backup_restore.swift` (6/6) |
+| **P1-06** | `rewriteCanonicalPaths` re-point publication COMMITTED sang blob đã restore | `tests/test_p1_backup_restore.swift` |
+| **P1-07** | Report đếm claim thật | `tests/test_p1_backup_restore.swift` |
+- Đã cập nhật `docs/AUDIT_20261111_REVIEW_AND_TEST_PLAN.md`: đánh dấu "ĐÃ SỬA 2026-11-11" cho P1-01..07; **P1-02 chỉ sửa một phần** (G4/S21 và `commitPublication` vẫn băm trong transaction).
+
+### 4. Lỗi thật khác phát hiện khi chạy model thật / matrix
+- **TTS Kokoro bị coi là clip**: `tts_engine.save` ép đỉnh đúng 32767 nên gate `_wav_info` luôn báo "clipped at PCM16 full scale" → `test_s17_voice_phrases` heavy FAIL. Sửa: chuẩn hoá đỉnh −1 dBFS (0.891251) và làm tròn; hai suite TTS heavy PASS.
+- **Benchmark G2 heavy ra kết quả khác nhau giữa 2 lần chạy**: checkpoint `ckpt_v2_*` không có provenance bị replay. Sửa: benchmark ghi `checkpoint_provenance`; 2 lần chạy liên tiếp đều PASS (114 s / 117 s).
+- `tests/test_single_writer_invariants.py`: luật cũ cấm mọi `sqlite3_open_v2` trong gate store; nay cho phép **read-only** và cấm **write handle** (cộng thêm test chặn mọi handle không `SQLITE_OPEN_READONLY` ngoài ProjectStore).
+- `tools/run_tests.sh`: 3 block mới dùng `$SDK` (không tồn tại) → `$SDK_PATH`.
+
+### 5. Bằng chứng cuối
+- `python3 tools/run_python_tests.py` (không cờ): **318 test · 0 FAIL · 0 ERROR · 4 NOT_RUN**.
+- `AIVIDEO_RUN_HEAVY_G2=1 AIVIDEO_RUN_HEAVY_STORY=1 AIVIDEO_RUN_HEAVY_TTS=1 python3 tools/run_python_tests.py`: **318 test · 0 FAIL · 0 ERROR · 0 SKIP** — cả 4 test model thật đã chạy (S15 real corpus ≈ 2 phút; S16 8B ≈ 22 s; Kokoro ×2 ≈ 4 s).
+- `./tools/run_tests.sh`: **EXIT=0**, 23 khối, gồm build + codesign + toàn bộ Swift suite + Python + 4 suite mới.
+- `./tools/build_macos_app.sh`: BUILD SUCCESSFUL; `tools/check_readiness.py`: NO-GO (exit 2) đúng nghĩa.
+
+---
+
+## Phiên 2026-11-11 (tiếp) — Vá toàn bộ P1 còn lại, kèm test hồi quy
+
+Phạm vi: **P1-08 … P1-54** (47 lỗi). Mỗi lỗi đều có thay đổi mã + test hồi quy; toàn bộ
+được chạy lại trên ma trận đầy đủ (kết quả ở mục 5).
+
+### 1. Dữ liệu & job (P1-08 … P1-11)
+| Mã | Thay đổi | Test |
+|---|---|---|
+| **P1-08** | `ProjectStore.failJob(jobId:reason:)` — đường job→FAILED thật (attempt + job), thay vì chỉ có SUCCEEDED | `tests/test_p1_integrity.swift` |
+| **P1-09** | `coverage_records` lưu `unique_processed_frame_ids`, `corrupted_decode_frame_ids`, `total_submitted_with_overlap`, `completed_windows`, `total_windows` (JSON); reader không còn bịa `Array(0..<count)` | `tests/test_p1_integrity.swift` (frame id/corrupt/window round-trip) |
+| **P1-10** | `PRAGMA user_version = canonicalSchemaVersion` (2) khi mở DB + `migrateAdditiveColumns` nâng DB cũ tại chỗ | `tests/test_p1_integrity.swift` (DB legacy được stamp sau khi mở) |
+| **P1-11** | Native render nhận root từ `AIVIDEO_RENDER_ROOT` do app cấp (`WorkerClient` tạo `Application Support/AIVideo/Renders`); `staging_root` bị từ chối | `tests/test_p1_renderer_safety.py` |
+
+### 2. Tin cậy bằng chứng (P1-12 … P1-23)
+- **P1-12**: `PINNED_VISUAL_WEIGHTS_SHA256` — manifest chỉ "verified" khi khai đúng hash trọng số đã ghim; `models_root_dir` và `AIVIDEO_MODELS_ROOT` bị từ chối **trước** mọi IO; root ghim đọc từ profile `AIVIDEO_APP_SUPPORT`.
+- **P1-14**: `harness_decision` = `HARNESS_PASS/HARNESS_FAIL`, kèm `decision_kind: decision_harness_fixture`; không còn chuỗi `"PASS"` trần.
+- **P1-15**: `staging_root` bị từ chối ở cả `render_native` và các renderer theo plan (`STAGING_ROOT_FORBIDDEN`).
+- **P1-16**: `g5.preferences.manage` chỉ ghi trong `Application Support/AIVideo/Preferences` (`PREFERENCE_PATH_REFUSED`), trả `profile_path`; chặn cả đường dẫn tương đối `../..`.
+- **P1-17**: `AIVIDEO_G5_SIMULATE_FREE_BYTES` chỉ có hiệu lực khi `AIVIDEO_TEST_HARNESS=1`.
+- **P1-18**: `sign_release_manifest`/`verify_release_manifest` (Ed25519); manifest tự khai `signing.signed`; `signing.signed` được đặt **trước** khi ký và `manifest_sha256` bị loại khỏi payload (nếu không chữ ký tự vô hiệu).
+- **P1-19**: E0/E1 chỉ certify khi `signed_field_manifest.corpus_scope.runs_sha256` khớp digest của `runs` (`RUNS_NOT_BOUND_TO_SIGNED_MANIFEST`).
+- **P1-20**: `AIVIDEO_CONTRACTS_DIR` bị từ chối (`CONTRACTS_DIR_FORBIDDEN`); app ngừng set biến này và bundle thêm `Resources/Workers/contracts`.
+- **P1-21**: `load_clip_labels_with_problems` trả cả danh sách lỗi; một file hỏng ⇒ `acceptance_eligible = False`.
+- **P1-22**: app ad-hoc ký là **blocker** của preflight; chỉ bỏ qua khi `--allow-adhoc`.
+- **P1-23**: chưa làm (`.drp` vẫn chỉ kiểm magic-ZIP) — ghi nhận là hạn chế còn lại.
+
+### 3. Đường ống (P1-24 … P1-37)
+- **P1-24**: decode có giới hạn `-frames:v`; `assert_index_is_contiguous` chạy một lần cho cả media index.
+- **P1-26**: không có `container_frame_count` ⇒ `COVERAGE_DENOMINATOR_UNAVAILABLE` (hết circular); probe thêm `denominator_source`.
+- **P1-27**: trạng thái mới `audio_present_untranscribed` thay cho `no_speech` khi ASR chưa chạy.
+- **P1-28**: U+FFFD trong output VLM ⇒ `INVALID_VLM_OUTPUT` (không "sửa" text thành observation); phân loại cảnh dùng whole-word.
+- **P1-29**: `subject_track_id = None` (không bịa `trk-wNNNN`).
+- **P1-30**: omission audit chỉ liệt kê frame model **đã thấy**, trạng thái `reviewed_sample_only`/`not_run`.
+- **P1-32**: photo insert bắt buộc `photo_sha256` khớp bytes trên đĩa (`PHOTO_HASH_REQUIRED`/`PHOTO_BYTES_CHANGED`).
+- **P1-33**: `_escape` từ chối `;`/newline (`UNSAFE_FILTERGRAPH_TOKEN`); `beat_id` theo `[A-Za-z0-9_-]{1,64}`; drawtext `expansion=none`.
+- **P1-34**: SHA-256 của MP4 đầu ra tính theo stream (`_sha256_file`), không `read_bytes()`.
+- **P1-35**: `has_future` trả chi phí lookahead và trừ vào `node_budget`.
+- **P1-36**: lỗi runtime TTS lúc `infer/save` ⇒ `blocked_tts_runtime_unavailable` (không còn INTERNAL_ERROR).
+- **P1-37**: faithfulness ngoài chữ số — tên/địa danh không có trong claim ⇒ `STORY_INVENTED_ENTITY`.
+- **P1-25** (phân trang observation >1 MiB): chưa làm.
+
+### 4. Tooling & UI (P1-38 … P1-54)
+- **P1-38**: banner suite Swift giờ tính `passed/total` và `exit(1)` nếu thiếu case (`aivideoReportBanner`).
+- **P1-39**: 11 Swift suite đã phát JSONL bằng `TEST_RECORDS_OUT`.
+- **P1-40**: Resolve spike `BLOCKED` → exit 2 (ma trận ghi nhận, không tính PASS).
+- **P1-41**: S02.T1 chỉ PASS khi evidence có `run_id`, `timestamp`, `executed_on_host`, `operator`.
+- **P1-42**: `artifact_publication_schema.json` khớp đúng 16 loại thực được publish; test chặn entry không có mã nào sinh ra.
+- **P1-43**: CI dùng `-typecheck -warnings-as-errors` (bỏ `-frontend -parse`); đã dọn 4 cảnh báo thật.
+- **P1-44**: ma trận **không xoá** `build/reports/*.jsonl` nữa mà chuyển sang `previous/`.
+- **P1-45**: `requirement_id` theo bảng; `JOB-04` chỉ còn 7/361 record (thay vì 151/279).
+- **P1-46**: bỏ fallback `"rev-01"`, nút Stage yêu cầu `saved != nil`.
+- **P1-47**: `cancelBatchAnalysis` huỷ `currentBatchTask` (RPC đang chạy), không chỉ đặt cờ.
+- **P1-48**: `restartWorker` đặt cờ **trước** `await terminate()`.
+- **P1-49**: cue tính từ sample WAV đã đo (`voiceSamples`), thêm `captionTimingSource`; bỏ `wordCount × 0.45`.
+- **P1-50**: G5 chỉ nói ".drp sealed" khi thực sự có `.drp`.
+- **P1-51**: `resetWorkflowForNewVideo()` xoá approvals/cues/publication khi "Làm video mới".
+- **P1-52**: inspector chỉ hiện probe của đúng file (`probe.filePath == item.id`).
+- **P1-53**: bỏ cue mặc định "Nội dung đã duyệt" ở G4/G5.
+- **P1-54**: `mappingPublicationId` chỉ lấy từ `latestG2MappingPublicationId`.
+
+### 5. Bằng chứng cuối
+- `workers/.venv/bin/python3 tools/run_python_tests.py`: **379 test · 0 FAIL · 0 ERROR · 4 NOT_RUN**.
+- `./tools/run_tests.sh`: **EXIT=0**, 23 khối (build + codesign + 17 Swift suite + Python).
+- `./tools/build_macos_app.sh`: BUILD SUCCESSFUL.
+- `swiftc -typecheck -warnings-as-errors packages/AIVideoCore/Sources/*/*.swift`: sạch.
+- Test mới: `test_p1_integrity.swift`, `test_g3_voice_gate.py`, `test_p1_evidence_trust.py`,
+  `test_p1_pipeline_truth.py`, `test_p1_renderer_safety.py`, `test_p1_harness_honesty.py`,
+  `test_p1_remaining.py`.
+
+### 6. Còn lại (không thuộc P1)
+- P2 (54 mục) chưa đụng tới.
+- **P1-23** (`.drp` nội dung) và **P1-25** (phân trang observation) chưa làm; **P1-02** mới sửa nhánh S22.
+- `fixtures/smoke` là title card tổng hợp ⇒ chứng nhận field-corpus vẫn NO-GO cho tới khi có footage thật.
+
+---
+
+## Phiên 2026-11-11 (vòng đóng P1) — 6 mục còn mở đã xử lý
+
+Sau khi ma trận lần đầu xanh, rà lại mục tiêu và đóng nốt các mục còn thiếu:
+
+| Mã | Thay đổi | Test |
+|---|---|---|
+| **P1-11** | `ResourceGovernor.withHeavyLease(...)` (lease bao quanh thao tác, nhả trong mọi nhánh, `GovernorError.leaseDenied`); `G4ConsoleView.runNativePreview` (`heavyMediaConform`) và `G5ConsoleView.runNativeFinal` (`resolveRender`) gọi render qua wrapper này | `tests/test_p1_closure.py` |
+| **P1-13** | Bỏ hẳn tham số `label_source`; `acceptance_eligible` chỉ khi `label_provenance` là signed manifest hợp lệ **và** labels = human + field_footage | `tests/test_p1_closure.py` (3 case: không manifest / manifest không ký / tham số cũ bị từ chối) |
+| **P1-15** | `allow_overwrite` bị từ chối trước mọi kiểm tra (`OVERWRITE_FORBIDDEN`); `staging_root` bị từ chối ở cả 3 renderer | `tests/test_p1_closure.py`, `tests/test_s20_native_render.py` |
+| **P1-23** | `g5_final.validate_resolve_drp_structure`: ZIP hợp lệ + `testzip()` + có `Project.db/.sqlite` + có timeline payload; dùng ở G4 (`g4_resolve.py`) và G5 (build + verify) | `tests/test_p1_closure.py` (ZIP thường bị loại, DRP đúng cấu trúc được nhận, archive hỏng bị loại) |
+| **P1-25** | `main_g2.paginate_raw_observations` (ngân sách 512 KiB inline, `raw_observations_truncated`/`next_offset`); RPC mới `g2.get_raw_observations` đọc **checkpoint do worker sở hữu** (bind theo `source_sha256` ghi trong checkpoint, không nhận đường dẫn) | `tests/test_p1_closure.py` (4 case) |
+| **P1-31** | `PLAN_FRAME_MISMATCH` khi độ dài render ≠ `plan.total_frames` (nêu rõ overlap + photo insert frames) | `tests/test_p1_closure.py` |
+
+Ghi chú: P1-31 chỉ đóng **một phần** — độ dài timeline nay bị chặn, nhưng danh sách
+transition vẫn do plan khai và chưa đối chiếu với G4 preview đã duyệt. P1-02 vẫn chỉ sửa
+nhánh S22.
+
+### Bằng chứng cuối (vòng này)
+- `workers/.venv/bin/python3 tools/run_python_tests.py`: **395 test · 0 FAIL · 0 ERROR · 4 NOT_RUN**.
+- Với `AIVIDEO_RUN_HEAVY_G2=1 AIVIDEO_RUN_HEAVY_STORY=1 AIVIDEO_RUN_HEAVY_TTS=1`: **395 test · 0 FAIL · 0 ERROR · 0 SKIP** (4 suite model thật đều chạy).
+- `./tools/run_tests.sh`: **EXIT=0**, 23 khối.
+- `./tools/build_macos_app.sh`: BUILD SUCCESSFUL; `swiftc -typecheck -warnings-as-errors` trên toàn bộ `packages/AIVideoCore/Sources`: sạch.
+
+### Bổ sung: P1-32 (nửa còn lại) — photo insert phải là publication S08
+- `native_render.build_beats_from_plan`: ngoài `photo_sha256` khớp bytes, bắt buộc
+  `photo_publication_id` (UUID) — thiếu ⇒ `PHOTO_PUBLICATION_REQUIRED`; receipt ghi
+  `photo_publication_id`.
+- `G5S22Guard.verifyNativeReceipt`: beat `photo_insert` phải có `usage=illustrative_only`
+  **và** `photo_sha256` **và** `photo_publication_id`; khi có danh sách publication đã duyệt,
+  photo publication phải nằm trong đó.
+- Test: `tests/test_p1_closure.py` (2 case mới), `tests/test_s20_native_render.py`,
+  `tests/test_g5_native_provenance.swift`.

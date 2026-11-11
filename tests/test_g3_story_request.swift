@@ -10,7 +10,8 @@ struct G3StoryRequestTests {
         origin: Origin = .user,
         epistemic: EpistemicStatus = .reported,
         support: SupportStatus = .insufficient,
-        allowed: AllowedUse = .attributedOrQualified
+        allowed: AllowedUse = .attributedOrQualified,
+        sourceRevisionId: UUID? = UUID(uuidString: "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE")
     ) -> ClaimRecord {
         ClaimRecord(
             workdayId: UUID(),
@@ -19,7 +20,8 @@ struct G3StoryRequestTests {
             epistemicStatus: epistemic,
             reviewStatus: review,
             supportStatus: support,
-            allowedUse: allowed
+            allowedUse: allowed,
+            sourceRevisionId: sourceRevisionId
         )
     }
 
@@ -27,7 +29,7 @@ struct G3StoryRequestTests {
         let confirmed = claim(review: .confirmed, support: .supported)
         let payload = try G3StoryRequestBuilder.makePayload(
             claim: confirmed,
-            scopeRevisionId: "scope-123",
+            scopeRevisionId: nil,
             tone: "tram_tinh",
             targetSeconds: 45
         )
@@ -41,14 +43,16 @@ struct G3StoryRequestTests {
         precondition(fact.origin == "user")
         precondition(fact.epistemicStatus == "reported")
         precondition(payload.constraints.targetSeconds == 45)
-        precondition(payload.evidenceScopeRevisionId == "scope-123")
+        // P0-09: the scope is the claim's own provenance, never a caller constant.
+        precondition(fact.evidenceScopeRevisionId == "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE")
+        precondition(fact.scopeRevalidationStatus == "complete")
 
         // Unconfirmed claims are rejected instead of being silently relabelled.
         var unconfirmedRejected = false
         do {
             _ = try G3StoryRequestBuilder.makeJSON(
                 claim: claim(review: .unreviewed),
-                scopeRevisionId: "scope-123",
+                scopeRevisionId: nil,
                 tone: "tram_tinh",
                 targetSeconds: 45
             )
@@ -62,7 +66,7 @@ struct G3StoryRequestTests {
         do {
             _ = try G3StoryRequestBuilder.makeJSON(
                 claim: nil,
-                scopeRevisionId: "scope-123",
+                scopeRevisionId: nil,
                 tone: "tram_tinh",
                 targetSeconds: 45
             )
@@ -73,7 +77,7 @@ struct G3StoryRequestTests {
 
         let json = try G3StoryRequestBuilder.makeJSON(
             claim: confirmed,
-            scopeRevisionId: "scope-123",
+            scopeRevisionId: nil,
             tone: "tram_tinh",
             targetSeconds: 45
         )

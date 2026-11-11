@@ -117,11 +117,13 @@ def resolve_app_support_dir(custom_path: Optional[str] = None) -> str:
     return os.path.join(home, "Library", "Application Support", "AIVideo")
 
 def resolve_lock_file() -> Optional[str]:
-    # 1. Environment variables if provided by .app bundle or test harness
+    # (P1-20) The model lock is a build artefact: it comes from the app bundle resources,
+    # never from a caller-provided contracts directory.
     if "AIVIDEO_CONTRACTS_DIR" in os.environ:
-        p = os.path.join(os.environ["AIVIDEO_CONTRACTS_DIR"], "g0_model.lock.json")
-        if os.path.isfile(p):
-            return os.path.abspath(p)
+        raise RuntimeError(
+            "CONTRACTS_DIR_FORBIDDEN: the G0 model lock resolves from the app bundle, "
+            "not from AIVIDEO_CONTRACTS_DIR"
+        )
     if "AIVIDEO_APP_RESOURCES" in os.environ:
         p = os.path.join(os.environ["AIVIDEO_APP_RESOURCES"], "contracts", "g0_model.lock.json")
         if os.path.isfile(p):

@@ -73,10 +73,6 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
     case media, story, preview, final, review, data, model, resolve, capabilities
     var id: String { rawValue }
 
-    var isWorkflowStep: Bool {
-        self == .media || self == .story || self == .preview || self == .final
-    }
-
     var title: String {
         switch self {
         case .media: return "1. Tư liệu nguồn"
@@ -94,7 +90,7 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
     var subtitle: String {
         switch self {
         case .media: return "Quét AI nhận diện clip, ffprobe và quản lý tư liệu"
-        case .story: return "Tạo câu chuyện POV, sinh giọng đọc VieNeu-TTS & duyệt S19"
+        case .story: return "Tạo câu chuyện POV, sinh giọng đọc Kokoro-Vietnamese & duyệt S19"
         case .preview: return "Khớp video dọc 1080×1920, raster phụ đề & kiểm tra QC"
         case .final: return "Render 2160×3840 24fps & mở timeline DaVinci Resolve Studio"
         case .review: return "Coverage, claim, review có truy vết nguồn"
@@ -119,214 +115,182 @@ enum AppSection: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    static let groups: [(String, [AppSection])] = [
-        ("Quy trình dựng (POV Workflow)", [.media, .story, .preview, .final]),
-        ("Dữ liệu & Kiểm chứng", [.review, .data]),
-        ("Hệ thống & Chẩn đoán", [.model, .resolve, .capabilities]),
-    ]
-}
-
-struct WorkflowStepperView: View {
-    let currentSection: AppSection
-    let onSelect: (AppSection) -> Void
-    @EnvironmentObject var state: AppState
-
-    private let steps: [(AppSection, String, String)] = [
-        (.media, "1. Tư liệu", "film.stack"),
-        (.story, "2. Kịch bản", "text.book.closed"),
-        (.preview, "3. Xem trước", "play.rectangle"),
-        (.final, "4. Xuất bản", "checkmark.seal")
-    ]
-
-    private var currentStepIndex: Int? {
-        steps.firstIndex(where: { $0.0 == currentSection })
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
-                let (section, title, icon) = step
-                let isCurrent = section == currentSection
-                let isPast = (currentStepIndex ?? 0) > index
-                let isComplete = stepIsComplete(section)
-
-                Button {
-                    onSelect(section)
-                } label: {
-                    HStack(spacing: 8) {
-                        ZStack {
-                            Circle()
-                                .fill(isCurrent ? Color.brandTeal : (isComplete ? Color.brandTeal.opacity(0.18) : Color.primary.opacity(0.06)))
-                                .frame(width: 28, height: 28)
-                            if isComplete && !isCurrent {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 12, weight: .bold))
-                                    .foregroundStyle(Color.brandTeal)
-                            } else {
-                                Image(systemName: icon)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(isCurrent ? Color.white : (isPast ? Color.brandTeal : Color.secondary))
-                            }
-                        }
-
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(title)
-                                .font(.caption.weight(isCurrent ? .bold : .medium))
-                                .foregroundStyle(isCurrent ? Color.primary : Color.secondary)
-                        }
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(isCurrent ? Color.brandTeal.opacity(0.1) : Color.clear)
-                    )
-                }
-                .buttonStyle(.plain)
-
-                if index < steps.count - 1 {
-                    Rectangle()
-                        .fill(isPast ? Color.brandTeal : Color.primary.opacity(0.1))
-                        .frame(height: 2)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 4)
-                }
-            }
-
-            Spacer(minLength: 12)
-
-            // Next step button
-            if let curIdx = currentStepIndex, curIdx < steps.count - 1 {
-                let nextStep = steps[curIdx + 1]
-                Button {
-                    onSelect(nextStep.0)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text("Tiếp tục: \(nextStep.1)")
-                        Image(systemName: "arrow.right")
-                    }
-                    .font(.caption.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06))
-        )
-    }
-
-    private func stepIsComplete(_ section: AppSection) -> Bool {
-        switch section {
-        case .media: return !state.mediaItems.isEmpty
-        case .story: return state.isStep2StoryApproved
-        case .preview: return state.isStep3PreviewReady
-        case .final: return !state.latestG5PublicationId.isEmpty
-        default: return false
+    /// 1...4 for the workflow steps, nil for diagnostics screens.
+    var stepNumber: Int? {
+        switch self {
+        case .media: return 1
+        case .story: return 2
+        case .preview: return 3
+        case .final: return 4
+        default: return nil
         }
     }
+
+    /// The four steps a creator actually walks through, in order.
+    static let workflowSteps: [AppSection] = [.media, .story, .preview, .final]
+    /// Diagnostics/back-office screens: reachable but out of the daily path.
+    static let advancedSections: [AppSection] = [.review, .data, .model, .resolve, .capabilities]
+    var isAdvanced: Bool { Self.advancedSections.contains(self) }
 }
 
 struct ContentView: View {
     @EnvironmentObject var state: AppState
     @SceneStorage("selectedSection") private var selectionRaw: String = AppSection.media.rawValue
+    /// Diagnostics stay collapsed until someone asks for them.
+    @State private var showAdvanced = false
 
-    private var selection: Binding<AppSection?> {
-        Binding(
-            get: { AppSection(rawValue: selectionRaw) ?? .media },
-            set: { selectionRaw = ($0 ?? .media).rawValue }
-        )
-    }
+    private var currentSection: AppSection { AppSection(rawValue: selectionRaw) ?? .media }
 
     var body: some View {
         NavigationSplitView {
-            List(selection: selection) {
-                ForEach(AppSection.groups, id: \.0) { group in
-                    Section(group.0) {
-                        ForEach(group.1) { section in
-                            Label(section.title, systemImage: section.symbol)
-                                .badge(badge(for: section))
-                                .tag(section)
+            sidebar
+        } detail: {
+            detail
+        }
+        .frame(minWidth: 1080, minHeight: 700)
+        .onAppear {
+            showAdvanced = showAdvanced || currentSection.isAdvanced
+        }
+    }
+
+    // MARK: Sidebar
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.space4) {
+                    sidebarCaption("Quy trình dựng")
+
+                    ForEach(Array(AppSection.workflowSteps.enumerated()), id: \.element) { index, section in
+                        SidebarRow(
+                            section: section,
+                            step: index + 1,
+                            isSelected: currentSection == section,
+                            badge: badge(for: section)
+                        ) {
+                            selectionRaw = section.rawValue
+                        }
+                    }
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.16)) { showAdvanced.toggle() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("NÂNG CAO & CHẨN ĐOÁN")
+                                .font(.system(size: 10, weight: .bold, design: .rounded))
+                                .tracking(1.1)
+                            Spacer()
+                            Image(systemName: showAdvanced ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.top, 18)
+                        .padding(.bottom, 6)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if showAdvanced {
+                        ForEach(AppSection.advancedSections) { section in
+                            SidebarRow(
+                                section: section,
+                                step: nil,
+                                isSelected: currentSection == section,
+                                badge: badge(for: section)
+                            ) {
+                                selectionRaw = section.rawValue
+                            }
                         }
                     }
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 12)
             }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 280)
-            .safeAreaInset(edge: .bottom) { WorkerStatusCard().padding(12) }
-        } detail: {
-            let current = AppSection(rawValue: selectionRaw) ?? .media
+
+            Divider().opacity(0.5)
+            WorkerStatusCard()
+                .padding(12)
+        }
+        .background(.thinMaterial)
+        .navigationSplitViewColumnWidth(min: 224, ideal: 248, max: 300)
+    }
+
+    private func sidebarCaption(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 10, weight: .bold, design: .rounded))
+            .tracking(1.1)
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 4)
+    }
+
+    // MARK: Detail
+
+    private var detail: some View {
+        ZStack {
+            AppCanvas()
+
             VStack(spacing: 0) {
                 if let err = state.errorMessage {
                     ErrorBanner(message: err) { state.errorMessage = nil }
+                        .padding(.horizontal, Theme.space24)
+                        .padding(.top, Theme.space12)
                 }
+
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        if current.isWorkflowStep {
-                            WorkflowStepperView(currentSection: current) { target in
-                                selectionRaw = target.rawValue
-                            }
-                        }
-                        SectionHeader(section: current)
-                        detailView(for: current)
+                    VStack(alignment: .leading, spacing: Theme.space24) {
+                        SectionHeader(section: currentSection)
+                        detailView(for: currentSection)
                     }
-                    .padding(24)
-                    .frame(maxWidth: 1100, alignment: .leading)
+                    .padding(.horizontal, Theme.space32)
+                    .padding(.vertical, Theme.space24)
+                    .frame(maxWidth: Theme.pageWidth, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Divider()
+                .scrollIndicators(.automatic)
+
                 StatusBar()
             }
-            .navigationTitle(current.title)
-            .navigationSubtitle(state.g1Project?.name ?? "AIVideo v3.1")
-            .onChange(of: state.requestedSection) { _, newSec in
-                if let s = newSec {
-                    selectionRaw = s.rawValue
-                    state.requestedSection = nil
-                }
+        }
+        .navigationTitle("AIVideo")
+        .navigationSubtitle(state.g1Project?.name ?? "AIVideo v3.1")
+        .onChange(of: state.requestedSection) { _, newSec in
+            if let s = newSec {
+                selectionRaw = s.rawValue
+                if s.isAdvanced { showAdvanced = true }
+                state.requestedSection = nil
             }
-            .toolbar {
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Menu {
-                        Button {
-                            state.selectSourceFolder()
-                        } label: {
-                            Label("Chọn thư mục tư liệu…", systemImage: "folder.badge.plus")
-                        }
-                        Button {
-                            state.selectFileAndProbe()
-                        } label: {
-                            Label("Chọn file riêng lẻ…", systemImage: "doc.badge.plus")
-                        }
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    state.selectSourceFolder()
+                } label: {
+                    Label("Mở thư mục tư liệu", systemImage: "folder.badge.plus")
+                }
+                .help("Chọn thư mục chứa video và ảnh (⌘O)")
+
+                if !state.selectedDirectoryPath.isEmpty {
+                    Button {
+                        state.refreshCurrentDirectory()
                     } label: {
-                        Label("Mở tư liệu", systemImage: "folder.badge.plus")
-                    } primaryAction: {
-                        state.selectSourceFolder()
+                        Label("Quét lại", systemImage: "arrow.clockwise")
                     }
-                    .help("Chọn thư mục chứa video và ảnh (⌘O) hoặc file riêng lẻ (⇧⌘O)")
+                    .help("Quét lại các file trong thư mục hiện tại")
+                }
 
-                    if !state.selectedDirectoryPath.isEmpty {
-                        Button {
-                            state.refreshCurrentDirectory()
-                        } label: {
-                            Label("Làm mới", systemImage: "arrow.clockwise")
-                        }
-                        .help("Quét lại các file trong thư mục hiện tại")
+                if !state.isWorkerConnected {
+                    Button {
+                        Task { await state.restartWorker() }
+                    } label: {
+                        Label("Kết nối lại worker", systemImage: "bolt.horizontal.circle")
                     }
-
-                    Button { Task { await state.restartWorker() } } label: {
-                        Label("Khởi động lại worker", systemImage: "arrow.clockwise")
-                    }
-                    .help("Khởi động lại Python worker (⇧⌘R)")
+                    .help("Python worker chưa sẵn sàng — bấm để khởi động lại")
                     .disabled(state.isStartingWorker)
                 }
             }
         }
-        .frame(minWidth: 980, minHeight: 640)
     }
 
     private func badge(for section: AppSection) -> Int {
@@ -353,6 +317,68 @@ struct ContentView: View {
     }
 }
 
+/// Sidebar row: numbered tile for workflow steps, icon tile for diagnostics.
+struct SidebarRow: View {
+    let section: AppSection
+    let step: Int?
+    let isSelected: Bool
+    let badge: Int
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(isSelected ? Color.brandTeal : Color.primary.opacity(0.07))
+                    if let step {
+                        Text("\(step)")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundStyle(isSelected ? Color.black.opacity(0.78) : Color.secondary)
+                    } else {
+                        Image(systemName: section.symbol)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(isSelected ? Color.black.opacity(0.78) : Color.secondary)
+                    }
+                }
+                .frame(width: 24, height: 24)
+
+                Text(section.title)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular, design: .rounded))
+                    .foregroundStyle(Color.primary.opacity(isSelected ? 1 : 0.85))
+                    .lineLimit(1)
+
+                Spacer(minLength: 4)
+
+                if badge > 0 {
+                    Text("\(badge)")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.brandTeal)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.brandTeal.opacity(0.14), in: Capsule())
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(isSelected ? Color.brandTeal.opacity(0.14) : Color.clear)
+            )
+            .overlay(alignment: .leading) {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(Color.brandTeal)
+                        .frame(width: 3, height: 16)
+                        .padding(.leading, 2)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // MARK: - Reusable Chrome
 
 struct Card<Content: View>: View {
@@ -361,22 +387,23 @@ struct Card<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.space12) {
             if let title {
-                Label(title, systemImage: symbol ?? "square")
-                    .font(.headline)
-                    .labelStyle(.titleAndIcon)
-                    .foregroundStyle(.primary)
+                HStack(spacing: 8) {
+                    Image(systemName: symbol ?? "square")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.brandTeal)
+                        .frame(width: 22, height: 22)
+                        .background(Color.brandTeal.opacity(0.12), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                }
             }
             content
         }
-        .padding(16)
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06))
-        )
+        .panel()
     }
 }
 
@@ -385,12 +412,18 @@ struct StatusPill: View {
     let color: Color
     var body: some View {
         HStack(spacing: 6) {
-            Circle().fill(color).frame(width: 8, height: 8)
-            Text(text).font(.caption.weight(.semibold)).lineLimit(1)
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+                .shadow(color: color.opacity(0.7), radius: 3)
+            Text(text)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .lineLimit(1)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
         .background(color.opacity(0.12), in: Capsule())
+        .overlay(Capsule().strokeBorder(color.opacity(0.22)))
     }
 }
 
@@ -398,30 +431,50 @@ struct KeyValueRow: View {
     let key: String
     let value: String
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(key).foregroundStyle(.secondary).frame(width: 140, alignment: .leading)
-            Text(value).monospacedDigit().textSelection(.enabled)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(key)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+                .frame(width: 132, alignment: .leading)
+            Text(value)
+                .font(.system(size: 12, design: .rounded))
+                .monospacedDigit()
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
-        .font(.callout)
     }
 }
 
 struct SectionHeader: View {
     let section: AppSection
     var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: section.symbol)
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(Color.brandTeal)
-                .frame(width: 44, height: 44)
-                .background(Color.brandTeal.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(section.title).font(.title2.weight(.semibold))
-                Text(section.subtitle).font(.callout).foregroundStyle(.secondary)
+        HStack(alignment: .center, spacing: Theme.space16) {
+            VStack(alignment: .leading, spacing: 6) {
+                if let step = section.stepNumber {
+                    StepChip(text: "Bước \(step) / 4")
+                }
+                Text(section.title)
+                    .font(.system(size: 30, weight: .semibold, design: .rounded))
+                Text(section.subtitle)
+                    .font(.system(size: 13, design: .rounded))
+                    .foregroundStyle(.secondary)
             }
+            Spacer(minLength: 12)
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.brandTeal.opacity(0.12))
+                Image(systemName: section.symbol)
+                    .font(.system(size: 23, weight: .semibold))
+                    .foregroundStyle(Color.brandTeal)
+            }
+            .frame(width: 58, height: 58)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.brandTeal.opacity(0.18))
+            )
         }
-        .padding(.bottom, 4)
+        .padding(.bottom, 2)
     }
 }
 
@@ -438,9 +491,12 @@ struct ErrorBanner: View {
                 .help("Đóng thông báo")
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color.orange.opacity(0.12))
-        .overlay(alignment: .bottom) { Divider() }
+        .padding(.vertical, 12)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.25))
+        )
     }
 }
 
@@ -463,8 +519,12 @@ struct WorkerStatusCard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(11)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radiusControl, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.07))
+        )
     }
 }
 
@@ -476,11 +536,12 @@ struct StatusBar: View {
             Spacer()
             Text("100% local · 24 fps · 9:16").foregroundStyle(.tertiary)
         }
-        .font(.caption)
+        .font(.system(size: 11, design: .rounded))
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
+        .padding(.horizontal, Theme.space24)
+        .padding(.vertical, 7)
         .background(.bar)
+        .overlay(alignment: .top) { Divider().opacity(0.4) }
     }
 }
 
@@ -675,26 +736,37 @@ struct MediaInspectorView: View {
                     .progressViewStyle(.linear)
             }
             .padding(.vertical, 16)
-        } else if let probe = state.probeResult, probe.filePath == item.id || state.selectedFilePath == item.id {
+        } else if let probe = state.probeResult, probe.filePath == item.id {
             VStack(alignment: .leading, spacing: 8) {
-                KeyValueRow(key: "Định dạng", value: probe.formatName ?? "Unknown")
-                KeyValueRow(key: "Thời lượng", value: String(format: "%.2f s", probe.durationSeconds))
-                KeyValueRow(key: "Dung lượng", value: ByteCountFormatter.string(fromByteCount: Int64(probe.sizeBytes), countStyle: .file))
-
-                ForEach(probe.videoStreams, id: \.index) { v in
-                    let w = v.width.map { "\($0)" } ?? "0"
-                    let h = v.height.map { "\($0)" } ?? "0"
-                    let idx = v.index.map { "\($0)" } ?? "0"
-                    let fps = v.frameRate ?? "Unknown"
-                    KeyValueRow(key: "Video stream #\(idx)", value: "\(v.codecName ?? "Unknown") · \(w)×\(h) @ \(fps) fps · \(v.pixelFormat ?? "Unknown")")
+                HStack(spacing: 8) {
+                    StatusPill(text: String(format: "%.1f s", probe.durationSeconds), color: .brandTeal)
+                    StatusPill(text: (probe.formatName ?? "video").uppercased(), color: .secondary)
+                    StatusPill(
+                        text: ByteCountFormatter.string(fromByteCount: Int64(probe.sizeBytes), countStyle: .file),
+                        color: .secondary
+                    )
                 }
 
-                ForEach(probe.audioStreams, id: \.index) { a in
-                    let idx = a.index.map { "\($0)" } ?? "0"
-                    let sr = a.sampleRate.map { "\($0) Hz" } ?? "N/A"
-                    let ch = a.channels.map { "\($0) kênh" } ?? "N/A"
-                    KeyValueRow(key: "Audio stream #\(idx)", value: "\(a.codecName ?? "Unknown") · \(sr) · \(ch)")
+                DisclosureGroup("Thông số kỹ thuật (ffprobe)") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(probe.videoStreams, id: \.index) { v in
+                            let w = v.width.map { "\($0)" } ?? "0"
+                            let h = v.height.map { "\($0)" } ?? "0"
+                            let idx = v.index.map { "\($0)" } ?? "0"
+                            let fps = v.frameRate ?? "Unknown"
+                            KeyValueRow(key: "Video #\(idx)", value: "\(v.codecName ?? "Unknown") · \(w)×\(h) @ \(fps) fps · \(v.pixelFormat ?? "Unknown")")
+                        }
+
+                        ForEach(probe.audioStreams, id: \.index) { a in
+                            let idx = a.index.map { "\($0)" } ?? "0"
+                            let sr = a.sampleRate.map { "\($0) Hz" } ?? "N/A"
+                            let ch = a.channels.map { "\($0) kênh" } ?? "N/A"
+                            KeyValueRow(key: "Audio #\(idx)", value: "\(a.codecName ?? "Unknown") · \(sr) · \(ch)")
+                        }
+                    }
+                    .padding(.top, 6)
                 }
+                .font(.caption)
 
                 Divider().padding(.vertical, 4)
 
@@ -733,53 +805,36 @@ struct MediaInspectorView: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.vertical, 8)
                     } else {
-                        HStack(spacing: 8) {
-                            Button {
-                                Task { await state.runG2AnalysisOnSelectedSource() }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "sparkles.tv")
-                                    Text("Phân tích video này")
-                                }
-                                .frame(maxWidth: .infinity)
+                        Button {
+                            Task { await state.runG2AnalysisOnSelectedSource() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "sparkles.tv")
+                                Text("Phân tích video này")
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.regular)
-                            .disabled(!state.isWorkerConnected || state.isRunningG2Analysis || state.isBatchAnalysisRunning)
-
-                            if state.videoCount > 1 {
-                                Button {
-                                    Task { await state.runG2AnalysisOnAllVideos() }
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "play.rectangle.on.rectangle.fill")
-                                        Text("Phân tích toàn bộ (\(state.videoCount))")
-                                    }
-                                    .frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.regular)
-                                .disabled(!state.isWorkerConnected || state.isRunningG2Analysis || state.isBatchAnalysisRunning)
-                            }
+                            .frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.regular)
+                        .disabled(!state.isWorkerConnected || state.isRunningG2Analysis || state.isBatchAnalysisRunning)
 
-                        Text("Trích xuất frame offline, suy luận VLM Qwen3-VL 4B tuần tự (RAM < 4 GB) để đối chiếu fact claim và sinh Coverage Ledger.")
+                        Text("Phân tích offline bằng Qwen3-VL 4B để tạo fact có bằng chứng. Brief ở trên được ghi kèm làm ngữ cảnh.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
 
                         if !state.mediaItems.isEmpty {
                             Button {
                                 state.navigateToSection(.story)
                             } label: {
-                                HStack {
-                                    Text("Tiếp tục: Sang Bước 2 (Kịch bản & Thoại)")
+                                HStack(spacing: 4) {
+                                    Text("Sang Bước 2 — Kịch bản & Thoại")
                                     Image(systemName: "arrow.right")
                                 }
-                                .frame(maxWidth: .infinity)
+                                .font(.callout.weight(.medium))
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.regular)
-                            .padding(.top, 4)
+                            .buttonStyle(.link)
+                            .padding(.top, 2)
                         }
                     }
                 }
@@ -849,6 +904,8 @@ struct MediaSectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             folderBannerCard
+
+            ScriptBriefCard()
 
             if state.isBookmarkStale {
                 Label("Quyền truy cập thư mục/file đã cũ. Vui lòng chọn lại thư mục để tái cấp quyền.", systemImage: "lock.trianglebadge.exclamationmark")
@@ -943,18 +1000,30 @@ struct MediaSectionView: View {
                     }
                 }
 
-                Toggle(isOn: $state.prefilterEnabled) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Bỏ qua cảnh tĩnh (prefilter chuyển động)").font(.caption.weight(.medium))
-                        Text("Chỉ gửi các cửa sổ có chuyển động vào Qwen3-VL; cửa sổ bị bỏ được ghi rõ trong coverage, không tính là đã phân tích.")
-                            .font(.system(size: 9))
+                DisclosureGroup("Tuỳ chọn nâng cao") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle(isOn: $state.prefilterEnabled) {
+                            Text("Bỏ qua cảnh tĩnh (prefilter chuyển động)")
+                                .font(.caption.weight(.medium))
+                        }
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+
+                        Text("Chỉ gửi các cửa sổ có chuyển động vào Qwen3-VL. Cửa sổ bị bỏ được ghi rõ trong coverage và không tính là đã phân tích. Mặc định tắt.")
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+
+                        if state.isSecurityScoped {
+                            Label("Security-Scoped Sandbox đang bật", systemImage: "lock.shield.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .padding(.top, 6)
                 }
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .help("Giảm mạnh thời gian phân tích với footage ít chuyển động. Mặc định tắt.")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
 
                 if !state.mediaItems.isEmpty {
                     Divider()
@@ -992,13 +1061,6 @@ struct MediaSectionView: View {
                                 .controlSize(.small)
                                 .disabled(state.isRunningG2Analysis || !state.isWorkerConnected)
                                 .help("Phân tích tuần tự toàn bộ video trong thư mục bằng Qwen3-VL 4B local")
-                            }
-                        }
-
-                        if state.isSecurityScoped {
-                            HStack(spacing: 4) {
-                                Image(systemName: "lock.shield.fill").foregroundStyle(.green)
-                                Text("Security-Scoped Sandbox Active").font(.caption2).foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -1047,14 +1109,14 @@ struct MediaSectionView: View {
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 520)
                 }
-                HStack(spacing: 12) {
-                    Button("Chọn thư mục tư liệu…") { state.selectSourceFolder() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                    Button("Chọn file riêng lẻ…") { state.selectFileAndProbe() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
+                HStack(spacing: 6) {
+                    Text("Kéo thả vào thẻ phía trên, hoặc bấm")
+                        .foregroundStyle(.secondary)
+                    Text("Mở thư mục tư liệu").fontWeight(.semibold)
+                    Text("ở góc trên phải.")
+                        .foregroundStyle(.secondary)
                 }
+                .font(.callout)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 36)
@@ -1296,7 +1358,7 @@ struct DataSectionView: View {
 
             Card(title: "Ghi chú / Fact", symbol: "square.and.pencil") {
                 HStack {
-                    TextField("Nhập dữ kiện ngày làm việc (Brief/Fact)…", text: $state.g1DraftFactText)
+                    TextField("Nhập fact bổ sung cho ngày làm việc…", text: $state.g1DraftFactText)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { Task { await state.saveDraftFactToStore() } }
                     Button("Lưu (ACK)") { Task { await state.saveDraftFactToStore() } }

@@ -157,6 +157,37 @@ def voice_trial(params: dict) -> dict:
     return result
 
 
+def voice_phrases(params: dict) -> dict:
+    if not isinstance(params, dict):
+        raise ValueError("RPC params must be an object")
+
+    dest = _dir_from_request(params)
+    if dest is None:
+        return {
+            "status": "blocked_untrusted_staging_directory",
+            "required_env": "AIVIDEO_G3_STAGING_ROOT",
+        }
+
+    checked = dict(params)
+    checked["staging_dir"] = str(dest)
+    checked["trial_nonce"] = uuid.uuid4().hex
+
+    result = engine.voice_phrases(checked)
+
+    for key in ("combined_path",):
+        value = result.get(key)
+        if value:
+            resolved = Path(value).resolve()
+            if dest not in resolved.parents:
+                raise ValueError("TTS returned WAV outside managed staging")
+    for value in result.get("phrase_paths", []):
+        resolved = Path(value).resolve()
+        if dest not in resolved.parents:
+            raise ValueError("TTS returned WAV outside managed staging")
+
+    return result
+
+
 def search_cuts(params: dict) -> dict:
     result = engine.search_cuts(params)
 

@@ -62,7 +62,7 @@
     "qwen3_vl_4b_mlx": { "status": "NOT_INSTALLED", "inference_status": "NOT_RUN", "notes": "Candidate for visual analysis (Gate G2 / S11)" },
     "qwen3_8b_mlx": { "status": "NOT_INSTALLED", "inference_status": "NOT_RUN", "notes": "Candidate for script generation (Gate G3 / S11)" },
     "whisper_large_v3": { "status": "NOT_INSTALLED", "inference_status": "NOT_RUN", "notes": "Candidate for Vietnamese ASR (Gate G2 / S11)" },
-    "vieneu_tts_v3_turbo": { "status": "NOT_INSTALLED", "inference_status": "NOT_RUN", "notes": "Candidate for Vietnamese TTS (Gate G3 / S11)" },
+    "tts_kokoro_vi": { "status": "INSTALLED", "engine": "kokoro-vietnamese", "profile_id": "P-TTS-KOKORO-VI-V1", "model_id": "contextboxai/Kokoro-Vietnamese", "license": "apache-2.0", "native_sample_rate_hz": 24000, "canonical_sample_rate_hz": 48000, "local_path": "~/Library/Application Support/AIVideo/Models/tts_kokoro_vi", "notes": "Vietnamese TTS engine used by G3/S17 (Gate G3 / S11); CPU-only, 82M params" },
     "dinov2_base": { "status": "NOT_INSTALLED", "inference_status": "NOT_RUN", "notes": "Candidate for frame embedding (Gate G2 / S11)" }
   }
 }
